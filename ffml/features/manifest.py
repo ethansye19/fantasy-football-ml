@@ -27,7 +27,14 @@ import polars as pl
 from ffml.features.context import avail_cols, context_cols, depth_cols, injury_cols
 from ffml.features.dst import dst_cols
 from ffml.features.player import attr_cols, eff_cols, opp_cols, team_out_cols, teammates_out_cols
-from ffml.features.spec import DATASETS, FEATURE_VERSION, PARAMS, TARGET_DTYPE, Col
+from ffml.features.spec import (
+    DATASETS,
+    FEATURE_VERSION,
+    PARAMS,
+    SENSITIVITY_DATASETS,
+    TARGET_DTYPE,
+    Col,
+)
 from ffml.features.targets import KEYS, TARGET_NAMES
 from ffml.features.team import def_cols, team_cols
 
@@ -100,7 +107,8 @@ def _split(cols: list[Col]) -> tuple[list[Col], list[Col]]:
 
 
 def columns(dataset: str) -> list[Col]:
-    """Ordered output columns of ``dataset``."""
+    """Ordered output columns of ``dataset`` (sensitivity datasets share their base schema)."""
+    dataset = SENSITIVITY_DATASETS.get(dataset, dataset)
     if dataset not in DATASETS:
         raise ValueError(f"unknown dataset {dataset!r}; expected one of {DATASETS}")
     ctx_feat, ctx_sens = _split(context_cols())

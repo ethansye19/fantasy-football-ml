@@ -25,13 +25,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-FEATURE_VERSION = "0.1.0"
+FEATURE_VERSION = "0.2.0"
 
 POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "K")
 SKILL: tuple[str, ...] = ("RB", "WR", "TE")
 WINDOWS: tuple[str, ...] = ("l1", "l3", "l5", "ew", "std", "ps", "car")
 GROUPS: tuple[str, ...] = ("ctx", "team", "def", "opp", "eff", "attr", "depth", "avail")
 DATASETS: tuple[str, ...] = ("player_week", "team_week", "dst_week")
+#: labelled sensitivity datasets and the primary dataset whose schema they share
+SENSITIVITY_DATASETS: dict[str, str] = {"player_week_depth_same_week": "player_week"}
+#: depth-chart timing variants (D-059): ``primary`` uses the previous week's chart for
+#: legacy weekly charts (2016-2024); ``same_week`` uses the chart labelled with the row's week
+DEPTH_VARIANTS: tuple[str, ...] = ("primary", "same_week")
+KICK_BANDS: tuple[str, ...] = ("0_19", "20_29", "30_39", "40_49", "50_59", "60p")
 
 FEATURE_DTYPE = "Float32"
 TARGET_DTYPE = "Float64"
@@ -71,6 +77,10 @@ PARAMS: dict[str, Any] = {
         "def_rz_trips": 20,
         # DST rare events per game
         "dst_games": 16,
+        # kicker distance bands (made + missed per band; blocked kicks have no band)
+        "fg_att_band": 10,
+        "fg_band_share": 30,
+        "kicker_games": 8,
     },
     "short_week_max_rest": 5,
     "off_bye_min_rest": 13,
@@ -232,10 +242,13 @@ def blend_weight(week: int) -> float:
 
 __all__ = [
     "DATASETS",
+    "DEPTH_VARIANTS",
     "FEATURE_DTYPE",
     "FEATURE_VERSION",
     "GROUPS",
+    "KICK_BANDS",
     "PARAMS",
+    "SENSITIVITY_DATASETS",
     "POSITIONS",
     "SKILL",
     "TARGET_DTYPE",

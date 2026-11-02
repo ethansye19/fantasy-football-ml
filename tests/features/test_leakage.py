@@ -156,7 +156,12 @@ def _shift_violations(
         per = ev.select(entity, "season", "week", x).with_columns(
             pl.col("_x").shift(1).over(entity).alias("_x_prev")
         )
-        j = rows.select(
+        scope = rows
+        if "position" in rows.columns and c.positions:
+            # only the positions the feature is meant for (other positions sit at zero
+            # in both the feature and the stat, which inflates both correlations)
+            scope = rows.filter(pl.col("position").is_in(list(c.positions)))
+        j = scope.select(
             pl.col(row_entity).alias(entity),
             "season",
             "week",
@@ -253,19 +258,31 @@ def test_timestamp_audit(fixture_ctx, fixture_build):
             if "depth_snapshot" in c.name:
                 assert (used[c.name] <= used["asof_ts"]).all(), c.name
 
-    # the depth snapshot used is the latest one at or before asof_ts for that team
+    # legacy weekly charts (the whole fixture): the chart used for week w is the
+    # team's latest chart labelled with an earlier calendar week (D-059, rule 1)
     pw = fixture_build["player_week"].filter(pl.col("meta__depth_snapshot_ts").is_not_null())
-    snaps = fixture_ctx.depth.select("team", "snapshot_ts").unique()
-    later = (
-        pw.select("team", "asof_ts", "meta__depth_snapshot_ts")
+    cal = fixture_ctx.calendar.select("season", "week", "cal_idx")
+    snaps = (
+        fixture_ctx.depth.select("team", "snapshot_ts", "season", "week")
+        .unique(subset=["team", "snapshot_ts"])
+        .join(cal, on=["season", "week"])
+        .select("team", "snapshot_ts", pl.col("cal_idx").alias("chart_idx"))
+    )
+    used = (
+        pw.select("team", "season", "week", "meta__depth_snapshot_ts")
         .unique()
-        .join(snaps, on="team")
-        .filter(
-            (pl.col("snapshot_ts") > pl.col("meta__depth_snapshot_ts"))
-            & (pl.col("snapshot_ts") <= pl.col("asof_ts"))
+        .join(cal, on=["season", "week"])
+        .join(
+            snaps.rename({"snapshot_ts": "meta__depth_snapshot_ts", "chart_idx": "used_idx"}),
+            on=["team", "meta__depth_snapshot_ts"],
         )
     )
-    assert later.height == 0
+    assert used.height > 0
+    assert (used["used_idx"] < used["cal_idx"]).all()
+    newer = used.join(snaps, on="team").filter(
+        (pl.col("chart_idx") > pl.col("used_idx")) & (pl.col("chart_idx") < pl.col("cal_idx"))
+    )
+    assert newer.height == 0
     exists = (
         pw.select("team", pl.col("meta__depth_snapshot_ts").alias("snapshot_ts"))
         .unique()
@@ -278,6 +295,49 @@ def test_timestamp_audit(fixture_ctx, fixture_build):
     inj = pw.filter(pl.col("meta__inj_info_ts").is_not_null())
     assert inj.height > 0
     assert (inj["meta__inj_info_ts"] < inj["cutoff_ts"]).all()
+
+
+def test_same_week_depth_sensitivity_differs_only_in_depth_columns(fixture_ctx, fixture_build):
+    """D-059: the labelled same-week variant changes the depth-derived columns only."""
+    from ffml.features.build import build_player_week
+    from ffml.features.targets import player_targets
+
+    primary = fixture_build["player_week"].sort(ROW_KEYS["player_week"])
+    same = build_player_week(fixture_ctx, player_targets(fixture_ctx), depth_variant="same_week")
+    same = same.sort(ROW_KEYS["player_week"])
+    assert same.columns == primary.columns
+    depth_cols = {
+        c.name
+        for c in columns("player_week")
+        if c.group == "depth"
+        or c.name
+        in (
+            "team__qb_change_flag",
+            "avail__depth_chart_present",
+            "meta__depth_snapshot_ts",
+            "meta__qb_depth_snapshot_ts",
+        )
+    }
+    rest = [c for c in primary.columns if c not in depth_cols]
+    assert_frame_equal(same.select(rest), primary.select(rest), check_exact=True)
+    assert not same.select("depth__rank").equals(primary.select("depth__rank"))
+    # same-week rows read the chart labelled with their own week where one exists
+    labels = fixture_ctx.depth.select(
+        "team",
+        pl.col("snapshot_ts").alias("meta__depth_snapshot_ts"),
+        pl.col("season").alias("cs"),
+        pl.col("week").alias("cw"),
+    ).unique()
+    lab = same.join(labels, on=["team", "meta__depth_snapshot_ts"])
+    own = fixture_ctx.depth.select("team", "season", "week").unique()
+    has_own = lab.join(own, on=["team", "season", "week"], how="semi")
+    assert has_own.height > 0
+    assert ((has_own["cs"] == has_own["season"]) & (has_own["cw"] == has_own["week"])).all()
+    # primary week 1 2023 rows read 2022's last chart; the same-week variant reads week 1's
+    w1 = primary.filter(pl.col("season") == 2023, pl.col("week") == 1).join(
+        labels, on=["team", "meta__depth_snapshot_ts"]
+    )
+    assert w1.height > 0 and (w1["cs"] == 2022).all()
 
 
 # --------------------------------------------------------------------------- #

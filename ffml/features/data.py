@@ -20,7 +20,7 @@ from pathlib import Path
 
 import polars as pl
 
-from ffml.features.spec import PARAMS
+from ffml.features.spec import KICK_BANDS, PARAMS
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ COLUMNS: dict[str, list[str] | None] = {
     ],
     "fact_depth_chart": [
         "snapshot_ts",
+        "snapshot_kind",
         "season",
         "week",
         "team",
@@ -267,9 +268,22 @@ def _prepare(table: str, df: pl.DataFrame) -> pl.DataFrame:
         df = df.filter(pl.col("pos_abb").is_in(list(DEPTH_POS_GROUP))).with_columns(
             pl.col("pos_abb").replace_strict(DEPTH_POS_GROUP, default=None).alias("pos_group")
         )
+    if table == "fact_depth_chart" and "snapshot_kind" not in df.columns:
+        # legacy weekly charts end with 2024 (D-037)
+        df = df.with_columns(
+            pl.when(pl.col("season") <= 2024)
+            .then(pl.lit("weekly"))
+            .otherwise(pl.lit("timestamped"))
+            .alias("snapshot_kind")
+        )
     if table == "fact_dst_game" and "forced_fumbles" not in df.columns:
         # added in D-055; older snapshots and fixtures lack it
         df = df.with_columns(pl.lit(None, dtype=pl.Int32).alias("forced_fumbles"))
+    if table == "fact_player_game":
+        # misses by distance were added with D-062; older snapshots lack them
+        missing = [f"fg_missed_{b}" for b in KICK_BANDS if f"fg_missed_{b}" not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None, dtype=pl.Int32).alias(c) for c in missing])
     return df
 
 

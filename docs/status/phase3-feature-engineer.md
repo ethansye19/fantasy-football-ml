@@ -182,3 +182,82 @@ Next:
   columns in FEATURES.md As built.
 - Evaluator (EV-3.2): rerun `tests/features/test_leakage.py`; the `meta__`
   columns support further timestamp audits on the full build.
+
+## Follow-up: feature version 0.2.0 (rulings D-059 to D-062)
+Date: 2026-11-02
+Scope: legacy depth-chart timing per the D-059 rejection, kicker distance
+features, a rebuild on the processed tables of commit 82870a9, and a version
+bump to 0.2.0.
+
+Done:
+- Depth timing (`ffml/features/context.py`). Legacy weekly charts
+  (2016-2024) labelled week w become usable at the next calendar week's
+  historical as-of time. Week w rows therefore read the week w-1 chart, and
+  week 1 reads the previous season's last chart. Timestamped charts (2025+)
+  are unchanged and always win over legacy ones. `depth_variant="same_week"`
+  is the labelled sensitivity: `build_player_week(..., depth_variant=...)`,
+  written by `run_features` as the separate dataset
+  `player_week_depth_same_week` so the primary dataset stays clean. It has the
+  same columns as player_week and is readable through `access.load_features`
+  and `access.training_frame`. The new column `depth__chart_age_days` is
+  `asof_ts` minus the chart's snapshot_ts.
+- Kickers (`ffml/features/player.py`), for each band 0_19, 20_29, 30_39,
+  40_49, 50_59, 60p:
+  - `opp__fg_att_<band>__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}`
+    (attempts per game);
+  - `opp__fg_att_share_<band>__{ew,car,ew_shrunk,car_shrunk}`;
+  - `eff__fg_pct_<band>__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}`.
+
+  All shrink toward K priors from earlier seasons (new PARAMS
+  `kicker_games` 8, `fg_band_share` 30, `fg_att_band` 10). Band attempts are
+  made plus missed in the band; blocked kicks have no distance. New targets
+  `y_fg_missed_<band>`. Team FG attempts per game were already present as
+  `team__field_goal_att__*`.
+- `FEATURE_VERSION = "0.2.0"`. Fixture regenerated (281 KB, now with
+  `snapshot_kind`); the pin is now `feature_manifest_0.2.0.json` (the 0.1.0
+  file was removed). Leakage test 5 checks the week w-1 rule, a new test
+  checks that the same-week variant differs only in depth-derived columns,
+  and the shift check now uses only each feature's positions.
+- Renames: none. No 0.1.0 column was removed. Changed values under existing
+  names, 2016-2024 only: `depth__*`, `team__qb_change_flag` and
+  `avail__depth_chart_present` now follow the week w-1 rule.
+
+Evidence:
+- Unit: `15 passed, 1 deselected in 1.99s`. Leakage: `14 passed in 5.60s`.
+  Slow: `1 passed, 29 deselected in 1.83s`. Whole repository with
+  `FFML_OFFLINE=1`: `278 passed, 2 skipped, 1 warning in 38.41s`.
+  `ruff check .`: clean.
+- `ffml features --seasons 2016-2026`: exit 0, 5.3 s wall (4.5 s of build)
+  on processed fact_player_game `20261102T205628Z` (98,415 rows):
+
+  | dataset | snapshot | rows | columns | features |
+  | --- | --- | ---: | ---: | ---: |
+  | player_week | 20261102T213907Z | 98,415 | 859 | 763 |
+  | team_week | 20261102T213908Z | 5,760 | 304 | 268 |
+  | dst_week | 20261102T213908Z | 5,760 | 366 | 336 |
+  | player_week_depth_same_week | 20261102T213909Z | 98,415 | 859 | 763 |
+
+  The timestamp audit found zero `meta__` times at or after `cutoff_ts` in
+  all four datasets.
+- Depth null shares, 2016 (all rows; played rows in parentheses):
+
+  | build | week 1 | week 2 |
+  | --- | --- | --- |
+  | primary `depth__rank` | 1.000 (1.000) | 0.165 (0.106) |
+  | primary `depth__starter_flag` | 1.000 | 0.000 |
+  | primary `depth__chart_age_days` | 1.000 | 0.000 |
+  | same_week `depth__rank` | 0.379 (0.095) | 0.165 (0.106) |
+
+  Week 1 2016 has no earlier chart in the data, so primary depth features are
+  null there by construction.
+- Primary median `depth__chart_age_days` is 8.96 days for 2016-2024 and 0.67
+  days for 2025 onward. Comparing the two variants: 0 differing depth cells
+  over 13,807 rows from 2025 on, and a different `depth__rank` in 10,099 of
+  84,608 rows for 2016-2024.
+- 2024 played K rows (565), null shares: `eff__fg_pct_40_49__ew_shrunk` 0,
+  `eff__fg_pct_50_59__ew` 0.055, `opp__fg_att_50_59__ew_shrunk` 0,
+  `opp__fg_att_share_40_49__ew` 0.018.
+
+Not done / blocked:
+- team_week and dst_week have no same-week depth sensitivity; their only
+  depth-derived column is `team__qb_change_flag`.

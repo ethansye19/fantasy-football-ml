@@ -216,7 +216,9 @@ def attach_defense(rows: pl.DataFrame, ctx: FeatureContext, by: str = "opponent"
     return df.rename({ts_col("tdf"): "meta__def_last_game_kickoff"})
 
 
-def qb_change_flag(rows: pl.DataFrame, ctx: FeatureContext, by: str = "team") -> pl.DataFrame:
+def qb_change_flag(
+    rows: pl.DataFrame, ctx: FeatureContext, by: str = "team", depth_variant: str = "primary"
+) -> pl.DataFrame:
     """``team__qb_change_flag``: depth QB1 at ``asof_ts`` vs the last game's top passer.
 
     The top passer is the team's player with the most pass attempts in its last
@@ -248,7 +250,7 @@ def qb_change_flag(rows: pl.DataFrame, ctx: FeatureContext, by: str = "team") ->
         check_sortedness=False,
     )
     pairs = base.select(pl.col(by).alias("team"), "asof_ts")
-    qb1 = qb1_at(ctx, pairs, "asof_ts").rename({"team": by})
+    qb1 = qb1_at(ctx, pairs, "asof_ts", depth_variant).rename({"team": by})
     last = last.join(qb1, on=[by, "asof_ts"], how="left")
     flag = (
         pl.when(pl.col("qb1_id").is_null() | pl.col("_top_passer").is_null())

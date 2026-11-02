@@ -21,6 +21,7 @@ import polars as pl
 from ffml.features.data import FeatureContext
 from ffml.features.spec import (
     FEATURE_DTYPE,
+    KICK_BANDS,
     PARAMS,
     SKILL,
     WINDOWS,
@@ -44,6 +45,7 @@ from ffml.features.windows import (
 )
 
 QB = ("QB",)
+RARE_BANDS = ("0_19", "60p")  # few attempts in any career: raw accuracy windows are mostly null
 RB = ("RB",)
 K = ("K",)
 RUSHERS = ("RB", "QB", "WR")
@@ -128,6 +130,31 @@ OPP_STATS: list[Stat] = [
     _vol("pass_att", "pass_att", QB),
     _vol("fg_att", "fg_att", K, windows=("l3", "l5", "ew", "std", "ps", "car")),
     _vol("pat_att", "pat_att", K, windows=("l5", "ew", "std", "ps")),
+    # kicker volume by distance band: attempts per game and share of banded attempts
+    *[
+        Stat(
+            f"fg_att_{b}",
+            num=f"fg_att_{b}",
+            den="_one",
+            windows=("ew", "std", "ps", "car"),
+            shrink=("ew", "std", "car"),
+            k="kicker_games",
+            positions=K,
+        )
+        for b in KICK_BANDS
+    ],
+    *[
+        Stat(
+            f"fg_att_share_{b}",
+            num=f"fg_att_{b}",
+            den="fg_att_banded",
+            windows=("ew", "car"),
+            shrink=("ew", "car"),
+            k="fg_band_share",
+            positions=K,
+        )
+        for b in KICK_BANDS
+    ],
     Stat("adot", "rec_air_yards", "targets", windows=E5, positions=SKILL),
     Stat(
         "designed_rush_rate",
@@ -167,6 +194,21 @@ EFF_STATS: list[Stat] = [
     _eff("exp_rush_td_per_carry", "rush_td_exp", "carries", "td", RUSHERS),
     _eff("fg_pct", "fg_made", "fg_att", "fg_att", K, n=True),
     _eff("pat_pct", "pat_made", "pat_att", "pat_att", K, n=True),
+    # kicker accuracy by distance band (made / (made + missed); blocks carry no distance)
+    *[
+        Stat(
+            f"fg_pct_{b}",
+            num=f"fg_made_{b}",
+            den=f"fg_att_{b}",
+            windows=("ew", "std", "car"),
+            shrink=("ew", "std", "car"),
+            k="fg_att_band",
+            n_windows=("car",),
+            positions=K,
+            sparse=b in RARE_BANDS,
+        )
+        for b in KICK_BANDS
+    ],
     Stat(
         "actual_minus_expected_rec_yds",
         "ame_rec_yds",
@@ -309,6 +351,13 @@ def player_events(ctx: FeatureContext) -> pl.DataFrame:
                 - pl.col("rush_td_exp")
             ).alias("ame_td"),
             pl.lit(1.0).alias("_one"),
+            *[
+                (pl.col(f"fg_made_{b}") + pl.col(f"fg_missed_{b}")).alias(f"fg_att_{b}")
+                for b in KICK_BANDS
+            ],
+            pl.sum_horizontal(
+                [pl.col(f"fg_made_{b}") + pl.col(f"fg_missed_{b}") for b in KICK_BANDS]
+            ).alias("fg_att_banded"),
             (pl.col("team") != pl.col("team").shift(1).over("player_id"))
             .fill_null(True)
             .cast(pl.Int32)

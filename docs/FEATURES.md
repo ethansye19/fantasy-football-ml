@@ -159,7 +159,15 @@ def_int_rate, def_points_allowed_pg, return TD base rate.
 6. **Schema fingerprint.** Feature column names, order, and dtypes match the
    pinned `features.json` for the model version.
 
-## As built (feature version 0.1.0, FE-3.1 and FE-3.2, 2026-11-02)
+## As built (feature version 0.2.0, FE-3.1 and FE-3.2, 2026-11-02)
+
+Version 0.2.0 differs from 0.1.0 as follows: legacy depth charts follow the
+week w-1 rule (D-059), with the same-week reading kept as a labelled
+sensitivity dataset; `depth__chart_age_days` is added; kicker accuracy and
+volume features by distance band are added along with `y_fg_missed_<band>`
+targets; DST forced fumbles are added (D-055). It is built on the
+processed tables of commit 82870a9 (D-062). No 0.1.0 column was renamed or
+removed.
 
 Code lives in `ffml/features/`: `spec.py` (version, PARAMS, naming, stat
 specs), `windows.py` (vectorised window helpers), `data.py` (inputs and week
@@ -171,9 +179,10 @@ dtypes and kinds, `params` and the processed snapshot ids used as `inputs`.
 
 | dataset | row | rows 2016-2026 | columns | model features |
 | --- | --- | ---: | ---: | ---: |
-| player_week | every fact_player_game row (REG and POST, roster-only rows included) | 98,530 | 744 | 654 |
+| player_week | every fact_player_game row (REG and POST, roster-only rows included) | 98,415 | 859 | 763 |
 | team_week | every fact_team_game row | 5,760 | 304 | 268 |
 | dst_week | every fact_dst_game row | 5,760 | 366 | 336 |
+| player_week_depth_same_week | sensitivity (D-059): player_week with legacy charts read for their own week | 98,415 | 859 | 763 |
 
 Model code reads features only through `ffml.features.access`:
 `load_features(dataset, seasons, purpose)` calls
@@ -197,11 +206,25 @@ player_week). `feature_names(dataset, config)` lists the inputs:
   and Thursday and Sunday rows of one week share one information set.
 - `asof_ts = cutoff_ts - 1 hour` for historical rows. `future_targets()`
   sets it to the call time. Depth charts use the row team's latest snapshot
-  with `snapshot_ts <= asof_ts`. Legacy 2016-2024 charts carry the D-037
-  synthetic time (first kickoff of the week minus 48 hours), so week w's
-  legacy chart is the one used for week w rows. Ground rule 1 above ("use the
-  week w-1 version where no timestamp exists") is therefore not what runs for
-  those seasons; the status note proposes a decision.
+  with `snapshot_ts <= asof_ts` for timestamped charts (2025 onward).
+  Legacy weekly charts (2016-2024, `snapshot_kind = "weekly"`) carry only the
+  D-037 synthetic time. In the primary configuration they follow ground
+  rule 1 (D-059): the chart labelled week w can first be used at the next
+  calendar week's as-of time. So week w rows read the week w-1 chart, and
+  week 1 reads the previous season's last available chart. A timestamped
+  chart, when one exists before `asof_ts`, always wins over a legacy one.
+  2016 week 1 has no earlier chart in the data, so its depth features are
+  null.
+- The labelled sensitivity `depth_variant="same_week"`
+  (`build_player_week(ctx, targets, depth_variant="same_week")`, written by
+  `run_features` as the separate dataset `player_week_depth_same_week`)
+  reads the legacy chart labelled with the row's own week. It has the same
+  columns as player_week. Only the depth-derived columns differ: `depth__*`,
+  `team__qb_change_flag`, `avail__depth_chart_present`,
+  `meta__depth_snapshot_ts` and `meta__qb_depth_snapshot_ts`. From 2025 on,
+  the two datasets are identical. team_week and dst_week are built in the
+  primary configuration only; their one depth-derived column is
+  `team__qb_change_flag`.
 - Lines are the schedule snapshot's closing lines (D-008). `ctx__temp` and
   `ctx__wind` are actual game values and have kind `sensitivity`.
 - Same-week injury designation, practice status, roster status, depth-chart
@@ -250,8 +273,19 @@ player_week). `feature_names(dataset, config)` lists the inputs:
 - `depth__rank` = 1 + same-group teammates listed at a better rank. This puts
   legacy charts (several WRs at rank 1) and 2025+ charts (WRs numbered 1..n)
   on one scale. `depth__starter_flag` = rank within `n_starters` (WR 3,
-  otherwise 1). `depth__rank_change` compares with the chart at the previous
-  week's historical as-of time.
+  otherwise 1). `depth__rank_change` compares with the chart selected at the
+  previous week's historical as-of time. `depth__chart_age_days` =
+  `asof_ts` minus the chart's `snapshot_ts`. For legacy charts that stamp is
+  synthetic: the primary median is 8.96 days in 2016-2024, against 0.67 days
+  in 2025 onward.
+- Kicker distance bands (`0_19, 20_29, 30_39, 40_49, 50_59, 60p`): band
+  attempts are made plus missed in the band, since blocked kicks carry no
+  distance. `opp__fg_att_<band>` is attempts per game (shrunk with
+  `kicker_games`), `opp__fg_att_share_<band>` is the share of banded attempts
+  (shrunk with `fg_band_share`), and `eff__fg_pct_<band>` is accuracy
+  (shrunk with `fg_att_band`, with `car_n` career attempts). All shrink
+  toward K priors from earlier seasons. Team field-goal attempts per game are
+  `team__field_goal_att__{l3,l5,ew,std,ps}`, joined to every K row.
 - `team__qb_change_flag` = depth-chart QB1 at `asof_ts` differs from the
   team's top passer in its last game before the cutoff.
 - Targets are Float64. They are null for future rows and for rows whose game
@@ -260,7 +294,7 @@ player_week). `feature_names(dataset, config)` lists the inputs:
 ### Leakage suite as built (tests/features/test_leakage.py)
 
 The suite runs offline on `tests/fixtures/features/`: KC and DET for 2022 and
-2023 weeks 1-6, with every team for the team-game and DST tables (278 KB of
+2023 weeks 1-6, with every team for the team-game and DST tables (281 KB of
 Parquet, regenerated by `make_fixture.py`).
 
 1. Truncation equality: a build from data truncated at 2023 weeks 2, 4 and 6
@@ -271,27 +305,30 @@ Parquet, regenerated by `make_fixture.py`).
 3. Outcome scramble: permuting all stat columns of 2023 week 1 (the Thursday
    opener) and week 4 in the player, team and DST tables leaves every
    non-target column of those weeks unchanged, while the targets do change.
-4. Shift check: for every rolling player (opp, eff) and team (team, def)
-   feature with at least 30 rows, the correlation with the same-game raw
-   statistic exceeds the correlation with the previous game's statistic by at
-   most 0.10. 264 player, 100 team and 101 def columns are checked; the
-   largest observed excess is 0.043. A positive control (a same-game share)
-   is flagged.
+4. Shift check: each rolling player (opp, eff) feature is checked on rows of
+   the positions it is meant for, and each team (team, def) feature on all
+   team rows, wherever there are at least 30 rows. The correlation with the
+   same-game raw statistic may exceed the correlation with the previous
+   game's statistic by at most 0.10. 288 player, 100 team and 101 def columns
+   are checked, and the largest observed excess is 0.043. A positive control
+   (a same-game share) is flagged.
 5. Timestamp audit: `cutoff_ts <= kickoff_utc` and `asof_ts = cutoff_ts - 1h`.
    Every `meta__` time (last game used per entity, depth snapshots, injury
    report time) is before `cutoff_ts`, depth snapshots are at or before
-   `asof_ts`, and each depth snapshot used is the team's latest at or before
-   `asof_ts`.
+   `asof_ts`, and for the legacy charts of the fixture each chart used for
+   week w is the team's latest chart labelled with an earlier calendar week
+   (D-059). A companion test checks that the same-week sensitivity differs
+   from the primary build only in the depth-derived columns.
 6. Schema fingerprint: `fingerprint_json()` equals the pinned
-   `tests/fixtures/features/feature_manifest_0.1.0.json`, and every built
+   `tests/fixtures/features/feature_manifest_0.2.0.json`, and every built
    frame matches the manifest's names, order and dtypes.
 
 ### Known gaps
 
-- Kicker accuracy by distance cannot be computed: fact_player_game has field
-  goals made per distance band but attempts and misses only in total. The
-  build has `eff__fg_pct` overall plus `eff__fg_made_share_40_49` and
-  `eff__fg_made_share_50p`.
+- Kicker band attempts exclude blocked kicks (201 of 11,208 attempts in
+  2016-2026), which have no distance in the source. Raw accuracy windows for
+  the rare `0_19` and `60p` bands are mostly null and marked sparse; their
+  shrunk variants are always set.
 - Not built: NGS `pct_8_plus_defenders` and NGS CPOE (the processed table has
   neither; pbp `cpoe` is used), defensive pressure rate (no source column),
   FTN features (off by D-009).
@@ -301,8 +338,6 @@ Parquet, regenerated by `make_fixture.py`).
   weeks in which the player's team did not play.
 - Shrinkage pseudo-counts are documented defaults to be tuned on the
   validation seasons.
-- 47 roster-only fact_player_game rows (2016: 42, 2022: 1, 2024: 4) have no
-  dim_player row, so their `attr__` columns are null.
 
 ### Feature names by group (generated from `feature_manifest()`)
 
@@ -311,7 +346,7 @@ Brace lists expand to one column per entry: `team__plays__{l3,l5}` means
 construction for many rows (NGS coverage, previous-team carry-over, first
 games) and are exempt from the 60 percent null check in the integration test.
 
-#### player_week: 744 columns (13 key, 6 meta, 654 feature, 2 sensitivity, 9 avail, 60 target)
+#### player_week: 859 columns (13 key, 6 meta, 763 feature, 2 sensitivity, 9 avail, 66 target)
 
 Keys: `player_id`, `season`, `week`, `game_id`, `team`, `opponent`, `position`, `game_type`, `home`, `kickoff_utc`, `cutoff_ts`, `asof_ts`, `feature_version`.
 Meta (audit only): `meta__last_game_kickoff`, `meta__team_last_game_kickoff`, `meta__def_last_game_kickoff`, `meta__qb_depth_snapshot_ts`, `meta__depth_snapshot_ts`, `meta__inj_info_ts`.
@@ -399,7 +434,7 @@ def (defense on the field, C and DST), 124 columns:
 | `def__qb_pass_yds_allowed__{l3,l5,ew,std,ps}` | all | source allowed_qb_pass_yds |
 | `def__rb_rush_yds_allowed__{l3,l5,ew,std,ps}` | all | source allowed_rb_rush_yds |
 
-opp (player opportunity, D and K volume), 138 columns:
+opp (player opportunity, D and K volume), 204 columns:
 
 | columns | positions | notes |
 | --- | --- | --- |
@@ -422,6 +457,18 @@ opp (player opportunity, D and K volume), 138 columns:
 | `opp__pass_att__{l1,l3,l5,ew,std,ps,car}` | QB | source pass_att |
 | `opp__fg_att__{l3,l5,ew,std,ps,car}` | K | source fg_att |
 | `opp__pat_att__{l5,ew,std,ps}` | K | source pat_att |
+| `opp__fg_att_0_19__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_0_19 / _one |
+| `opp__fg_att_20_29__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_20_29 / _one |
+| `opp__fg_att_30_39__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_30_39 / _one |
+| `opp__fg_att_40_49__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_40_49 / _one |
+| `opp__fg_att_50_59__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_50_59 / _one |
+| `opp__fg_att_60p__{ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | K | source fg_att_60p / _one |
+| `opp__fg_att_share_0_19__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_0_19 / fg_att_banded |
+| `opp__fg_att_share_20_29__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_20_29 / fg_att_banded |
+| `opp__fg_att_share_30_39__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_30_39 / fg_att_banded |
+| `opp__fg_att_share_40_49__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_40_49 / fg_att_banded |
+| `opp__fg_att_share_50_59__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_50_59 / fg_att_banded |
+| `opp__fg_att_share_60p__{ew,car,ew_shrunk,car_shrunk}` | K | source fg_att_60p / fg_att_banded |
 | `opp__adot__{l5,ew,std,ps,car}` | RB,WR,TE | source rec_air_yards / targets |
 | `opp__designed_rush_rate__{ew,std,ps,car}` | QB | source designed_rush / designed_rush_den |
 | `opp__scramble_rate__{ew,std,ps,car}` | QB | source scrambles / dropbacks |
@@ -430,7 +477,7 @@ opp (player opportunity, D and K volume), 138 columns:
 | `opp__prev_team_rush_share__ew` | all | sparse; EW share with the previous team (null without a team change in the data) |
 | `opp__prev_team_snap_share__ew` | all | sparse; EW share with the previous team (null without a team change in the data) |
 
-eff (player efficiency, E and K accuracy), 226 columns:
+eff (player efficiency, E and K accuracy), 268 columns:
 
 | columns | positions | notes |
 | --- | --- | --- |
@@ -457,6 +504,12 @@ eff (player efficiency, E and K accuracy), 226 columns:
 | `eff__exp_rush_td_per_carry__{l5,ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk}` | RB,QB,WR | source rush_td_exp / carries |
 | `eff__fg_pct__{l5,ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk,std_n,car_n}` | K | source fg_made / fg_att |
 | `eff__pat_pct__{l5,ew,std,ps,car,ew_shrunk,std_shrunk,car_shrunk,std_n,car_n}` | K | source pat_made / pat_att |
+| `eff__fg_pct_0_19__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_0_19 / fg_att_0_19; sparse |
+| `eff__fg_pct_20_29__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_20_29 / fg_att_20_29 |
+| `eff__fg_pct_30_39__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_30_39 / fg_att_30_39 |
+| `eff__fg_pct_40_49__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_40_49 / fg_att_40_49 |
+| `eff__fg_pct_50_59__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_50_59 / fg_att_50_59 |
+| `eff__fg_pct_60p__{ew,std,car,ew_shrunk,std_shrunk,car_shrunk,car_n}` | K | source fg_made_60p / fg_att_60p; sparse |
 | `eff__actual_minus_expected_rec_yds__{ew,std,car}` | RB,WR,TE | source ame_rec_yds |
 | `eff__actual_minus_expected_td__{ew,std,car}` | QB,RB,WR,TE | source ame_td |
 | `eff__fg_made_share_40_49__{ew,std,car}` | K | source fg_made_40_49 / fg_made |
@@ -490,7 +543,7 @@ attr (attributes, sample sizes, team change, lagged injury, F), 17 columns:
 | `attr__inj_weeks_since_out` | all | capped at 52 |
 | `attr__games_missed__l5` | all | team games this season before cutoff, of the last 5 |
 
-depth (depth chart at asof_ts), 5 columns:
+depth (depth chart at asof_ts), 6 columns:
 
 | columns | positions | notes |
 | --- | --- | --- |
@@ -499,6 +552,7 @@ depth (depth chart at asof_ts), 5 columns:
 | `depth__starter_flag` | all |  |
 | `depth__rank_change` | all | sparse; null in week 1 and when unranked in either week |
 | `depth__same_pos_count` | all |  |
+| `depth__chart_age_days` | all | asof_ts minus the chart's snapshot_ts (legacy charts: synthetic time, D-037) |
 
 avail (same-week; not primary features), 9 columns:
 
@@ -514,7 +568,7 @@ avail (same-week; not primary features), 9 columns:
 | `avail__teammates_out_target_share_ew` | all | same-week injury report (Out or Doubtful teammates) |
 | `avail__teammates_out_rush_share_ew` | all | same-week injury report (Out or Doubtful teammates) |
 
-Targets (60): `y_played`, `y_offense_snaps`, `y_offense_pct`, `y_fantasy_points_ppr_ref`, `y_fantasy_points_std_ref`, `y_pass_att`, `y_completions`, `y_pass_yds`, `y_pass_td`, `y_interceptions`, `y_sacks`, `y_sack_yards`, `y_pass_air_yards`, `y_dropbacks`, `y_carries`, `y_rush_yds`, `y_rush_td`, `y_rush_first_downs`, `y_designed_rush`, `y_scrambles`, `y_targets`, `y_receptions`, `y_rec_yds`, `y_rec_td`, `y_rec_air_yards`, `y_rec_yac`, `y_rz_targets`, `y_rz_carries`, `y_gl_carries`, `y_ez_targets`, `y_fg_att`, `y_fg_made`, `y_fg_made_0_19`, `y_fg_made_20_29`, `y_fg_made_30_39`, `y_fg_made_40_49`, `y_fg_made_50_59`, `y_fg_made_60p`, `y_fg_made_0_39`, `y_fg_made_50p`, `y_fg_missed`, `y_fg_blocked`, `y_pat_att`, `y_pat_made`, `y_fumbles_lost`, `y_two_pt_conversions`, `y_return_tds`, `y_target_share`, `y_carry_share`, `y_gl_carry_share`, `y_rz_target_share`, `y_pass_td_share`, `y_rush_td_share`, `y_dropback_share`, `y_catch_rate`, `y_yards_per_target`, `y_yards_per_carry`, `y_yards_per_attempt`, `y_completion_rate`, `y_int_per_attempt`.
+Targets (66): `y_played`, `y_offense_snaps`, `y_offense_pct`, `y_fantasy_points_ppr_ref`, `y_fantasy_points_std_ref`, `y_pass_att`, `y_completions`, `y_pass_yds`, `y_pass_td`, `y_interceptions`, `y_sacks`, `y_sack_yards`, `y_pass_air_yards`, `y_dropbacks`, `y_carries`, `y_rush_yds`, `y_rush_td`, `y_rush_first_downs`, `y_designed_rush`, `y_scrambles`, `y_targets`, `y_receptions`, `y_rec_yds`, `y_rec_td`, `y_rec_air_yards`, `y_rec_yac`, `y_rz_targets`, `y_rz_carries`, `y_gl_carries`, `y_ez_targets`, `y_fg_att`, `y_fg_made`, `y_fg_made_0_19`, `y_fg_made_20_29`, `y_fg_made_30_39`, `y_fg_made_40_49`, `y_fg_made_50_59`, `y_fg_made_60p`, `y_fg_made_0_39`, `y_fg_made_50p`, `y_fg_missed`, `y_fg_missed_0_19`, `y_fg_missed_20_29`, `y_fg_missed_30_39`, `y_fg_missed_40_49`, `y_fg_missed_50_59`, `y_fg_missed_60p`, `y_fg_blocked`, `y_pat_att`, `y_pat_made`, `y_fumbles_lost`, `y_two_pt_conversions`, `y_return_tds`, `y_target_share`, `y_carry_share`, `y_gl_carry_share`, `y_rz_target_share`, `y_pass_td_share`, `y_rush_td_share`, `y_dropback_share`, `y_catch_rate`, `y_yards_per_target`, `y_yards_per_carry`, `y_yards_per_attempt`, `y_completion_rate`, `y_int_per_attempt`.
 
 #### team_week: 304 columns (11 key, 3 meta, 268 feature, 2 sensitivity, 3 avail, 17 target)
 
@@ -596,7 +650,10 @@ PARAMS (`ffml/features/spec.py`):
     "def_dropbacks": 120,
     "def_td": 250,
     "def_rz_trips": 20,
-    "dst_games": 16
+    "dst_games": 16,
+    "fg_att_band": 10,
+    "fg_band_share": 30,
+    "kicker_games": 8
   },
   "short_week_max_rest": 5,
   "off_bye_min_rest": 13,

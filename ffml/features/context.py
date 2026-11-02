@@ -21,7 +21,7 @@ from __future__ import annotations
 import polars as pl
 
 from ffml.features.data import FeatureContext
-from ffml.features.spec import FEATURE_DTYPE, PARAMS, Col, point_col
+from ffml.features.spec import DEPTH_VARIANTS, FEATURE_DTYPE, PARAMS, Col, point_col
 
 # --------------------------------------------------------------------------- #
 # A. Game context
@@ -148,6 +148,7 @@ DEPTH_FEATURES: list[str] = [
     "starter_flag",
     "rank_change",
     "same_pos_count",
+    "chart_age_days",
 ]
 
 
@@ -156,28 +157,90 @@ def depth_cols() -> list[Col]:
     cols[DEPTH_FEATURES.index("rank_change")] = point_col(
         "depth", "rank_change", sparse=True, note="null in week 1 and when unranked in either week"
     )
+    cols[DEPTH_FEATURES.index("chart_age_days")] = point_col(
+        "depth",
+        "chart_age_days",
+        note="asof_ts minus the chart's snapshot_ts (legacy charts: synthetic time, D-037)",
+    )
     return cols
 
 
-def select_snapshots(ctx: FeatureContext, pairs: pl.DataFrame, asof_col: str) -> pl.DataFrame:
-    """For each ``(team, asof)`` pair the latest depth snapshot with ``snapshot_ts <= asof``."""
-    snaps = (
-        ctx.depth.select("team", "snapshot_ts")
-        .unique()
-        .with_columns(pl.col("snapshot_ts").alias("_snap_key"))
-        .sort("_snap_key")
+def _snapshot_index(ctx: FeatureContext, variant: str) -> pl.DataFrame:
+    """Distinct team snapshots with the time from which each may be used.
+
+    Timestamped charts (2025+) are usable from their ``snapshot_ts``. Legacy
+    weekly charts (2016-2024) carry only a synthetic time (D-037). Under the
+    ``primary`` variant (D-059, FEATURES.md ground rule 1) the chart labelled
+    week w becomes usable at the next calendar week's historical as-of time,
+    so week w rows read the week w-1 chart and week 1 reads the previous
+    season's last chart. Under ``same_week`` it is usable from its synthetic
+    ``snapshot_ts``, i.e. for its own week.
+    """
+    if variant not in DEPTH_VARIANTS:
+        raise ValueError(f"unknown depth variant {variant!r}; expected one of {DEPTH_VARIANTS}")
+    key = f"depth_index_{variant}"
+    if key in ctx.cache:
+        return ctx.cache[key]
+    snaps = ctx.depth.select("team", "snapshot_ts", "snapshot_kind", "season", "week").unique(
+        subset=["team", "snapshot_ts"], keep="first", maintain_order=True
     )
-    left = pairs.select("team", asof_col).unique().drop_nulls().sort(asof_col)
-    out = left.join_asof(
-        snaps,
-        left_on=asof_col,
-        right_on="_snap_key",
-        by="team",
-        strategy="backward",
-        allow_exact_matches=True,
-        check_sortedness=False,
+    legacy = snaps.filter(pl.col("snapshot_kind") == "weekly")
+    stamped = snaps.filter(pl.col("snapshot_kind") != "weekly").with_columns(
+        pl.col("snapshot_ts").alias("_avail_ts")
     )
-    return out.select("team", asof_col, pl.col("snapshot_ts").alias("depth_snapshot_ts"))
+    if variant == "primary":
+        cal = ctx.calendar.select("season", "week", "cal_idx")
+        nxt = ctx.calendar.select(
+            (pl.col("cal_idx") - 1).alias("cal_idx"), pl.col("asof_hist_ts").alias("_avail_ts")
+        )
+        legacy = (
+            legacy.join(cal, on=["season", "week"], how="left")
+            .join(nxt, on="cal_idx", how="left")
+            .drop("cal_idx")
+        )
+    else:
+        legacy = legacy.with_columns(pl.col("snapshot_ts").alias("_avail_ts"))
+    out = pl.concat([stamped, legacy], how="vertical_relaxed").select(
+        "team", "snapshot_ts", "snapshot_kind", "_avail_ts"
+    )
+    ctx.cache[key] = out
+    return out
+
+
+def select_snapshots(
+    ctx: FeatureContext, pairs: pl.DataFrame, asof_col: str, variant: str = "primary"
+) -> pl.DataFrame:
+    """For each ``(team, asof)`` pair the depth chart to use.
+
+    The latest timestamped snapshot with ``snapshot_ts <= asof`` when one
+    exists, otherwise the latest legacy chart usable at ``asof`` under
+    ``variant`` (see :func:`_snapshot_index`).
+    """
+    idx = _snapshot_index(ctx, variant)
+    out = pairs.select("team", asof_col).unique().drop_nulls()
+    for legacy, tag in ((False, "_st"), (True, "_lg")):
+        right = (
+            idx.filter((pl.col("snapshot_kind") == "weekly") == legacy)
+            .select(
+                "team",
+                pl.col("snapshot_ts").alias(f"{tag}_snap"),
+                pl.col("_avail_ts").alias(f"{tag}_key"),
+            )
+            .drop_nulls()
+            .sort(f"{tag}_key")
+        )
+        out = out.sort(asof_col).join_asof(
+            right,
+            left_on=asof_col,
+            right_on=f"{tag}_key",
+            by="team",
+            strategy="backward",
+            allow_exact_matches=True,
+            check_sortedness=False,
+        )
+    return out.select(
+        "team", asof_col, pl.coalesce("_st_snap", "_lg_snap").alias("depth_snapshot_ts")
+    )
 
 
 def depth_ranks(ctx: FeatureContext, selected: pl.DataFrame) -> pl.DataFrame:
@@ -203,9 +266,11 @@ def depth_ranks(ctx: FeatureContext, selected: pl.DataFrame) -> pl.DataFrame:
     ).rename({"snapshot_ts": "depth_snapshot_ts"})
 
 
-def qb1_at(ctx: FeatureContext, pairs: pl.DataFrame, asof_col: str) -> pl.DataFrame:
+def qb1_at(
+    ctx: FeatureContext, pairs: pl.DataFrame, asof_col: str, variant: str = "primary"
+) -> pl.DataFrame:
     """Depth-chart QB1 (lowest player_id among rank-1 QBs) per ``(team, asof)``."""
-    sel = select_snapshots(ctx, pairs, asof_col)
+    sel = select_snapshots(ctx, pairs, asof_col, variant)
     ranks = depth_ranks(ctx, sel).filter(pl.col("pos_group") == "QB", pl.col("depth_rank") == 1)
     qb1 = (
         ranks.sort("player_id")
@@ -217,9 +282,11 @@ def qb1_at(ctx: FeatureContext, pairs: pl.DataFrame, asof_col: str) -> pl.DataFr
     )
 
 
-def _rank_lookup(ctx: FeatureContext, rows: pl.DataFrame, asof_col: str) -> pl.DataFrame:
+def _rank_lookup(
+    ctx: FeatureContext, rows: pl.DataFrame, asof_col: str, variant: str
+) -> pl.DataFrame:
     """Per row (``_rid``): selected snapshot, rank in the player's position group, presence."""
-    sel = select_snapshots(ctx, rows, asof_col)
+    sel = select_snapshots(ctx, rows, asof_col, variant)
     ranks = depth_ranks(ctx, sel)
     present = (
         ranks.select("team", "depth_snapshot_ts", "player_id")
@@ -255,15 +322,18 @@ def _rank_lookup(ctx: FeatureContext, rows: pl.DataFrame, asof_col: str) -> pl.D
     )
 
 
-def depth_features(rows: pl.DataFrame, ctx: FeatureContext) -> pl.DataFrame:
+def depth_features(
+    rows: pl.DataFrame, ctx: FeatureContext, variant: str = "primary"
+) -> pl.DataFrame:
     """Add ``depth__`` columns, ``avail__depth_chart_present`` and ``meta__depth_snapshot_ts``.
 
     ``rows`` needs ``_rid, team, player_id, position, season, week, asof_ts``.
     ``depth__rank_change`` compares with the chart selected at the previous
     week's historical as-of time (same season; positive means moved down).
+    ``variant`` selects the legacy-chart timing (D-059).
     """
     n_start = PARAMS["n_starters"]
-    now = _rank_lookup(ctx, rows, "asof_ts")
+    now = _rank_lookup(ctx, rows, "asof_ts", variant)
     cal = ctx.calendar.select("season", "week", "asof_hist_ts").sort("season", "week")
     prev_cal = cal.with_columns(
         pl.col("asof_hist_ts").shift(1).over("season").alias("_prev_asof")
@@ -271,7 +341,7 @@ def depth_features(rows: pl.DataFrame, ctx: FeatureContext) -> pl.DataFrame:
     prev_rows = rows.select("_rid", "team", "player_id", "position", "season", "week").join(
         prev_cal, on=["season", "week"], how="left"
     )
-    prev = _rank_lookup(ctx, prev_rows, "_prev_asof").select(
+    prev = _rank_lookup(ctx, prev_rows, "_prev_asof", variant).select(
         "_rid", pl.col("depth_rank").alias("_prev_rank")
     )
     starters = pl.col("position").replace_strict(n_start, default=1, return_dtype=pl.Int32)
@@ -286,6 +356,9 @@ def depth_features(rows: pl.DataFrame, ctx: FeatureContext) -> pl.DataFrame:
         .alias("depth__starter_flag"),
         (rank - pl.col("_prev_rank").cast(pl.Float64)).alias("depth__rank_change"),
         pl.col("same_pos_count").cast(pl.Float64).alias("depth__same_pos_count"),
+        ((pl.col("asof_ts") - pl.col("depth_snapshot_ts")).dt.total_seconds() / 86400.0).alias(
+            "depth__chart_age_days"
+        ),
         pl.col("_present").alias("avail__depth_chart_present"),
         pl.col("depth_snapshot_ts").alias("meta__depth_snapshot_ts"),
     )

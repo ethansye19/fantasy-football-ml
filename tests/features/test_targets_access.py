@@ -12,6 +12,7 @@ from ffml.data.store import SnapshotStore
 from ffml.features.access import load_features, training_frame
 from ffml.features.build import build_player_week, build_team_week, run_features
 from ffml.features.manifest import columns, feature_names
+from ffml.features.spec import FEATURE_VERSION
 from ffml.features.targets import PLAYER_KEYS, TARGET_NAMES, TIME_COLS, future_targets
 from ffml.holdout import HoldoutLockedError
 
@@ -124,9 +125,15 @@ def test_access_guard_and_training_frame(tmp_settings, fixture_ctx, monkeypatch)
 
     store = SnapshotStore(tmp_settings.features_dir)
     ids = run_features([2022, 2023], ctx=fixture_ctx, store=store)
-    assert set(ids) == {"player_week", "team_week", "dst_week"}
+    assert set(ids) == {"player_week", "team_week", "dst_week", "player_week_depth_same_week"}
+    assert (
+        store.read_manifest("player_week_depth_same_week")["extra"]["depth_variant"] == "same_week"
+    )
+    assert store.read_manifest("player_week")["extra"]["depth_variant"] == "primary"
+    sens = training_frame("player_week_depth_same_week", [2023], "unit_test")
+    assert sens.columns == training_frame("player_week", [2023], "unit_test").columns
     manifest = store.read_manifest("player_week")
-    assert manifest["extra"]["feature_version"] == "0.1.0"
+    assert manifest["extra"]["feature_version"] == FEATURE_VERSION
     assert manifest["extra"]["inputs"]["fact_player_game"] == "fixture"
     assert manifest["seasons"] == [2022, 2023]
 

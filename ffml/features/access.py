@@ -12,7 +12,7 @@ from collections.abc import Iterable
 import polars as pl
 
 from ffml.features.manifest import columns, feature_names
-from ffml.features.spec import DATASETS
+from ffml.features.spec import DATASETS, SENSITIVITY_DATASETS
 from ffml.holdout import assert_seasons_allowed
 
 
@@ -32,7 +32,7 @@ def load_features(
     snapshot_id: str | None = None,
 ) -> pl.DataFrame:
     """Read ``dataset`` rows for ``seasons`` after the holdout guard has approved them."""
-    if dataset not in DATASETS:
+    if dataset not in DATASETS and dataset not in SENSITIVITY_DATASETS:
         raise ValueError(f"unknown feature dataset {dataset!r}; expected one of {DATASETS}")
     wanted = sorted({int(s) for s in seasons})
     if not wanted:
@@ -61,8 +61,8 @@ def training_frame(
     if regular_season_only:
         df = df.filter(pl.col("game_type") == "REG")
     if played_only is None:
-        played_only = dataset == "player_week"
-    if played_only and dataset == "player_week":
+        played_only = SENSITIVITY_DATASETS.get(dataset, dataset) == "player_week"
+    if played_only and SENSITIVITY_DATASETS.get(dataset, dataset) == "player_week":
         df = df.filter(pl.col("y_played") == 1.0)
     inputs = set(feature_names(dataset, config))
     keep = [c.name for c in columns(dataset) if c.kind in ("key", "target") or c.name in inputs]

@@ -33,7 +33,7 @@ from ffml.features.data import FeatureContext
 from ffml.features.dst import attach_dst
 from ffml.features.manifest import DTYPES, columns
 from ffml.features.player import attach_attributes, attach_player_windows, team_out, teammates_out
-from ffml.features.spec import FEATURE_VERSION, PARAMS
+from ffml.features.spec import DEPTH_VARIANTS, FEATURE_VERSION, PARAMS, SENSITIVITY_DATASETS
 from ffml.features.targets import KEYS, TARGET_NAMES, TIME_COLS, historical_targets
 from ffml.features.team import attach_defense, attach_offense, qb_change_flag
 
@@ -96,18 +96,29 @@ def _run_pieces(
     return pieces
 
 
-def build_player_week(ctx: FeatureContext, targets: pl.DataFrame) -> pl.DataFrame:
-    """Player-week features for the rows of ``targets`` (historical or future)."""
+def build_player_week(
+    ctx: FeatureContext, targets: pl.DataFrame, depth_variant: str = "primary"
+) -> pl.DataFrame:
+    """Player-week features for the rows of ``targets`` (historical or future).
+
+    ``depth_variant="same_week"`` builds the labelled sensitivity of D-059: legacy
+    2016-2024 depth charts are read for their own week instead of the previous
+    week. Only the depth-derived columns differ (``depth__*``,
+    ``team__qb_change_flag``, ``avail__depth_chart_present`` and the two depth
+    ``meta__`` times); run_features writes it as ``player_week_depth_same_week``.
+    """
+    if depth_variant not in DEPTH_VARIANTS:
+        raise ValueError(f"unknown depth variant {depth_variant!r}")
     base = _base(targets, "player_week")
     steps: list[tuple[str, Piece]] = [
         ("context", game_context),
         ("team", lambda b, c: attach_offense(b, c, by="team")),
         ("def", lambda b, c: attach_defense(b, c, by="opponent")),
-        ("qb_change", lambda b, c: qb_change_flag(b, c, by="team")),
+        ("qb_change", lambda b, c: qb_change_flag(b, c, by="team", depth_variant=depth_variant)),
         ("player_windows", attach_player_windows),
         ("attributes", attach_attributes),
         ("injury_history", injury_history),
-        ("depth", depth_features),
+        ("depth", lambda b, c: depth_features(b, c, depth_variant)),
         ("avail", avail_columns),
         ("teammates_out", teammates_out),
     ]
@@ -157,7 +168,8 @@ def build_all(ctx: FeatureContext, seasons: list[int] | None = None) -> dict[str
 def run_features(
     seasons: list[int], *, ctx: FeatureContext | None = None, store=None
 ) -> dict[str, str]:
-    """Build and write ``player_week``, ``team_week`` and ``dst_week`` for ``seasons``.
+    """Build and write ``player_week``, ``team_week``, ``dst_week`` and the labelled
+    sensitivity ``player_week_depth_same_week`` (D-059) for ``seasons``.
 
     Returns the new snapshot id per dataset.
     """
@@ -171,9 +183,23 @@ def run_features(
     store = store or SnapshotStore(get_settings().features_dir)
     targets = historical_targets(ctx, seasons)
     ids: dict[str, str] = {}
-    for name, fn in BUILDERS.items():
+    jobs: list[tuple[str, Callable[[], pl.DataFrame], str]] = [
+        (name, (lambda fn=fn, name=name: fn(ctx, targets[name])), "primary")
+        for name, fn in BUILDERS.items()
+    ]
+    for name, base_name in SENSITIVITY_DATASETS.items():
+        jobs.append(
+            (
+                name,
+                lambda base_name=base_name: build_player_week(
+                    ctx, targets[base_name], depth_variant="same_week"
+                ),
+                "same_week",
+            )
+        )
+    for name, make, depth_variant in jobs:
         t0 = time.perf_counter()
-        df = fn(ctx, targets[name])
+        df = make()
         present = sorted(int(s) for s in df["season"].unique().to_list())
         frames = {s: df.filter(pl.col("season") == s) for s in present}
         cols = columns(name)
@@ -181,6 +207,7 @@ def run_features(
             "loader": "ffml.features.build.run_features",
             "loader_kwargs": {"seasons": seasons},
             "feature_version": FEATURE_VERSION,
+            "depth_variant": depth_variant,
             "feature_columns": [
                 [c.name, c.dtype, c.kind]
                 for c in cols
