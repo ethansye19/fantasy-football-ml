@@ -173,7 +173,7 @@ dtypes and kinds, `params` and the processed snapshot ids used as `inputs`.
 | --- | --- | ---: | ---: | ---: |
 | player_week | every fact_player_game row (REG and POST, roster-only rows included) | 98,530 | 744 | 654 |
 | team_week | every fact_team_game row | 5,760 | 304 | 268 |
-| dst_week | every fact_dst_game row | 5,760 | 360 | 331 |
+| dst_week | every fact_dst_game row | 5,760 | 366 | 336 |
 
 Model code reads features only through `ffml.features.access`:
 `load_features(dataset, seasons, purpose)` calls
@@ -538,7 +538,7 @@ avail (same-week; not primary features), 3 columns:
 
 Targets (17): `y_plays`, `y_pass_rate`, `y_pass_att`, `y_rush_att`, `y_dropbacks`, `y_sacks`, `y_pass_td`, `y_rush_td`, `y_offensive_td`, `y_points`, `y_field_goal_att`, `y_field_goal_made`, `y_rz_trips`, `y_interceptions`, `y_fumbles_lost`, `y_two_pt_att`, `y_two_pt_conv`.
 
-#### dst_week: 360 columns (11 key, 4 meta, 331 feature, 2 sensitivity, 3 avail, 9 target)
+#### dst_week: 366 columns (11 key, 4 meta, 336 feature, 2 sensitivity, 3 avail, 10 target)
 
 Keys: `team`, `season`, `week`, `game_id`, `opponent`, `game_type`, `home`, `kickoff_utc`, `cutoff_ts`, `asof_ts`, `feature_version`.
 Meta (audit only): `meta__team_last_game_kickoff`, `meta__def_last_game_kickoff`, `meta__dst_last_game_kickoff`, `meta__qb_depth_snapshot_ts`.
@@ -548,13 +548,14 @@ ctx (game context, A), 18 columns: identical to player_week above.
 
 team (offense on the field, B), 126 columns: identical to player_week above.
 
-def (defense on the field, C and DST), 187 columns: the 124 columns of player_week above plus:
+def (defense on the field, C and DST), 192 columns: the 124 columns of player_week above plus:
 
 | columns | positions | notes |
 | --- | --- | --- |
 | `def__dst_sacks__{l5,ew,std,ps,car}` | all | source sacks |
 | `def__dst_interceptions__{l5,ew,std,ps,car}` | all | source interceptions |
 | `def__dst_fumble_recoveries__{l5,ew,std,ps,car}` | all | source fumble_recoveries |
+| `def__dst_forced_fumbles__{l5,ew,std,ps,car}` | all | source forced_fumbles |
 | `def__dst_def_td__{l5,ew,std,ps,car,std_shrunk,car_shrunk}` | all | source def_td / _one |
 | `def__dst_return_td__{l5,ew,std,ps,car,std_shrunk,car_shrunk}` | all | source return_td / _one |
 | `def__dst_safeties__{l5,ew,std,ps,car,std_shrunk,car_shrunk}` | all | source safeties / _one |
@@ -566,7 +567,7 @@ def (defense on the field, C and DST), 187 columns: the 124 columns of player_we
 
 avail (same-week; not primary features), 3 columns: identical to team_week above.
 
-Targets (9): `y_sacks`, `y_interceptions`, `y_fumble_recoveries`, `y_def_td`, `y_return_td`, `y_safeties`, `y_blocked_kicks`, `y_points_allowed`, `y_yards_allowed`.
+Targets (10): `y_sacks`, `y_interceptions`, `y_fumble_recoveries`, `y_forced_fumbles`, `y_def_td`, `y_return_td`, `y_safeties`, `y_blocked_kicks`, `y_points_allowed`, `y_yards_allowed`.
 
 PARAMS (`ffml/features/spec.py`):
 

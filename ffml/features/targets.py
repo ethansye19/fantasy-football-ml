@@ -142,6 +142,7 @@ DST_TARGETS: list[str] = [
     "sacks",
     "interceptions",
     "fumble_recoveries",
+    "forced_fumbles",
     "def_td",
     "return_td",
     "safeties",

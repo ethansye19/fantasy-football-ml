@@ -45,6 +45,7 @@ DST_STATS: list[Stat] = [
     _mean("dst_sacks", "sacks"),
     _mean("dst_interceptions", "interceptions"),
     _mean("dst_fumble_recoveries", "fumble_recoveries"),
+    _mean("dst_forced_fumbles", "forced_fumbles"),
     _rare("dst_def_td", "def_td"),
     _rare("dst_return_td", "return_td"),
     _rare("dst_safeties", "safeties"),

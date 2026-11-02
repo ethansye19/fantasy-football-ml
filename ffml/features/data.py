@@ -267,6 +267,9 @@ def _prepare(table: str, df: pl.DataFrame) -> pl.DataFrame:
         df = df.filter(pl.col("pos_abb").is_in(list(DEPTH_POS_GROUP))).with_columns(
             pl.col("pos_abb").replace_strict(DEPTH_POS_GROUP, default=None).alias("pos_group")
         )
+    if table == "fact_dst_game" and "forced_fumbles" not in df.columns:
+        # added in D-055; older snapshots and fixtures lack it
+        df = df.with_columns(pl.lit(None, dtype=pl.Int32).alias("forced_fumbles"))
     return df
 
 
