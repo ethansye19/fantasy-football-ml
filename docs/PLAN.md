@@ -44,7 +44,7 @@ clean `data/` directory and are repeatable (same manifests except timestamps);
 | FE-3.1 | feature builders per group in FEATURES.md with cutoff semantics, windows, shrinkage, team-change resets, depth-chart snapshot selection | `ffml features --through 2026-08` |
 | FE-3.2 | leakage test suite (six tests in FEATURES.md section J) | `tests/features/` |
 | ML-3.1 | scoring engine: ScoringRules from Sleeper `scoring_settings` and manual input, applied to stat-line frames, with bonuses and position-specific rules; tests against Sleeper-computed points for a real league week | `ffml/scoring/` |
-| ML-3.2 | baselines 1 and 2 and structural per-stage baselines; baseline 3 loader with kickoff validity | `ffml/models/baselines.py` |
+| ML-3.2 | baselines 1 and 2 and structural per-stage baselines (baseline 3, the restricted consensus reader, lives only in `ffml/eval/ecr_baseline.py`, D-051) | `ffml/models/baselines.py` |
 | ML-3.3 | stage models (1a-1c, 2, 3, 4) with LightGBM, walk-forward training harness, hyperparameter search on walk-forward folds only | `ffml train`, `ffml backtest` |
 | ML-3.4 | Monte Carlo engine with game-level, team-level, Dirichlet share and per-touch draws; availability layer; K and DST; ROS mode | `ffml/sim/` |
 | ML-3.5 | calibration (conformal offsets, dispersion tuning) on validation seasons | `ffml/models/calibration.py` |

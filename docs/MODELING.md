@@ -44,7 +44,10 @@ the lake but excluded because fantasy seasons end at week 17 or 18).
    are therefore excluded from this comparison and the report says so.
    Weekly pages exist only as PPR for RB, WR, TE and as scoring-free pages for
    QB, K, DST, so the comparison is run under PPR scoring; coverage is
-   2020 week 6 through 2026, with 2024 starting in week 4. Because ECR is a
+   2020 weeks 1-16 and 2021 through 2026, with 2024 starting in week 4.
+   Share of played QB, RB, WR, TE rows with a valid consensus rank:
+   0.811, 0.805, 0.774, 0.769, 0.663 for 2020-2024 (0.86-0.88 within weeks
+   that have a scrape). Because ECR is a
    rank, the comparison uses rank correlation and start/sit accuracy; a
    points comparison uses a rank-to-points curve fitted on prior seasons
    only. Licensing is unverified, so this baseline lives in the private

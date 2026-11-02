@@ -48,6 +48,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-046 | 2026-11-02 | accepted | Feature cutoff is the first kickoff of the season-week; off-field snapshots use an as-of time one hour before that cutoff |
 | D-047 | 2026-11-02 | accepted | Feature naming `<group>__<stat>__<window>`, targets prefixed `y_`, availability inputs prefixed `avail__` |
 | D-048 | 2026-11-02 | accepted | Canonical stat-line vocabulary shared by simulations, actuals, and scoring |
+| D-049 | 2026-11-02 | accepted | "Holdout touched once" means one `holdout_eval` session: same purpose, git sha, and user within two hours |
+| D-050 | 2026-11-02 | accepted | Evaluation conventions: rank tie-breaks, startable sets, lineup pool, population alignment across models |
+| D-051 | 2026-11-02 | accepted | Baseline 3 (consensus rankings) lives only in `ffml/eval`; no model, feature, API, or web code reads restricted data |
+| D-052 | 2026-11-02 | accepted | Consensus rank-to-points curve built from prior seasons only; the evaluator keeps its own PPR scoring and cross-checks it against `ffml/scoring` |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -303,6 +307,21 @@ model features in the primary configuration (D-047, refines D-006). One
 stat-line vocabulary (`ffml/scoring/statline.py`) is used by simulated
 samples, actual outcomes, and the scoring engine, so any league's rules apply
 to either (D-048, implements D-003).
+
+## D-049 to D-052 Evaluation conventions (proposed by the Independent Evaluator)
+
+The holdout guard logs one line per call, and one evaluation run makes many
+calls, so the Gate 3 rule "holdout touched exactly once" is checked as one
+session: all `holdout_eval` lines share a git sha and user and fall within
+two hours (D-049). Metrics break rank ties with `rank_pred`, restrict
+start/sit to startable QB, RB, WR, TE (no K or DST), choose lineups from
+each team's active pool with Sleeper flex eligibility, and compare models
+only on rows every model predicts (D-050). The restricted consensus reader
+lives in `ffml/eval/ecr_baseline.py` and nowhere else (D-051). Its
+rank-to-points curve is fitted on seasons strictly before the evaluated
+season; the evaluator computes PPR actuals independently and reconciles them
+with `ffml/scoring` during the validation report, because
+`fantasy_points_ppr_ref` omits kicking points (D-052).
 
 ## Owner answers received 2026-11-01
 
