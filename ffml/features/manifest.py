@@ -165,10 +165,34 @@ def dtype_name(dtype: pl.DataType) -> str:
     return str(dtype)
 
 
+def fingerprint() -> dict[str, Any]:
+    """Schema fingerprint: ``[name, dtype, kind]`` per column, in order, per dataset."""
+    return {
+        "feature_version": FEATURE_VERSION,
+        "datasets": {d: [[c.name, c.dtype, c.kind] for c in columns(d)] for d in DATASETS},
+    }
+
+
+def fingerprint_json() -> str:
+    """The pinned-file text: one column per line so diffs show exactly what changed."""
+    fp = fingerprint()
+    lines = ["{", f'  "feature_version": {json.dumps(fp["feature_version"])},', '  "datasets": {']
+    names = list(fp["datasets"])
+    for i, d in enumerate(names):
+        lines.append(f"    {json.dumps(d)}: [")
+        rows = fp["datasets"][d]
+        for j, row in enumerate(rows):
+            lines.append(f"      {json.dumps(row)}{',' if j < len(rows) - 1 else ''}")
+        lines.append(f"    ]{',' if i < len(names) - 1 else ''}")
+    lines += ["  }", "}"]
+    return "\n".join(lines) + "\n"
+
+
 def write_manifest(path: Path | str) -> Path:
+    """Write the pinned schema fingerprint (see :func:`fingerprint_json`)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(feature_manifest(), indent=1) + "\n", encoding="utf-8", newline="\n")
+    path.write_text(fingerprint_json(), encoding="utf-8", newline="\n")
     return path
 
 
@@ -189,6 +213,8 @@ __all__ = [
     "dtype_name",
     "feature_manifest",
     "feature_names",
+    "fingerprint",
+    "fingerprint_json",
     "polars_schema",
     "write_manifest",
 ]
