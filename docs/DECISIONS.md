@@ -26,6 +26,11 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-019 | 2026-11-01 | accepted | Private GitHub repository as the remote; CI and scheduled jobs run there |
 | D-020 | 2026-11-01 | accepted | Sleeper user `ethanye19` is the test league source |
 | D-021 | 2026-11-01 | accepted | Gates are never weakened for the week 9 kickoff |
+| D-022 | 2026-11-01 | accepted | Player crosswalk joins Sleeper through `ff_playerids.sleeper_id` first; Sleeper `gsis_id` is a fallback |
+| D-023 | 2026-11-01 | accepted | External player ids are strings everywhere |
+| D-024 | 2026-11-01 | accepted | League scoring stored as Sleeper keys minus zero entries; missing key means 0 |
+| D-025 | 2026-11-01 | accepted | Sleeper client limits: 300 requests per minute, burst 30, one shared client per process |
+| D-026 | 2026-11-01 | accepted | Sleeper players snapshot id is the UTC date |
 
 ## D-001 Python 3.11
 
@@ -180,6 +185,22 @@ notes say so.
 - Sleeper's players map is pulled at most once per day.
 - The deployment target is a single host running docker compose; the guide
   notes how to split services.
+
+## D-022 to D-026 Sleeper integration (proposed by the Data Engineer, Sleeper)
+
+Context: in the test league only 26 of 110 rostered players carry a
+`gsis_id` in the Sleeper players map (none drafted 2020 or later do), 866
+map-wide `gsis_id` values have a leading space, and 14 are duplicated.
+`ff_playerids` matches 563 of 570 active skill players. Decisions: join
+through `ff_playerids.sleeper_id` first, then weekly rosters, then the
+stripped Sleeper `gsis_id`, then name plus team plus position, then a manual
+override file (D-022). All external ids are strings (D-023). League scoring
+is stored as the Sleeper key set with zero entries removed; the scoring
+engine treats a missing key as zero and must support the 41 keys seen in the
+test league, including kicker distance buckets and DST points-allowed bands
+(D-024). Client limits are 300 requests per minute with a burst of 30 and one
+shared HTTP client per process (D-025). The players-map snapshot id is the
+UTC date and is fetched at most once per day (D-026).
 
 ## Owner answers received 2026-11-01
 
