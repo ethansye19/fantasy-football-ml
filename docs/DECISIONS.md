@@ -39,7 +39,12 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-032 | 2026-11-02 | accepted | Validation severity: exit 1 only on FAIL; absent tables SKIP; a crashing check is FAIL; gaps in the current week WARN |
 | D-033 | 2026-11-02 | accepted | Weekly volume checks are normalised per final game |
 | D-034 | 2026-11-02 | accepted | Datasets whose schema is fixed in code (Sleeper players) are exempt from schema pins |
-| D-035 | 2026-11-02 | proposed | If 2016-2019 crosswalk coverage is below 98 percent, the gate applies to the current season only |
+| D-035 | 2026-11-02 | superseded | Not triggered: crosswalk coverage is 99.6 to 100 percent in every season, so the 98 percent gate applies to all seasons |
+| D-041 | 2026-11-02 | accepted | Manual crosswalk overrides win over every source and may force a fantasy position |
+| D-042 | 2026-11-02 | accepted | Official attempt definitions for pass_att and rush_att; `plays` excludes kneels and spikes |
+| D-043 | 2026-11-02 | accepted | fact_player_game includes roster-only rows with `played=false`; kickers count in the coverage metric |
+| D-044 | 2026-11-02 | accepted | Next Gen Stats postseason weeks are remapped to nflverse week numbers by rank |
+| D-045 | 2026-11-02 | accepted | DST attribution rules for return and defensive touchdowns, blocks, and points allowed |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -261,6 +266,24 @@ on two teams in one week (D-038). The DuckDB warehouse and the generated
 data dictionary never reference anything under a restricted directory
 (D-039). ECR pages are normalised by basename, free agents get a null team,
 PK becomes K and DEF becomes DST (D-040).
+
+## D-041 to D-045 Core processed tables (proposed by the Data Engineer, core tables)
+
+The manual override file `ffml/data/crosswalk_overrides.csv` resolves ids
+that no automated source matches and may force a fantasy position (Travis
+Hunter is CB in nflverse but plays WR) (D-041). Team attempts follow the
+official definitions, spikes and kneels included and two-point tries
+excluded, so player targets tie exactly to the weekly stats file, while
+`plays` excludes kneels and spikes for pace work (D-042). The player-game
+table carries roster-only rows (`row_source = "roster"`, `played = false`)
+so availability can be modeled, and kickers are included in the crosswalk
+coverage metric (D-043). Next Gen Stats number the Super Bowl one week later
+than nflverse; postseason weeks are remapped by rank (D-044). DST events are
+attributed from play-by-play: interception and fumble returns to the
+defense, kick and punt returns to the special-teams unit, blocked punts,
+field goals and extra points as blocks, points allowed as the opponent's
+final score (D-045). Crosswalk coverage came out at 99.6 to 100 percent for
+every season 2016-2026, so D-035 was not needed.
 
 ## Owner answers received 2026-11-01
 

@@ -46,19 +46,25 @@ Types are Polars/Arrow. Keys are unique and tested.
 | --- | --- | --- |
 | player_id | str | gsis_id, primary key |
 | full_name, first_name, last_name | str | |
-| position | str | QB, RB, WR, TE, K, or other |
+| position | str | fantasy position: QB, RB, WR, TE, K, or the raw value; FB maps to RB; a manual override may force it (D-041) |
+| position_raw | str | source position |
 | birth_date | date | |
 | rookie_season, draft_year, draft_round, draft_pick | int | nullable |
-| sleeper_id, espn_id, yahoo_id, pfr_id, fantasypros_id, nfl_id | str | nullable; `sleeper_id` unique when present |
+| sleeper_id, espn_id, yahoo_id, pfr_id, fantasypros_id, mfl_id, nfl_id | str | nullable; `sleeper_id` unique when present |
 | crosswalk_source | str | ff_playerids, rosters_weekly, sleeper_players, name_match, manual |
 | headshot_url | str | |
-| latest_team | str | |
+| latest_team, status, height, weight, college_name | mixed | from the players table |
+| last_season, last_active_season | int | used to resolve sleeper_id conflicts |
 | updated_at | datetime | |
 
+Manual overrides live in `ffml/data/crosswalk_overrides.csv` (gsis_id, sleeper_id,
+espn_id, yahoo_id, position, note) and win over every other source.
+
 ### dim_team
-`team` (pk, current abbreviation), `team_name`, `conf`, `division`, colours,
-logo URLs, plus `team_alias` rows mapping historical codes (OAK to LV, SD to
-LAC, STL to LA, JAC to JAX) so every fact table uses current codes.
+`team` (pk, current abbreviation), `team_name`, `team_nick`, `conf`,
+`division`, colours, logo URLs, and an `aliases` list column (OAK for LV, SD
+for LAC, STL and LAR for LA, JAC for JAX). The alias map itself lives in
+`ffml/data/process/base.py` so every fact table uses current codes.
 
 ### dim_game
 | column | type | notes |
@@ -81,16 +87,16 @@ One row per player per game for players with a roster slot that week
 (QB, RB, WR, TE, K), including those who did not play (`played = false`).
 | column group | columns |
 | --- | --- |
-| keys | player_id, season, week, game_id, team, opponent, position |
-| participation | played, offense_snaps, offense_pct, started (from depth chart rank 1) |
+| keys | player_id, season, week, game_id, team, opponent, position, game_type, home, kickoff_utc |
+| participation | played, offense_snaps (null when PFR has no row), offense_pct, row_source (stats or roster); the `started` flag is derived later from fact_depth_chart |
 | passing | pass_att, completions, pass_yds, pass_td, interceptions, sacks, sack_yards, pass_air_yards, pass_yac, pass_epa, cpoe, dropbacks |
 | rushing | carries, rush_yds, rush_td, rush_first_downs, rush_epa, designed_rush, scrambles (QB) |
-| receiving | targets, receptions, rec_yds, rec_td, rec_air_yards, rec_yac, rec_epa, adot |
+| receiving | targets, receptions, rec_yds, rec_td, rec_air_yards, rec_yac, rec_epa, adot, target_share, air_yards_share, wopr |
 | situational (from pbp) | rz_targets, rz_carries, gl_carries (inside the 5), ez_targets, third_down_targets, two_min_targets |
 | team context (same game, used only for computing shares) | team_pass_att, team_rush_att, team_targets, team_rz_targets, team_rz_carries, team_gl_carries, team_pass_td, team_rush_td, team_plays |
 | expected (ffopportunity) | rec_yards_exp, rec_td_exp, receptions_exp, rush_yards_exp, rush_td_exp, pass_yards_exp, pass_td_exp, total_fp_exp |
 | nextgen (nullable) | avg_separation, avg_cushion, yac_above_expectation, avg_intended_air_yards, time_to_throw, aggressiveness, rush_yards_over_expected, efficiency |
-| kicking | fg_att, fg_made, fg_made_0_39, fg_made_40_49, fg_made_50p, fg_missed, pat_att, pat_made |
+| kicking | fg_att, fg_made, fg_made_0_39, fg_made_40_49, fg_made_50p, fg_missed, fg_blocked, pat_att, pat_made |
 | misc | fumbles_lost, two_pt_conversions, return_tds, fantasy_points_ppr_ref, fantasy_points_std_ref |
 
 Primary key `(player_id, season, week)`; a player traded mid-week appears once
@@ -101,14 +107,15 @@ with the team they played for.
 | --- | --- |
 | keys | team, season, week, game_id, opponent, home |
 | volume | plays, pass_att, rush_att, dropbacks, sacks, neutral_plays, sec_per_play, neutral_sec_per_play |
-| mix | pass_rate, neutral_pass_rate, proe (mean pass_oe), early_down_pass_rate |
+| mix | pass_rate, neutral_pass_rate, proe (mean pass_oe, in percentage points), early_down_pass_rate |
 | efficiency | epa_per_play, pass_epa_per_play, rush_epa_per_play, success_rate, yards_per_play |
-| scoring | points, pass_td, rush_td, rz_trips, rz_td_rate, gl_plays, field_goals |
+| scoring | points, pass_td, rush_td, rz_trips, rz_td_rate, gl_plays, field_goal_att, field_goal_made, two_pt_att, two_pt_conv |
 | turnovers | interceptions, fumbles_lost |
-| defense (allowed_* mirrors every column above from the opponent's view) | allowed_plays, allowed_pass_rate, allowed_epa_per_play, ... |
-| position allowed | allowed_rb_targets, allowed_rb_rec_yds, allowed_wr_targets, allowed_wr_rec_yds, allowed_te_targets, allowed_te_rec_yds, allowed_rb_rush_yds, allowed_rb_rush_td, allowed_rec_td_by_pos, allowed_qb_pass_yds |
+| defense (allowed_* mirrors every column above from the opponent's view) | allowed_plays, allowed_pass_rate, allowed_epa_per_play, ... (29 columns) |
+| position allowed | allowed_rb_targets, allowed_wr_targets, allowed_te_targets, allowed_rb_rec_yds, allowed_wr_rec_yds, allowed_te_rec_yds, allowed_rb_rush_att, allowed_rb_rush_yds, allowed_rb_rush_td, allowed_rec_td_rb, allowed_rec_td_wr, allowed_rec_td_te, allowed_qb_pass_yds, allowed_qb_pass_td, allowed_qb_rush_yds |
 
-Primary key `(team, season, week)`.
+Primary key `(team, season, week)`. `plays` excludes kneels and spikes;
+`pass_att` and `rush_att` follow the official attempt definitions (D-042).
 
 ### fact_dst_game
 Team defense and special teams scoring inputs per game: `sacks`,

@@ -67,8 +67,12 @@ Not used: combine, draft picks, contracts, officials, trades.
   games. Column set identical across all seasons including 2026.
 - Expected fantasy points weekly: 5,473 to 6,081 rows per season 2016-2025.
 - Duplicate `(player_id, season, week)` rows in 2026 player stats: 0.
-- Players with more than one team in 2025 stats: 89. Team-change handling is
-  required, not optional.
+- Players with more than one team in 2025 stats: 89 in the raw file (88 after
+  dropping rows with a null player id; 32 of them at skill positions).
+  Team-change handling is required, not optional.
+- Position quirk: Travis Hunter is listed as CB in both nflverse player
+  tables although he has receiving production; the manual crosswalk
+  override forces WR (D-041).
 - ID crosswalk: of 570 QB, RB, WR, TE, and K with a 2026 stat line, 563 match
   `ff_playerids` with a `sleeper_id`. The 7 misses are deep backups and three
   kickers (Patrick Herbert, Matthew Hibner, Jack Strand, Max Bredeson, Trey
