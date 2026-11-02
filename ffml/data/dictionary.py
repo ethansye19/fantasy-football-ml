@@ -85,7 +85,10 @@ def _example_value(series: pl.Series) -> str:
     non_null = series.drop_nulls()
     if non_null.is_empty():
         return ""
-    text = str(non_null[0])
+    value = non_null[0]
+    if isinstance(value, pl.Series):  # List/Array columns return a Series per cell
+        value = value.to_list()
+    text = str(value)
     if len(text) > EXAMPLE_MAX_CHARS:
         text = text[: EXAMPLE_MAX_CHARS - 1] + "..."
     return "`" + _md_cell(text).replace("`", "'") + "`"
