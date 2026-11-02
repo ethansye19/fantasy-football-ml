@@ -100,8 +100,21 @@ def _derive_player(df: pl.DataFrame) -> pl.DataFrame:
     return out.with_columns(exprs)
 
 
+_SHARED: dict[str, ChainData] = {}
+
+
 class ChainData:
-    """Lazy, cached feature frames for the chain (one instance per model or run)."""
+    """Lazy, cached feature frames for the chain.
+
+    :meth:`shared` returns one process-wide instance per player dataset, so the
+    primary and final-report models of a backtest read the features once.
+    """
+
+    @classmethod
+    def shared(cls, player_dataset: str = "player_week") -> ChainData:
+        if player_dataset not in _SHARED:
+            _SHARED[player_dataset] = cls(player_dataset=player_dataset, purpose="train")
+        return _SHARED[player_dataset]
 
     def __init__(
         self,

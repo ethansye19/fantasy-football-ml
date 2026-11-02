@@ -125,7 +125,7 @@ class ChainModel:
         self.n_sims = int(n_sims)
         self.seed = int(seed)
         self.name = MODEL_NAME if config == "primary" else f"{MODEL_NAME}_final_report"
-        self.data = data or ChainData(purpose="train")
+        self.data = data or ChainData.shared()
         self.cutoff: tuple[int, int] | None = None
         self.structural: dict[str, Any] = {}
         self.lgbm: dict[str, LGBMStage] = {}

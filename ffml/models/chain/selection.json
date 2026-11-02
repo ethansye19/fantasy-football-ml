@@ -1,0 +1,446 @@
+{
+  "generated_at": "2026-11-02T22:21:16+00:00",
+  "feature_version": "0.2.0",
+  "seasons": [
+    2022,
+    2023,
+    2024
+  ],
+  "refit_weeks": [
+    2,
+    6,
+    10,
+    14,
+    18
+  ],
+  "refit_every_weeks": 4,
+  "bootstrap": {
+    "draws": 2000,
+    "cluster": "week",
+    "level": 0.95
+  },
+  "rule": "LightGBM only when the 95% CI of (LightGBM - structural) loss is entirely below 0",
+  "fit_seconds_mean": 56.36740125336995,
+  "stages": {
+    "team_plays": {
+      "metric": "mae",
+      "structural_method": "l5_mean",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 7.007170800279918,
+      "lgbm": 6.493689888870256,
+      "diff": -0.5134809114096625,
+      "ci": [
+        -0.6951403615103872,
+        -0.3314441959270377
+      ],
+      "choice": "lgbm"
+    },
+    "team_pass_rate": {
+      "metric": "mae",
+      "structural_method": "ew_spread",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.08492606266026088,
+      "lgbm": 0.0789276501301789,
+      "diff": -0.005998412530081975,
+      "ci": [
+        -0.007982480542685218,
+        -0.003951910318206739
+      ],
+      "choice": "lgbm"
+    },
+    "team_off_td": {
+      "metric": "poisson",
+      "structural_method": "implied_ratio",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.8360318686328955,
+      "lgbm": 0.8407489194342881,
+      "diff": 0.004717050801393159,
+      "ci": [
+        -0.0038518373061419966,
+        0.014309888672824659
+      ],
+      "choice": "structural"
+    },
+    "team_fg_att": {
+      "metric": "poisson",
+      "structural_method": "ew_blend",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.9623791167614073,
+      "lgbm": 0.9622376765916619,
+      "diff": -0.000141440169744965,
+      "ci": [
+        -0.00520020942069984,
+        0.004830359442964473
+      ],
+      "choice": "structural"
+    },
+    "team_two_pt_att": {
+      "metric": "poisson",
+      "structural_method": "implied_ratio",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.7644080033170055,
+      "lgbm": 0.7481499626475963,
+      "diff": -0.01625804066940912,
+      "ci": [
+        -0.030169882560551527,
+        -0.003973713118068838
+      ],
+      "choice": "lgbm"
+    },
+    "share_target": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 16846,
+      "n_weeks": 51,
+      "structural": 0.046567075715789955,
+      "lgbm": 0.045152322789497684,
+      "diff": -0.0014147529262922645,
+      "ci": [
+        -0.0018435568162967534,
+        -0.000995958607782455
+      ],
+      "choice": "lgbm"
+    },
+    "share_carry": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 18739,
+      "n_weeks": 51,
+      "structural": 0.03585232357688387,
+      "lgbm": 0.03559111244080154,
+      "diff": -0.0002612111360823372,
+      "ci": [
+        -0.0006177844254238586,
+        0.00010142587901145986
+      ],
+      "choice": "structural"
+    },
+    "share_dropback": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 1893,
+      "n_weeks": 51,
+      "structural": 0.15121523024712913,
+      "lgbm": 0.1353708900943068,
+      "diff": -0.01584434015282238,
+      "ci": [
+        -0.022091287990641584,
+        -0.009539262353857238
+      ],
+      "choice": "lgbm"
+    },
+    "share_gl_carry": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 8836,
+      "n_weeks": 51,
+      "structural": 0.1267940402182027,
+      "lgbm": 0.10587792821923235,
+      "diff": -0.020916111998970352,
+      "ci": [
+        -0.02237673217391094,
+        -0.019521849583738864
+      ],
+      "choice": "lgbm"
+    },
+    "share_rz_target": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 15823,
+      "n_weeks": 51,
+      "structural": 0.11626641378349764,
+      "lgbm": 0.10788153300831715,
+      "diff": -0.008384880775180452,
+      "ci": [
+        -0.00901892058614325,
+        -0.007728590312722682
+      ],
+      "choice": "lgbm"
+    },
+    "eff_catch_rate": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 12170,
+      "n_weeks": 51,
+      "structural": 0.18633856518164155,
+      "lgbm": 0.18421507279664845,
+      "diff": -0.0021234923849930425,
+      "ci": [
+        -0.003001446383853749,
+        -0.0012871364596815761
+      ],
+      "choice": "lgbm"
+    },
+    "eff_ypr": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 10918,
+      "n_weeks": 51,
+      "structural": 4.060384347882487,
+      "lgbm": 3.969885202944198,
+      "diff": -0.09049914493828863,
+      "ci": [
+        -0.11175961455028978,
+        -0.07078724657214756
+      ],
+      "choice": "lgbm"
+    },
+    "eff_ypc": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 6268,
+      "n_weeks": 51,
+      "structural": 1.6781046606277212,
+      "lgbm": 1.6319280036880282,
+      "diff": -0.046176656939693035,
+      "ci": [
+        -0.0637159708024593,
+        -0.028758610844692827
+      ],
+      "choice": "lgbm"
+    },
+    "eff_comp_rate": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 1773,
+      "n_weeks": 51,
+      "structural": 0.07550613717306451,
+      "lgbm": 0.0733949269084675,
+      "diff": -0.0021112102645970384,
+      "ci": [
+        -0.003256703396645775,
+        -0.0008846462442293353
+      ],
+      "choice": "lgbm"
+    },
+    "eff_int_rate": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 1773,
+      "n_weeks": 51,
+      "structural": 0.022451307742799236,
+      "lgbm": 0.022118035385715402,
+      "diff": -0.0003332723570838315,
+      "ci": [
+        -0.0006789496529378454,
+        4.77670924555405e-05
+      ],
+      "choice": "structural"
+    },
+    "eff_sack_rate": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 1783,
+      "n_weeks": 51,
+      "structural": 0.03776890210912104,
+      "lgbm": 0.0368669633383941,
+      "diff": -0.0009019387707269362,
+      "ci": [
+        -0.0014665825115037442,
+        -0.00029191539744038536
+      ],
+      "choice": "lgbm"
+    },
+    "eff_scramble_rate": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 1783,
+      "n_weeks": 51,
+      "structural": 0.03275546276109265,
+      "lgbm": 0.03101525924630644,
+      "diff": -0.0017402035147862191,
+      "ci": [
+        -0.0026019264877500986,
+        -0.0008896051919317501
+      ],
+      "choice": "lgbm"
+    },
+    "eff_fumble_rate": {
+      "metric": "mae",
+      "structural_method": "position_prior",
+      "n_rows": 14106,
+      "n_weeks": 51,
+      "structural": 0.009249233235881478,
+      "lgbm": 0.009275538971537082,
+      "diff": 2.6305735655600452e-05,
+      "ci": [
+        3.883560996786529e-06,
+        4.927071300965229e-05
+      ],
+      "choice": "structural"
+    },
+    "td_pass_share": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 13258,
+      "n_weeks": 51,
+      "structural": 0.14335656909719963,
+      "lgbm": 0.13569104265230192,
+      "diff": -0.007665526444897684,
+      "ci": [
+        -0.00871022559510019,
+        -0.006667507684085339
+      ],
+      "choice": "lgbm"
+    },
+    "td_rush_share": {
+      "metric": "mae",
+      "structural_method": "share_ew",
+      "n_rows": 8364,
+      "n_weeks": 51,
+      "structural": 0.13867933310268765,
+      "lgbm": 0.12244098236843899,
+      "diff": -0.0162383507342487,
+      "ci": [
+        -0.01771994197168046,
+        -0.014738630728223186
+      ],
+      "choice": "lgbm"
+    },
+    "availability": {
+      "metric": "logloss",
+      "structural_method": "availability_logit",
+      "n_rows": 25938,
+      "n_weeks": 51,
+      "structural": 0.3460219766935892,
+      "lgbm": 0.31867997599212566,
+      "diff": -0.027342000701463504,
+      "ci": [
+        -0.031074405335728153,
+        -0.02416478411093245
+      ],
+      "choice": "lgbm"
+    },
+    "k_fg_pct": {
+      "metric": "mae",
+      "structural_method": "rate_shrunk",
+      "n_rows": 1362,
+      "n_weeks": 51,
+      "structural": 0.19758927264178985,
+      "lgbm": 0.20127727648887156,
+      "diff": 0.00368800384708171,
+      "ci": [
+        0.0016717636034289083,
+        0.005967857510404449
+      ],
+      "choice": "structural"
+    },
+    "dst_sacks": {
+      "metric": "poisson",
+      "structural_method": "dst_blend",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 1.467063785359502,
+      "lgbm": 1.3942805538661642,
+      "diff": -0.07278323149333814,
+      "ci": [
+        -0.11848387269068929,
+        -0.025205158842462286
+      ],
+      "choice": "lgbm"
+    },
+    "dst_int": {
+      "metric": "poisson",
+      "structural_method": "dst_blend",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 1.288518235279124,
+      "lgbm": 1.1580224511788881,
+      "diff": -0.13049578410023574,
+      "ci": [
+        -0.17474344856620982,
+        -0.08702371144910863
+      ],
+      "choice": "lgbm"
+    },
+    "dst_fum_rec": {
+      "metric": "poisson",
+      "structural_method": "dst_blend",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 1.1412617113305585,
+      "lgbm": 0.995110478017307,
+      "diff": -0.1461512333132522,
+      "ci": [
+        -0.1879496476276805,
+        -0.10715603241740274
+      ],
+      "choice": "lgbm"
+    },
+    "dst_ff": {
+      "metric": "poisson",
+      "structural_method": "ew_blend",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 1.0996989049816903,
+      "lgbm": 1.1024480432117614,
+      "diff": 0.002749138230070861,
+      "ci": [
+        -0.00274081336420145,
+        0.00878488051069272
+      ],
+      "choice": "structural"
+    },
+    "dst_def_td": {
+      "metric": "poisson",
+      "structural_method": "direct",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.494070618422915,
+      "lgbm": 0.48518099997551495,
+      "diff": -0.008889618447399937,
+      "ci": [
+        -0.01888011194688558,
+        0.0004569457638569931
+      ],
+      "choice": "structural"
+    },
+    "dst_ret_td": {
+      "metric": "poisson",
+      "structural_method": "direct",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.20512740903133578,
+      "lgbm": 0.20292212577607505,
+      "diff": -0.002205283255260686,
+      "ci": [
+        -0.012621763778439812,
+        0.010211648174891954
+      ],
+      "choice": "structural"
+    },
+    "dst_safety": {
+      "metric": "poisson",
+      "structural_method": "direct",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.21089812101417885,
+      "lgbm": 0.20864994504191003,
+      "diff": -0.0022481759722687974,
+      "ci": [
+        -0.014342938659582144,
+        0.011863851561400624
+      ],
+      "choice": "structural"
+    },
+    "dst_blocks": {
+      "metric": "poisson",
+      "structural_method": "direct",
+      "n_rows": 1534,
+      "n_weeks": 51,
+      "structural": 0.399812927078795,
+      "lgbm": 0.3935578409008432,
+      "diff": -0.006255086177951971,
+      "ci": [
+        -0.01687600691109118,
+        0.004061502237744424
+      ],
+      "choice": "structural"
+    }
+  }
+}

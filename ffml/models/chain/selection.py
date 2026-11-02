@@ -176,6 +176,30 @@ def write_outputs(result: dict[str, Any], selection_path: Path, report_path: Pat
     )
 
 
+def _fmt(x: float | None) -> str:
+    if x is None:
+        return "n/a"
+    return f"{x:.4f}" if abs(x) >= 0.01 else f"{x:.5f}"
+
+
+def render_table(stages: dict[str, Any]) -> str:
+    """Markdown table: stage, metric, structural, LightGBM, difference with 95% CI, choice."""
+    lines = [
+        "| stage | metric | rows | structural | LightGBM | LightGBM - structural [95% CI] | choice |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- |",
+    ]
+    for name, e in stages.items():
+        if "ci" in e:
+            diff = f"{_fmt(e['diff'])} [{_fmt(e['ci'][0])}, {_fmt(e['ci'][1])}]"
+        else:
+            diff = "no candidate"
+        lines.append(
+            f"| {name} | {e['metric']} | {e['n_rows']:,} | {_fmt(e['structural'])} | "
+            f"{_fmt(e.get('lgbm'))} | {diff} | **{e['choice']}** |"
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection", default=str(SELECTION_PATH))
@@ -193,4 +217,11 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["run_selection", "row_loss", "summarise", "bootstrap_diff", "write_outputs"]
+__all__ = [
+    "bootstrap_diff",
+    "render_table",
+    "row_loss",
+    "run_selection",
+    "summarise",
+    "write_outputs",
+]
