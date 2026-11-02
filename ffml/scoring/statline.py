@@ -37,10 +37,12 @@ Kicking (K):
 
 Team defense and special teams (DST):
 
-- ``sacks``, ``def_int``, ``fum_rec``, ``def_td`` (interception and fumble
-  return touchdowns), ``st_td`` (kick and punt return touchdowns),
-  ``safeties``, ``blocked_kicks``, ``pts_allowed`` (opponent's final score,
-  D-045), ``yds_allowed`` (opponent's offensive yards)
+- ``sacks``, ``def_int``, ``fum_rec``, ``forced_fumbles`` (plays on which
+  either listed forcing player belongs to the team, defense and special teams
+  combined, ``fact_dst_game.forced_fumbles``, D-055), ``def_td``
+  (interception and fumble return touchdowns), ``st_td`` (kick and punt
+  return touchdowns), ``safeties``, ``blocked_kicks``, ``pts_allowed``
+  (opponent's final score, D-045), ``yds_allowed`` (opponent's offensive yards)
 """
 
 from __future__ import annotations
@@ -86,6 +88,7 @@ DST_COLUMNS: tuple[str, ...] = (
     "sacks",
     "def_int",
     "fum_rec",
+    "forced_fumbles",
     "def_td",
     "st_td",
     "safeties",

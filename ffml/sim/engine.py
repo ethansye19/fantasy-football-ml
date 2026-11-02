@@ -9,67 +9,85 @@ padded ``(team, sim, slot)`` blocks for the share draws.
 Generative steps, per game and simulation:
 
 1. Game: total ``T ~ N(total_line, total_sd)`` and margin
-   ``M ~ N(spread, margin_sd)`` (independent draws, shared by both teams);
-   team points ``(T +/- M) / 2`` floored at 0; the standardised total and
-   margin deviations are the game-script signals.
+   ``M ~ N(spread, margin_sd)`` (independent draws, shared by both teams;
+   defaults 13.2 and 12.8, D-056); team points ``(T +/- M) / 2`` floored at 0;
+   the standardised total and margin deviations are the game-script signals.
 2. Team: plays ``~ N(exp_plays, sd_plays)`` correlated with the total
    deviation (:data:`PLAYS_TOTAL_CORR`), truncated to 40-90; pass rate
    ``~ Beta`` around ``exp_pass_rate`` shifted on the logit scale against the
    margin deviation (trailing teams pass more, :data:`SCRIPT_PASS_COEF`);
-   dropbacks ``~ Binomial(plays, pass rate)``, the rest are carries.
+   dropbacks ``~ Binomial(plays, pass rate)``, the rest are designed runs.
    Offensive touchdowns have mean ``exp_off_td * points / implied_total``
    and Binomial noise with ``n = ceil(2 * mean)`` (variance about half the
    mean, because the drawn points already carry most of the variance); each
    touchdown is a passing one with probability equal to the drawn pass rate.
    Field-goal attempts ``~ Poisson(exp_fg_att * (0.5 + 0.5 * points /
    implied))``; two-point attempts ``~ Binomial(touchdowns,
-   exp_two_pt_att / exp_off_td)``, converted with :data:`TWO_PT_SUCCESS`.
-3. Availability: ``active ~ Bernoulli(availability_prob)``; expected shares
-   are renormalised over the active players of the team in every simulation
+   exp_two_pt_att / exp_off_td)``, converted with :data:`TWO_PT_SUCCESS`;
+   kneel-downs ``~ Poisson(exp_kneels)``.
+3. Availability: ``active ~ Bernoulli(availability_prob)``. A team always
+   fields a passer: when no QB is drawn active, the QB ranked second by
+   availability (the first with a positive probability after the top one)
+   plays, and his own draw probability is lowered to
+   ``(p - N) / (1 - N)`` (``N`` = probability that no other QB is active) so
+   that his marginal active rate stays ``p``. Expected shares are
+   renormalised over the active players of the team in every simulation
    (full absorption).
 4. Opportunity: per-player shares ``g_i / sum g`` with
    ``g_i ~ Gamma(conc_i * p_i, 1 / conc_i)`` (a Dirichlet when all
    concentrations are equal; per-position concentration keeps the mean
-   share), then ``Multinomial`` allocation of team dropbacks (QBs), targets
-   (team pass attempts) and carries. Shares sum to 1 over active players,
-   so player targets and carries add up to the team totals exactly.
-5. Efficiency: sacks ``~ Binomial(dropbacks, sack_rate)``, attempts are the
-   rest; completions ``~ Binomial(attempts, comp_rate)``; interceptions
-   ``~ Binomial(attempts, int_rate)`` capped at the incompletions;
-   receptions ``~ Binomial(targets, catch_rate)``; yardage is a sum of
-   per-touch Gamma draws (``Gamma(n * shape, mean / shape)``), with a team
-   passing-efficiency factor shared by the QB's yards per completion and the
-   receivers' yards per reception (:data:`PASS_EFF_SD`) and a team rushing
-   factor (:data:`RUSH_EFF_SD`).
-6. Touchdowns: team passing touchdowns go to receptions with weights
-   ``receptions_i * pass_td_share_i / (target_share_i * catch_rate_i)`` and
-   rushing touchdowns to carries with weights
-   ``carries_i * rush_td_share_i / carry_share_i`` (expected allocation equals
-   the TD shares among active players; a player never scores more
-   touchdowns than touches, any overflow is dropped). The QBs receive the
-   team's realised passing touchdowns in proportion to their attempts.
-7. Turnovers and bonuses: lost fumbles ``~ Binomial(touches, fumble_rate)``;
+   share), then ``Multinomial`` allocation of team dropbacks (QBs) and
+   designed runs. Sacks ``~ Binomial(dropbacks, sack_rate)``, scrambles
+   ``~ Binomial(dropbacks - sacks, scramble_rate)`` (QB carries), attempts are
+   the rest. The team's attempts are allocated over the active receivers
+   **plus an unmodeled-receivers bucket** (``unmodeled_tgt_share``: throwaways,
+   spikes, and targets of players without a row), so player targets plus the
+   bucket add up to the team's attempts exactly.
+5. Efficiency: receptions ``~ Binomial(targets, catch_rate)``, bucket
+   completions ``~ Binomial(bucket targets, unmodeled_catch_rate)``; yardage
+   is a sum of per-touch Gamma draws (``Gamma(n * shape, mean / shape)``)
+   with a team passing-efficiency factor (:data:`PASS_EFF_SD`) shared by all
+   receivers and a team rushing factor (:data:`RUSH_EFF_SD`); kneel-downs are
+   QB carries for -1 yard.
+6. Touchdowns: team passing touchdowns go to receptions (bucket included)
+   with weights ``receptions_i * pass_td_share_i / (target_share_i *
+   catch_rate_i)`` (bucket weight 1 per completion) and rushing touchdowns to
+   non-kneel carries with weights ``carries_i * rush_td_share_i / c_i``,
+   ``c_i`` the player's expected share of the team's carries (designed runs
+   and scrambles); a player never scores more touchdowns than touches, any
+   overflow is dropped.
+7. Passing totals (D-057): within each simulation the passers' completions,
+   passing yards and passing touchdowns are the sums of the team's simulated
+   receptions, receiving yards and receiving touchdowns, bucket included. With
+   several passers, completions are split by a hypergeometric draw over their
+   attempts, touchdowns by a hypergeometric draw over their completions, and
+   yards in proportion to completions (integer remainder to the passer with
+   the most completions). Interceptions ``~ Binomial(attempts, int_rate)``
+   capped at the passer's incompletions; sacks come from the QB rate (step 4).
+8. Turnovers and bonuses: lost fumbles ``~ Binomial(touches, fumble_rate)``;
    converted two-pointers go to a scorer by ``two_pt_rate``; a conversion by
    a non-QB is a pass with probability ``target_share / (target_share +
    carry_share)`` and then also credits a QB (as in
    ``fact_player_game.two_pt_conversions``).
-8. Kickers and DST: field-goal attempts split across distance buckets by a
+9. Kickers and DST: field-goal attempts split across distance buckets by a
    Multinomial, makes are Binomial per bucket; extra-point attempts are the
    touchdowns not followed by a two-point try plus the team's own defensive
    and return touchdowns. One kicker per team per simulation: the active
    kicker with the highest availability. A defense's sacks, interceptions
    and fumble recoveries are the opposing offense's simulated sacks taken,
-   interceptions and lost fumbles; defensive touchdowns ``~ Binomial
-   (takeaways, def_td_rate)``; return touchdowns ``~ Poisson(st_td_rate)``
-   (credited to individual returners by ``ret_td_rate``), safeties and blocked
-   kicks Poisson; points allowed is the opponent's realised score
-   (touchdowns, kicks, conversions, its defense's touchdowns and safeties);
-   yards allowed is the opponent's simulated passing plus rushing yards net
-   of sack yardage.
+   interceptions and lost fumbles; forced fumbles (D-055) are
+   ``Binomial(fumble recoveries, ff_per_fum_rec)`` plus
+   ``Poisson(max(ff_rate - ff_per_fum_rec * E[recoveries], 0.02))``;
+   defensive touchdowns ``~ Binomial(takeaways, def_td_rate)``; return
+   touchdowns ``~ Poisson(st_td_rate)`` (credited to individual returners by
+   ``ret_td_rate``), safeties and blocked kicks Poisson; points allowed is the
+   opponent's realised score (touchdowns, kicks, conversions, its defense's
+   touchdowns and safeties); yards allowed is the opponent's simulated
+   passing plus rushing yards net of sack yardage.
 
-Correlations that follow: QB with his receivers (shared attempts, TDs and
-passing efficiency), teammates negatively (shares), opponents through the
-shared total, a defense against the opposing offense (same events).
+Correlations that follow: QB with his receivers (identical passing totals),
+teammates negatively (shares), opponents through the shared total, a defense
+against the opposing offense (same events).
 """
 
 from __future__ import annotations
@@ -102,6 +120,7 @@ PASS_EFF_SD = 0.12
 RUSH_EFF_SD = 0.10
 TWO_PT_SUCCESS = 0.48
 SACK_YARDS = 7.0
+BUCKET_CONC = 200.0
 DEFAULT_YDS_ALLOWED = (330.0, 70.0)
 DEFAULT_DST = {
     "sack_rate": 0.065,
@@ -110,7 +129,10 @@ DEFAULT_DST = {
     "st_td_rate": 0.04,
     "safety_rate": 0.02,
     "block_rate": 0.05,
+    "ff_rate": 0.82,
+    "ff_per_fum_rec": 0.84,
 }
+FF_EXTRA_MIN = 0.02
 
 KEY_OUTPUT_COLUMNS: tuple[str, ...] = (
     "entity_id",
@@ -133,9 +155,18 @@ TEAM_SIM_COLUMNS: tuple[str, ...] = (
     "points",
     "plays",
     "dropbacks",
+    "designed_runs",
+    "scrambles",
+    "kneels",
     "pass_att",
+    "pass_cmp",
     "rush_att",
     "sacks",
+    "targets",
+    "unmodeled_targets",
+    "unmodeled_rec",
+    "unmodeled_rec_yds",
+    "unmodeled_rec_td",
     "off_td",
     "pass_td",
     "rush_td",
@@ -251,6 +282,57 @@ def _dirichlet_shares(
     return _normalise(g)
 
 
+def _with_bucket(block: np.ndarray, bucket: np.ndarray) -> np.ndarray:
+    """Append a per-team bucket slot (``bucket`` is (team,) or (team, sim)) to a block."""
+    if bucket.ndim == 1:
+        bucket = np.broadcast_to(bucket[:, None], block.shape[:2])
+    return np.concatenate([block, bucket[..., None]], axis=-1)
+
+
+def _split_hypergeometric(
+    rng: np.random.Generator, good: np.ndarray, sample: np.ndarray
+) -> np.ndarray:
+    """Split ``good`` successes (team, sim) over slots with ``sample`` trials (team, sim, slot).
+
+    Sequential hypergeometric draws: the successes are a random subset of the
+    pooled trials, so slot ``k`` never receives more than its trials and the
+    slots add up to ``good`` whenever ``good <= sum(sample)``.
+    """
+    out = np.zeros_like(sample)
+    rem_good = good.astype(np.int64).copy()
+    rem_total = sample.sum(axis=-1).astype(np.int64)
+    for k in range(sample.shape[-1]):
+        n_k = sample[..., k].astype(np.int64)
+        draw = rng.hypergeometric(rem_good, rem_total - rem_good, n_k)
+        out[..., k] = draw
+        rem_good -= draw
+        rem_total -= n_k
+    return out
+
+
+def _split_proportional(total: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Integer split of ``total`` (team, sim) in proportion to ``weights`` (team, sim, slot).
+
+    Floors the proportional amounts and gives the remainder to the slot with
+    the largest weight, so the slots add up to ``total`` exactly (0 when all
+    weights are 0).
+    """
+    wsum = weights.sum(axis=-1)
+    frac = np.divide(
+        weights, wsum[..., None], out=np.zeros_like(weights), where=wsum[..., None] > 0
+    )
+    base = np.floor(total[..., None] * frac)
+    remainder = np.where(wsum > 0, total - base.sum(axis=-1), 0.0)
+    top = np.argmax(weights, axis=-1)
+    np.put_along_axis(
+        base,
+        top[..., None],
+        np.take_along_axis(base, top[..., None], -1) + remainder[..., None],
+        -1,
+    )
+    return base
+
+
 # --------------------------------------------------------------------------- #
 # Engine
 # --------------------------------------------------------------------------- #
@@ -279,6 +361,38 @@ def _game_structure(tp: pl.DataFrame) -> tuple[np.ndarray, np.ndarray, list[str]
         pairs[gi] = (a, b)
         opp[a], opp[b] = b, a
     return pairs, opp, game_ids
+
+
+def _draw_active(
+    rng: np.random.Generator,
+    avail: np.ndarray,
+    position: np.ndarray,
+    team: np.ndarray,
+    n_sims: int,
+) -> np.ndarray:
+    """Bernoulli active flags with the passer fallback (module docstring, step 3)."""
+    p_draw = avail.copy()
+    fallback: list[tuple[int, np.ndarray]] = []
+    qb = np.flatnonzero(position == "QB")
+    for t in np.unique(team[qb]):
+        cands = qb[team[qb] == t]
+        if cands.size < 2:
+            continue
+        order = cands[np.argsort(-avail[cands], kind="stable")]
+        backups = [i for i in order[1:] if avail[i] > 0]
+        if not backups:
+            continue
+        f = backups[0]
+        others = order[order != f]
+        none_other = float(np.prod(1.0 - avail[others]))
+        if none_other < 1.0:
+            p_draw[f] = max(0.0, (avail[f] - none_other) / (1.0 - none_other))
+        fallback.append((f, cands))
+    active = rng.random((avail.size, n_sims)) < p_draw[:, None]
+    for f, cands in fallback:
+        none = ~active[cands].any(axis=0)
+        active[f, none] = True
+    return active
 
 
 def simulate(
@@ -385,7 +499,7 @@ def simulate_full(
     conc = tcol("pass_rate_conc")[:, None]
     pass_rate = rng.beta(mu * conc, (1.0 - mu) * conc)
     dropbacks = rng.binomial(plays, pass_rate)
-    rush_team = plays - dropbacks
+    designed = plays - dropbacks
 
     td_mean = tcol("exp_off_td")[:, None] * ratio
     td_n = np.ceil(2.0 * td_mean).astype(np.int64)
@@ -395,6 +509,7 @@ def simulate_full(
     rush_td_drawn = off_td_drawn - pass_td_drawn
     fg_att = rng.poisson(tcol("exp_fg_att")[:, None] * (0.5 + 0.5 * ratio))
     two_pt_rate = np.clip(tcol("exp_two_pt_att") / np.maximum(tcol("exp_off_td"), 0.1), 0.0, 0.5)
+    kneels_team = rng.poisson(tcol("exp_kneels")[:, None], size=(T, S)).astype(np.float64)
 
     # ---- 3. availability ------------------------------------------------- #
     P = pp.height
@@ -403,7 +518,7 @@ def simulate_full(
     def pcol(name: str) -> np.ndarray:
         return pp[name].to_numpy().astype(np.float64)
 
-    active = rng.random((P, S)) < pcol("availability_prob")[:, None]
+    active = _draw_active(rng, pcol("availability_prob"), position, p_team, S)
     is_off = np.isin(position, OFFENSE_POSITIONS)
     off = np.flatnonzero(is_off)
     kick = np.flatnonzero(position == "K")
@@ -418,6 +533,7 @@ def simulate_full(
         return pcol(name)[off]
 
     opp_of_player = opp[p_team[off]]
+    team_of = p_team[off]
 
     # DST parameter arrays by team row (NaN when the team has no DST row)
     def dst_arr(name: str, default: float | None = None) -> np.ndarray:
@@ -432,81 +548,143 @@ def simulate_full(
     dst_int = dst_arr("int_rate")
     dst_fum = dst_arr("fum_rec_rate")
 
-    # ---- 4/5. opportunity and efficiency --------------------------------- #
+    # ---- 4. opportunity: dropbacks, sacks, scrambles, attempts ----------- #
     db_shares = _dirichlet_shares(rng, lay.gather(ocol("dropback_share"), S), conc_blk, act_blk)
     db = lay.scatter(_allocate(rng, dropbacks, db_shares))
     sack_rate = _blend(ocol("sack_rate"), dst_sack[opp_of_player])
     sacks = rng.binomial(db.astype(np.int64), sack_rate[:, None]).astype(np.float64)
-    att = db - sacks
-    cmp_ = rng.binomial(att.astype(np.int64), ocol("comp_rate")[:, None]).astype(np.float64)
-    int_rate = _blend(ocol("int_rate"), dst_int[opp_of_player])
-    ints = np.minimum(rng.binomial(att.astype(np.int64), int_rate[:, None]), att - cmp_)
+    scr = rng.binomial((db - sacks).astype(np.int64), ocol("scramble_rate")[:, None]).astype(
+        np.float64
+    )
+    att = db - sacks - scr
+    att_team = lay.team_sum(att)
+
+    # targets: active receivers plus the unmodeled bucket share the team's attempts
+    tshare = ocol("target_share")
+    bucket = tp["unmodeled_tgt_share"].to_numpy().astype(np.float64)
+    summed = np.zeros(T)
+    np.add.at(summed, team_of, tshare)
+    bucket = np.where(np.isnan(bucket), np.clip(1.0 - summed, 0.0, 1.0), bucket)
+    tgt_base = lay.gather(tshare, S)
+    tgt_shares = _dirichlet_shares(
+        rng,
+        _with_bucket(tgt_base, bucket),
+        _with_bucket(conc_blk, np.full(T, BUCKET_CONC)),
+        _with_bucket(act_blk, np.ones(T)),
+    )
+    tgt_alloc = _allocate(rng, att_team, tgt_shares)
+    targets = lay.scatter(tgt_alloc[..., :-1])
+    b_tgt = tgt_alloc[..., -1]
+
+    # ---- 5. efficiency ---------------------------------------------------- #
     pass_eff = np.exp(PASS_EFF_SD * rng.standard_normal((T, S)) - PASS_EFF_SD**2 / 2)
     rush_eff = np.exp(RUSH_EFF_SD * rng.standard_normal((T, S)) - RUSH_EFF_SD**2 / 2)
-    team_of = p_team[off]
-    pass_yds = _gamma_sum(
-        rng,
-        cmp_,
-        ocol("yards_per_comp_shape")[:, None],
-        ocol("yards_per_comp")[:, None] * pass_eff[team_of],
-    )
-
-    att_team = lay.team_sum(att)
-    tgt_base = lay.gather(ocol("target_share"), S)
-    tgt_shares = _dirichlet_shares(rng, tgt_base, conc_blk, act_blk)
-    targets = lay.scatter(_allocate(rng, att_team, tgt_shares))
     rec = rng.binomial(targets.astype(np.int64), ocol("catch_rate")[:, None]).astype(np.float64)
-    rec_yds = _gamma_sum(
-        rng,
-        rec,
-        ocol("yards_per_rec_shape")[:, None],
-        ocol("yards_per_rec")[:, None] * pass_eff[team_of],
+    rec_yds = np.rint(
+        _gamma_sum(
+            rng,
+            rec,
+            ocol("yards_per_rec_shape")[:, None],
+            ocol("yards_per_rec")[:, None] * pass_eff[team_of],
+        )
+    )
+    b_rec = rng.binomial(b_tgt.astype(np.int64), tcol("unmodeled_catch_rate")[:, None]).astype(
+        np.float64
+    )
+    b_yds = np.rint(
+        _gamma_sum(rng, b_rec, np.ones(1), tcol("unmodeled_yards_per_rec")[:, None] * pass_eff)
     )
 
     car_base = lay.gather(ocol("carry_share"), S)
     car_shares = _dirichlet_shares(rng, car_base, conc_blk, act_blk)
-    carries = lay.scatter(_allocate(rng, rush_team, car_shares))
+    car_design = lay.scatter(_allocate(rng, designed, car_shares))
+    run_carries = car_design + scr  # carries that gain yards and can score
     rush_yds = _gamma_sum(
         rng,
-        carries,
+        run_carries,
         ocol("yards_per_carry_shape")[:, None],
         ocol("yards_per_carry")[:, None] * rush_eff[team_of],
     )
+    # kneel-downs: QB carries for -1 yard, taken by the passer with the most dropbacks
+    db_blk = lay.gather(db, S)
+    top = np.argmax(db_blk, axis=-1)
+    kneel_blk = np.zeros_like(db_blk)
+    has_passer = db_blk.max(axis=-1) > 0
+    np.put_along_axis(kneel_blk, top[..., None], (kneels_team * has_passer)[..., None], -1)
+    kneels = lay.scatter(kneel_blk)
+    carries = run_carries + kneels
+    rush_yds = np.rint(rush_yds) - kneels
 
     # ---- 6. touchdowns --------------------------------------------------- #
     def td_weight(primary: str, fallback: str, opportunity: str) -> np.ndarray:
         w = pp.select(pl.coalesce(primary, fallback, opportunity)).to_series()
         return w.to_numpy().astype(np.float64)[off]
 
-    exp_rec = ocol("target_share") * ocol("catch_rate")
+    exp_rec = tshare * ocol("catch_rate")
     lam = np.divide(
         td_weight("pass_td_share", "rz_target_share", "target_share"),
         exp_rec,
         out=np.zeros(off.size),
         where=exp_rec > 0,
     )
-    rec_td = lay.scatter(_allocate(rng, pass_td_drawn, lay.gather(rec * lam[:, None], S)))
-    rec_td = np.minimum(rec_td, rec)
-    car_share = ocol("carry_share")
+    pass_w = _with_bucket(lay.gather(rec * lam[:, None], S), b_rec)
+    td_alloc = _allocate(rng, pass_td_drawn, pass_w)
+    rec_td = np.minimum(lay.scatter(td_alloc[..., :-1]), rec)
+    b_td = np.minimum(td_alloc[..., -1], b_rec)
+
+    # expected share of team carries (designed runs plus scrambles) per player
+    exp_plays_t = tcol("exp_plays")
+    exp_pr_t = tcol("exp_pass_rate")
+    cs_sum = np.zeros(T)
+    np.add.at(cs_sum, team_of, ocol("carry_share"))
+    ds_sum = np.zeros(T)
+    np.add.at(ds_sum, team_of, ocol("dropback_share"))
+    cs_norm = np.divide(
+        ocol("carry_share"), cs_sum[team_of], out=np.zeros(off.size), where=cs_sum[team_of] > 0
+    )
+    ds_norm = np.divide(
+        ocol("dropback_share"), ds_sum[team_of], out=np.zeros(off.size), where=ds_sum[team_of] > 0
+    )
+    exp_design = exp_plays_t * (1 - exp_pr_t)
+    exp_db = exp_plays_t * exp_pr_t
+    exp_scr = ds_norm * exp_db[team_of] * (1 - ocol("sack_rate")) * ocol("scramble_rate")
+    exp_car = cs_norm * exp_design[team_of] + exp_scr
+    car_sum = np.zeros(T)
+    np.add.at(car_sum, team_of, exp_car)
+    car_frac = np.divide(
+        exp_car, car_sum[team_of], out=np.zeros(off.size), where=car_sum[team_of] > 0
+    )
     mu_r = np.divide(
         td_weight("rush_td_share", "gl_carry_share", "carry_share"),
-        car_share,
+        car_frac,
         out=np.zeros(off.size),
-        where=car_share > 0,
+        where=car_frac > 0,
     )
-    rush_td = lay.scatter(_allocate(rng, rush_td_drawn, lay.gather(carries * mu_r[:, None], S)))
-    rush_td = np.minimum(rush_td, carries)
-    pass_td_team = lay.team_sum(rec_td)
-    pass_td = lay.scatter(_allocate(rng, pass_td_team, lay.gather(att, S)))
+    rush_td = lay.scatter(_allocate(rng, rush_td_drawn, lay.gather(run_carries * mu_r[:, None], S)))
+    rush_td = np.minimum(rush_td, run_carries)
+
+    # ---- 7. passing totals from the receivers (D-057) -------------------- #
+    team_cmp = lay.team_sum(rec) + b_rec
+    team_rec_yds = lay.team_sum(rec_yds) + b_yds
+    pass_td_team = lay.team_sum(rec_td) + b_td
+    att_blk = lay.gather(att, S)
+    cmp_blk = _split_hypergeometric(rng, team_cmp, att_blk)
+    ptd_blk = _split_hypergeometric(rng, pass_td_team, cmp_blk)
+    pyd_blk = _split_proportional(team_rec_yds, cmp_blk)
+    cmp_ = lay.scatter(cmp_blk)
+    pass_td = lay.scatter(ptd_blk)
+    pass_yds = lay.scatter(pyd_blk)
+    int_rate = _blend(ocol("int_rate"), dst_int[opp_of_player])
+    ints = np.minimum(rng.binomial(att.astype(np.int64), int_rate[:, None]), att - cmp_)
     rush_td_team = lay.team_sum(rush_td)
     off_td = np.where(has_offense[:, None], pass_td_team + rush_td_team, off_td_drawn)
 
-    # ---- 7. fumbles ------------------------------------------------------ #
-    touches = db + carries + rec
+    # ---- 8. fumbles ------------------------------------------------------ #
+    touches = db + run_carries + rec
     fum_rate = _blend(ocol("fumble_rate"), dst_fum[opp_of_player])
     fum_lost = rng.binomial(touches.astype(np.int64), fum_rate[:, None]).astype(np.float64)
 
-    # ---- 8a. defense events (a defense faces the opponent's offense) ------ #
+    # ---- 9a. defense events (a defense faces the opponent's offense) ------ #
     sacks_off = lay.team_sum(sacks)
     ints_off = lay.team_sum(ints)
     fum_off = lay.team_sum(fum_lost)
@@ -526,6 +704,13 @@ def simulate_full(
     def_sacks = sacks_off[opp]
     def_int = ints_off[opp]
     def_fum_rec = fum_off[opp]
+    ff_q = np.clip(dst_arr("ff_per_fum_rec", DEFAULT_DST["ff_per_fum_rec"]), 0.0, 1.0)
+    ff_extra = np.maximum(
+        dst_arr("ff_rate", DEFAULT_DST["ff_rate"]) - ff_q * def_fum_rec.mean(axis=1), FF_EXTRA_MIN
+    )
+    forced = rng.binomial(def_fum_rec.astype(np.int64), ff_q[:, None]) + rng.poisson(
+        ff_extra[:, None], size=(T, S)
+    )
     def_td = rng.binomial(
         (def_int + def_fum_rec).astype(np.int64),
         dst_arr("def_td_rate", DEFAULT_DST["def_td_rate"])[:, None],
@@ -544,7 +729,7 @@ def simulate_full(
     ret_pvals /= ret_pvals.sum(-1, keepdims=True)
     ret_td = lay.scatter(rng.multinomial(st_td, ret_pvals)[..., :-1].astype(np.float64))
 
-    # ---- 7b. two-point conversions --------------------------------------- #
+    # ---- 8b. two-point conversions --------------------------------------- #
     two_att = rng.binomial(off_td.astype(np.int64), two_pt_rate[:, None])
     two_conv = rng.binomial(two_att, TWO_PT_SUCCESS).astype(np.float64)
     scorer_w = pp.select(
@@ -552,16 +737,16 @@ def simulate_full(
     ).to_series()
     scorer_w = scorer_w.to_numpy().astype(np.float64)[off]
     scorers = lay.scatter(_allocate(rng, two_conv, lay.gather(scorer_w, S) * act_blk))
-    tshare, cshare = ocol("target_share"), ocol("carry_share")
+    cshare = ocol("carry_share")
     pass_prob = np.divide(
         tshare, tshare + cshare, out=np.full(off.size, 0.5), where=(tshare + cshare) > 0
     )
     pass_prob = np.where(position[off] == "QB", 0.0, pass_prob)
     pass_conv = rng.binomial(scorers.astype(np.int64), pass_prob[:, None]).astype(np.float64)
-    qb_credit = lay.scatter(_allocate(rng, lay.team_sum(pass_conv), lay.gather(att, S)))
+    qb_credit = lay.scatter(_allocate(rng, lay.team_sum(pass_conv), att_blk))
     two_pt = scorers + qb_credit
 
-    # ---- 8b. kickers ----------------------------------------------------- #
+    # ---- 9b. kickers ----------------------------------------------------- #
     nk = kick.size
     k_team = p_team[kick]
     k_active = active[kick]
@@ -600,7 +785,7 @@ def simulate_full(
         + 3.0 * fg_made_team
         + 2.0 * safeties
     )
-    off_yds = lay.team_sum(pass_yds) + lay.team_sum(rush_yds) - SACK_YARDS * sacks_off
+    off_yds = team_rec_yds + lay.team_sum(rush_yds) - SACK_YARDS * sacks_off
     if no_off.any():
         off_yds[no_off] = rng.normal(*DEFAULT_YDS_ALLOWED, size=(int(no_off.sum()), S))
     yds_allowed = np.rint(off_yds[opp])
@@ -622,15 +807,15 @@ def simulate_full(
 
     put("pass_att", att)
     put("pass_cmp", cmp_)
-    put("pass_yds", np.rint(pass_yds))
+    put("pass_yds", pass_yds)
     put("pass_td", pass_td)
     put("pass_int", ints)
     put("rush_att", carries)
-    put("rush_yds", np.rint(rush_yds))
+    put("rush_yds", rush_yds)
     put("rush_td", rush_td)
     put("targets", targets)
     put("rec", rec)
-    put("rec_yds", np.rint(rec_yds))
+    put("rec_yds", rec_yds)
     put("rec_td", rec_td)
     put("two_pt", two_pt)
     put("fum_lost", fum_lost)
@@ -652,6 +837,7 @@ def simulate_full(
         stats_d["sacks"] = def_sacks[d_team]
         stats_d["def_int"] = def_int[d_team]
         stats_d["fum_rec"] = def_fum_rec[d_team]
+        stats_d["forced_fumbles"] = forced[d_team].astype(np.float64)
         stats_d["def_td"] = def_td[d_team]
         stats_d["st_td"] = st_td[d_team].astype(np.float64)
         stats_d["safeties"] = safeties[d_team].astype(np.float64)
@@ -696,9 +882,18 @@ def simulate_full(
         points=points,
         plays=plays,
         dropbacks=dropbacks,
+        designed_runs=designed,
+        scrambles=lay.team_sum(scr),
+        kneels=lay.team_sum(kneels),
         pass_att=att_team,
-        rush_att=rush_team,
+        pass_cmp=team_cmp,
+        rush_att=lay.team_sum(carries),
         sacks=sacks_off,
+        targets=lay.team_sum(targets),
+        unmodeled_targets=b_tgt,
+        unmodeled_rec=b_rec,
+        unmodeled_rec_yds=b_yds,
+        unmodeled_rec_td=b_td,
         off_td=off_td,
         pass_td=np.where(has_offense[:, None], pass_td_team, pass_td_drawn),
         rush_td=np.where(has_offense[:, None], rush_td_team, rush_td_drawn),
@@ -706,7 +901,7 @@ def simulate_full(
         fg_made=fg_made_team,
         two_pt_att=two_att,
         two_pt_conv=two_conv,
-        pass_yds=lay.team_sum(pass_yds),
+        pass_yds=team_rec_yds,
         rush_yds=lay.team_sum(rush_yds),
     )
     return SimulationResult(players=out, teams=teams, seed=seed, n_sims=S)

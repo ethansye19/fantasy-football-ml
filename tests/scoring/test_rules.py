@@ -254,6 +254,23 @@ def test_dst_event_keys_and_st_td_precedence():
     assert pts(rules(def_st_td=6, st_td=3), d) == [6.0]
 
 
+def test_dst_forced_fumbles_score_ff_and_def_st_ff_on_the_combined_count():
+    """D-055: one combined forced-fumble count, weighted by the mean of ff and def_st_ff."""
+    d = {"position": "DST", "forced_fumbles": 3, "fum_rec": 1, "pts_allowed": 21}
+    assert pts(rules(ff=1), d) == [3.0]
+    assert pts(rules(def_st_ff=2), d) == [6.0]
+    # both present with the same value (the test league): no double counting
+    assert pts(rules(ff=1, def_st_ff=1), d) == [3.0]
+    # different values: the mean is the documented approximation
+    assert pts(rules(ff=1, def_st_ff=2), d) == [4.5]
+    assert pts(rules(ff=1, fum_rec=2), d) == [5.0]
+    # an offense row never scores the DST key, even with a stray value
+    assert pts(rules(ff=1), {"position": "WR", "forced_fumbles": 2}) == [0.0]
+    r = rules(ff=1, def_st_ff=1)
+    assert "ff" in r.supported_keys and "def_st_ff" in r.supported_keys
+    assert r.column_weights()["dst"]["forced_fumbles"] == 1.0
+
+
 def test_points_allowed_bands_boundaries():
     r = rules(
         pts_allow_0=10,
@@ -347,7 +364,6 @@ def test_unsupported_keys_listed_warned_once_and_ignored():
     settings = {
         "rec": 1,
         "pass_sack": -1,
-        "ff": 1,
         "pass_td_40p": 2,
         "idp_tkl": 1,
         "fum": -1,
@@ -355,7 +371,6 @@ def test_unsupported_keys_listed_warned_once_and_ignored():
         "def_2pt": 2,
         "st_ff": 1,
         "st_fum_rec": 1,
-        "def_st_ff": 1,
         "def_st_fum_rec": 1,
         "made_up_key": 3,
     }
@@ -376,7 +391,9 @@ def test_scoring_hash_stability():
     c = ScoringRules.from_sleeper({"rec": 0.5, "pass_td": 4, "rush_yd": 0.1})
     _reset_warning_cache()
     with pytest.warns(UnsupportedScoringKeyWarning):
-        d = ScoringRules.from_sleeper({"rec": 1, "pass_td": 4, "rush_yd": 0.1, "ff": 1})
+        d = ScoringRules.from_sleeper({"rec": 1, "pass_td": 4, "rush_yd": 0.1, "st_ff": 1})
+    e = ScoringRules.from_sleeper({"rec": 1, "pass_td": 4, "rush_yd": 0.1, "ff": 1})
+    assert e.scoring_hash != a.scoring_hash  # ff is scored since D-055
     assert a == b and a.scoring_hash == b.scoring_hash
     assert a.scoring_hash != c.scoring_hash
     assert d.scoring_hash == a.scoring_hash  # unsupported keys do not change scores
@@ -392,7 +409,7 @@ def test_test_league_keys(fixtures_dir):
     with pytest.warns(UnsupportedScoringKeyWarning):
         r = ScoringRules.from_sleeper(league["scoring_settings"])
     assert len(r.settings) == 41
-    assert set(r.unsupported_keys) == {"def_st_ff", "def_st_fum_rec", "ff", "st_ff", "st_fum_rec"}
+    assert set(r.unsupported_keys) == {"def_st_fum_rec", "st_ff", "st_fum_rec"}
     assert set(r.supported_keys) <= SUPPORTED_KEYS
-    assert len(r.supported_keys) == 36
+    assert len(r.supported_keys) == 38
     _reset_warning_cache()

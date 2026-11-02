@@ -10,10 +10,11 @@ Mismatch classes found (documented in docs/status/phase3-ml-engineer-a.md):
   higher here than on Sleeper; nflverse records 2 catches, 36 yards, 1 TD and
   no lost fumble, so the two sources disagree on one stat (a 20-yard gain or
   a lost fumble), not on the rules.
-- DST, forced fumbles: the league scores ``ff`` (1 point per forced fumble),
-  which the stat line cannot compute. All four DST mismatches (CIN -3, PIT -2,
-  KC -1, LAR -1) equal the defense's forced fumbles in nflverse play-by-play
-  exactly, so points-allowed bands, sacks, takeaways and safeties agree.
+- DST, forced fumbles: before D-055 the league's ``ff`` and ``def_st_ff``
+  keys (1 point each) could not be computed, and all four DST mismatches
+  (CIN -3, PIT -2, KC -1, LAR -1) equalled the defense's forced fumbles. With
+  the combined ``forced_fumbles`` column scored by the mean of the two keys
+  every final DST matches (7/7 on 2026-11-03), so the DST rate is gated too.
 """
 
 from __future__ import annotations
@@ -109,5 +110,7 @@ def test_week8_points_match_sleeper(fixtures_dir):
     offense_rate = report(offense, "offense (QB/RB/WR/TE/K)")
     dst_rate = report(dst, "DST")
     assert offense_rate >= 0.95
-    # DST definitions differ (forced fumbles, points-allowed definition); not gated.
-    assert 0.0 <= dst_rate <= 1.0
+    # D-055: forced fumbles close the only DST definition gap (7/7 when written); a
+    # small allowance remains for later stat corrections on either side.
+    assert dst.height >= 5
+    assert dst_rate >= 0.85

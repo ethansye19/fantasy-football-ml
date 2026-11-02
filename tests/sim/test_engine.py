@@ -83,6 +83,26 @@ def test_dirichlet_shares_sum_to_one_over_active_players():
     np.testing.assert_allclose(m[:4], [0.4, 0.3, 0.2, 0.1], atol=0.01)
 
 
+def _team_sums(sims: pl.DataFrame, teams: pl.DataFrame) -> pl.DataFrame:
+    return (
+        sims.filter(pl.col("position") != "DST")
+        .group_by(["team", "sim"])
+        .agg(
+            pl.col("targets").cast(pl.Int64).sum().alias("targets_p"),
+            pl.col("pass_att").cast(pl.Int64).sum().alias("pass_att_p"),
+            pl.col("pass_cmp").cast(pl.Int64).sum().alias("pass_cmp_p"),
+            pl.col("pass_yds").cast(pl.Int64).sum().alias("pass_yds_p"),
+            pl.col("rush_att").cast(pl.Int64).sum().alias("rush_att_p"),
+            pl.col("rec").cast(pl.Int64).sum().alias("rec_p"),
+            pl.col("rec_yds").cast(pl.Int64).sum().alias("rec_yds_p"),
+            pl.col("rec_td").cast(pl.Int64).sum().alias("rec_td_p"),
+            pl.col("pass_td").cast(pl.Int64).sum().alias("pass_td_p"),
+            pl.col("rush_td").cast(pl.Int64).sum().alias("rush_td_p"),
+        )
+        .join(teams, on=["team", "sim"])
+    )
+
+
 def test_team_totals_are_conserved():
     tp = toy_team_params()
     pp = toy_player_params(
@@ -90,28 +110,26 @@ def test_team_totals_are_conserved():
     )
     res = simulate_full(tp, pp, toy_dst_params(), n_sims=1000, seed=11)
     sims, teams = res.players, res.teams
-    per_team = (
-        sims.filter(pl.col("position") != "DST")
-        .group_by(["team", "sim"])
-        .agg(
-            pl.col("targets").cast(pl.Int64).sum().alias("targets"),
-            pl.col("pass_att").cast(pl.Int64).sum().alias("pass_att_p"),
-            pl.col("rush_att").cast(pl.Int64).sum().alias("rush_att_p"),
-            pl.col("rec").cast(pl.Int64).sum().alias("rec"),
-            pl.col("rec_td").cast(pl.Int64).sum().alias("rec_td"),
-            pl.col("pass_td").cast(pl.Int64).sum().alias("pass_td_p"),
-            pl.col("rush_td").cast(pl.Int64).sum().alias("rush_td_p"),
-        )
-        .join(teams, on=["team", "sim"])
-    )
+    per_team = _team_sums(sims, teams)
     assert per_team.height == 2 * 1000
-    assert (per_team["targets"] == per_team["pass_att"]).all()
+    # receivers plus the unmodeled bucket take every attempt
+    assert (per_team["targets_p"] + per_team["unmodeled_targets"] == per_team["pass_att"]).all()
+    assert (per_team["targets_p"] == per_team["targets"]).all()
     assert (per_team["pass_att_p"] == per_team["pass_att"]).all()
     assert (per_team["rush_att_p"] == per_team["rush_att"]).all()
-    assert (per_team["rec_td"] == per_team["pass_td_p"]).all()
-    assert (per_team["rec_td"] + per_team["rush_td_p"] == per_team["off_td"]).all()
-    assert (per_team["rec"] <= per_team["targets"]).all()
-    assert (teams["dropbacks"] + teams["rush_att"] == teams["plays"]).all()
+    assert (per_team["rec_td_p"] + per_team["unmodeled_rec_td"] == per_team["pass_td_p"]).all()
+    assert (per_team["pass_td_p"] + per_team["rush_td_p"] == per_team["off_td"]).all()
+    assert (per_team["rec_p"] <= per_team["targets_p"]).all()
+    # D-057: passing totals are the receivers' totals in every simulation
+    assert (per_team["pass_cmp_p"] == per_team["rec_p"] + per_team["unmodeled_rec"]).all()
+    assert (per_team["pass_yds_p"] == per_team["rec_yds_p"] + per_team["unmodeled_rec_yds"]).all()
+    assert (per_team["pass_yds_p"] == per_team["pass_yds"]).all()
+    assert (per_team["pass_cmp_p"] == per_team["pass_cmp"]).all()
+    # plays are dropbacks plus designed runs; carries add scrambles and kneel-downs
+    assert (teams["dropbacks"] + teams["designed_runs"] == teams["plays"]).all()
+    assert (
+        teams["designed_runs"] + teams["scrambles"] + teams["kneels"] == teams["rush_att"]
+    ).all()
     assert teams["plays"].min() >= 40 and teams["plays"].max() <= 90
     # every player: receptions <= targets, touchdowns <= touches
     off = sims.filter(pl.col("position") != "DST")
@@ -119,6 +137,88 @@ def test_team_totals_are_conserved():
     assert (off["rec_td"] <= off["rec"]).all()
     assert (off["rush_td"] <= off["rush_att"]).all()
     assert (off["pass_cmp"] + off["pass_int"] <= off["pass_att"]).all()
+
+
+def test_qb_passing_equals_receiving_with_bucket_and_two_passers():
+    """D-057 with an explicit unmodeled bucket and two QBs sharing dropbacks."""
+    tp = toy_team_params().with_columns(
+        pl.lit(0.12).alias("unmodeled_tgt_share"),
+        pl.lit(0.4).alias("unmodeled_catch_rate"),
+        pl.lit(10.0).alias("unmodeled_yards_per_rec"),
+    )
+    pp = toy_player_params(**{"HOM-QB1": {"dropback_share": 0.6}})
+    extra = pp.filter(pl.col("entity_id") == "HOM-QB1").with_columns(
+        pl.lit("HOM-QB2").alias("entity_id"),
+        pl.lit(0.4).alias("dropback_share"),
+        pl.lit(0.0).alias("carry_share"),
+        pl.lit(0.0).alias("rush_td_share"),
+    )
+    pp = pl.concat([pp, extra], how="diagonal_relaxed")
+    res = simulate_full(tp, pp, toy_dst_params(), n_sims=800, seed=13)
+    per_team = _team_sums(res.players, res.teams)
+    assert (per_team["pass_yds_p"] == per_team["rec_yds_p"] + per_team["unmodeled_rec_yds"]).all()
+    assert (per_team["pass_cmp_p"] == per_team["rec_p"] + per_team["unmodeled_rec"]).all()
+    assert (per_team["pass_td_p"] == per_team["rec_td_p"] + per_team["unmodeled_rec_td"]).all()
+    assert per_team["unmodeled_targets"].mean() > 0
+    share = per_team["unmodeled_targets"].sum() / per_team["pass_att"].sum()
+    assert abs(share - 0.12) < 0.02
+    qbs = res.players.filter(pl.col("entity_id").is_in(["HOM-QB1", "HOM-QB2"]))
+    assert (qbs["pass_cmp"] + qbs["pass_int"] <= qbs["pass_att"]).all()
+    both = (
+        qbs.group_by("sim").agg((pl.col("pass_att") > 0).sum().alias("n")).filter(pl.col("n") == 2)
+    )
+    assert both.height > 400  # both QBs throw in most simulations
+
+
+def test_scrambles_and_kneels_are_qb_carries(toy):
+    tp, pp, dp = toy
+    res = simulate_full(tp, pp, dp, n_sims=1000, seed=17)
+    qb = res.players.filter(pl.col("entity_id") == "HOM-QB1")
+    team = res.teams.filter(pl.col("team") == "HOM")
+    assert team["scrambles"].mean() > 0.5 and team["kneels"].mean() > 0.3
+    # QB carries are his designed runs plus every scramble and kneel of the team
+    rb = res.players.filter(pl.col("team") == "HOM", pl.col("position") == "RB")
+    designed_rb = rb.group_by("sim").agg(pl.col("rush_att").cast(pl.Int64).sum()).sort("sim")
+    t = team.sort("sim")
+    qb_carries = qb.sort("sim")["rush_att"].cast(pl.Int64)
+    assert (
+        qb_carries + designed_rb["rush_att"]
+        == t["designed_runs"].cast(pl.Int64) + t["scrambles"] + t["kneels"]
+    ).all()
+
+
+def test_passer_fallback_keeps_marginal_availability():
+    tp = toy_team_params()
+    pp = toy_player_params(**{"HOM-QB1": {"availability_prob": 0.9}})
+    extra = pp.filter(pl.col("entity_id") == "HOM-QB1").with_columns(
+        pl.lit("HOM-QB2").alias("entity_id"),
+        pl.lit(0.3).alias("availability_prob"),
+        pl.lit(0.2).alias("dropback_share"),
+    )
+    pp = pl.concat([pp, extra], how="diagonal_relaxed")
+    sims = simulate(tp, pp, toy_dst_params(), n_sims=6000, seed=19)
+    q = sims.filter(pl.col("entity_id").is_in(["HOM-QB1", "HOM-QB2"]))
+    per_sim = q.group_by("sim").agg(pl.col("active").sum().alias("n"))
+    assert per_sim["n"].min() >= 1  # a passer in every simulation
+    rate = q.filter(pl.col("entity_id") == "HOM-QB2")["active"].mean()
+    assert abs(rate - 0.3) < 0.02
+
+
+def test_dst_forced_fumbles_follow_recoveries_and_rate(toy):
+    tp, pp, _ = toy
+    dp = pl.DataFrame({"team": ["HOM", "AWY"], "game_id": [GAME, GAME], "ff_rate": [1.5, 0.5]})
+    sims = simulate(tp, pp, dp, n_sims=3000, seed=23)
+    dst = sims.filter(pl.col("position") == "DST")
+    hom = dst.filter(pl.col("team") == "HOM")
+    awy = dst.filter(pl.col("team") == "AWY")
+    assert abs(hom["forced_fumbles"].cast(pl.Float64).mean() - 1.5) < 0.1
+    assert abs(awy["forced_fumbles"].cast(pl.Float64).mean() - 0.5) < 0.1
+    corr = np.corrcoef(
+        hom["forced_fumbles"].to_numpy().astype(float), hom["fum_rec"].to_numpy().astype(float)
+    )[0, 1]
+    assert corr > 0.2
+    scored = ScoringRules.from_dict({"ff": 1.0}).score(hom)
+    assert scored.mean() == pytest.approx(hom["forced_fumbles"].cast(pl.Float64).mean())
 
 
 def test_defense_mirrors_the_opposing_offense(toy):

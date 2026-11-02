@@ -18,7 +18,7 @@ ROSTER = (
 )
 
 
-def toy_team_params(total_sd: float = 10.0, margin_sd: float = 13.5) -> pl.DataFrame:
+def toy_team_params(total_sd: float = 13.2, margin_sd: float = 12.8) -> pl.DataFrame:
     rows = []
     for team, opp, home, spread in (("HOM", "AWY", True, 3.0), ("AWY", "HOM", False, -3.0)):
         rows.append(

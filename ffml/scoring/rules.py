@@ -40,6 +40,15 @@ Composite keys:
   fumble-recovery-touchdown column.
 - DST ``st_td`` (kick and punt return touchdowns of the unit): scored with
   ``def_st_td`` when present, else with ``st_td``.
+- DST forced fumbles (D-055): Sleeper scores defensive forced fumbles with
+  ``ff`` and the unit's special-teams forced fumbles with ``def_st_ff``. The
+  vocabulary has one ``forced_fumbles`` column, which counts defense and
+  special teams **combined** (``fact_dst_game.forced_fumbles``), so both keys
+  use the combined count and it is scored with the **mean of the ``ff`` and
+  ``def_st_ff`` values present** (same convention as two-point conversions).
+  This is exact when the two keys share a value or only defensive forced
+  fumbles occur, and an approximation for leagues that weight them
+  differently. The individual-player key ``st_ff`` stays unsupported.
 
 Bands (Sleeper semantics, exclusive ranges):
 
@@ -67,7 +76,7 @@ Unsupported keys
 Keys that cannot be computed from the vocabulary (``pass_sack``, distance
 touchdown and long-play bonuses such as ``pass_td_40p`` or ``rec_40p``,
 first-down keys, return yardage, ``fum`` (total fumbles, only lost fumbles are
-tracked), forced fumbles ``ff``/``def_st_ff``/``st_ff``, special-teams fumble
+tracked), individual special-teams forced fumbles ``st_ff``, special-teams fumble
 recoveries ``def_st_fum_rec``/``st_fum_rec``, ``def_pass_def``, ``def_2pt``,
 IDP keys, and anything unknown) are listed in
 :attr:`ScoringRules.unsupported_keys`, reported with one warning per distinct
@@ -174,12 +183,19 @@ _BANDS: dict[str, tuple[tuple[str, ...], float, float | None, str]] = {
 }
 
 TWO_PT_KEYS: tuple[str, ...] = ("pass_2pt", "rush_2pt", "rec_2pt")
+# DST forced fumbles: both keys score the combined count with the mean of the values present.
+FORCED_FUMBLE_KEYS: tuple[str, ...] = ("ff", "def_st_ff")
 # Priority lists: the first key present supplies the weight.
 OFFENSE_RET_TD_KEYS: tuple[str, ...] = ("st_td", "fum_rec_td")
 DST_ST_TD_KEYS: tuple[str, ...] = ("def_st_td", "st_td")
 
 SUPPORTED_KEYS: frozenset[str] = frozenset(
-    set(_LINEAR) | set(_BANDS) | set(TWO_PT_KEYS) | set(OFFENSE_RET_TD_KEYS) | set(DST_ST_TD_KEYS)
+    set(_LINEAR)
+    | set(_BANDS)
+    | set(TWO_PT_KEYS)
+    | set(FORCED_FUMBLE_KEYS)
+    | set(OFFENSE_RET_TD_KEYS)
+    | set(DST_ST_TD_KEYS)
 )
 
 # Keys known to be unsupported, with the reason (documentation and messages only;
@@ -187,9 +203,7 @@ SUPPORTED_KEYS: frozenset[str] = frozenset(
 KNOWN_UNSUPPORTED: dict[str, str] = {
     "pass_sack": "sacks taken by the passer are not in the stat line",
     "fum": "total fumbles; only fumbles lost are tracked",
-    "ff": "forced fumbles are not tracked",
-    "def_st_ff": "special-teams forced fumbles are not tracked",
-    "st_ff": "special-teams forced fumbles are not tracked",
+    "st_ff": "individual special-teams forced fumbles are not tracked",
     "def_st_fum_rec": "special-teams fumble recoveries are not tracked separately",
     "st_fum_rec": "special-teams fumble recoveries are not tracked separately",
     "def_pass_def": "passes defended are not tracked",
@@ -358,6 +372,11 @@ class ScoringRules:
         return sum(present) / len(present) if present else 0.0
 
     @property
+    def forced_fumble_weight(self) -> float:
+        present = [v for k, v in self.settings if k in FORCED_FUMBLE_KEYS]
+        return sum(present) / len(present) if present else 0.0
+
+    @property
     def offense_ret_td_weight(self) -> float:
         return _first_present(self.weights, OFFENSE_RET_TD_KEYS)
 
@@ -381,6 +400,8 @@ class ScoringRules:
             out.setdefault(_OFF, {})["ret_td"] = self.offense_ret_td_weight
         if self.dst_st_td_weight:
             out.setdefault(_DST, {})["st_td"] = self.dst_st_td_weight
+        if self.forced_fumble_weight:
+            out.setdefault(_DST, {})["forced_fumbles"] = self.forced_fumble_weight
         return out
 
     # -- scoring ---------------------------------------------------------- #
@@ -458,6 +479,7 @@ class ScoringRules:
 __all__ = [
     "DST_ST_TD_KEYS",
     "ENGINE_VERSION",
+    "FORCED_FUMBLE_KEYS",
     "KNOWN_UNSUPPORTED",
     "OFFENSE_RET_TD_KEYS",
     "PRESETS",

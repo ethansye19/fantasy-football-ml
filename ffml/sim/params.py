@@ -11,21 +11,30 @@ TeamGameParams (one row per team per game; both teams of a game are required)
     ``game_id, season, week, team, opponent, home`` keys;
     ``exp_plays`` expected offensive plays (dropbacks plus designed runs and
     scrambles, as ``fact_team_game.plays``), ``sd_plays``;
-    ``exp_pass_rate`` expected dropbacks per play, ``pass_rate_conc`` Beta
+    ``exp_pass_rate`` expected dropbacks per play (dropbacks include sacks
+    and scrambles, as ``fact_team_game.dropbacks``), ``pass_rate_conc`` Beta
     concentration; ``exp_off_td`` expected offensive touchdowns,
     ``exp_fg_att`` expected field-goal attempts, ``exp_two_pt_att`` expected
-    two-point attempts; ``implied_total`` (null: derived from the lines);
-    ``spread_line`` expected margin of ``team`` over ``opponent`` (positive
-    when ``team`` is favoured; for the home team this is
-    ``dim_game.spread_line``, for the away team its negative);
-    ``total_line``; ``margin_sd`` (13.5) and ``total_sd`` (10.0) of the
-    game-level draws.
+    two-point attempts; ``exp_kneels`` expected QB kneel-downs (carries for
+    -1 yard that ``plays`` excludes); ``implied_total`` (null: derived from
+    the lines); ``spread_line`` expected margin of ``team`` over
+    ``opponent`` (positive when ``team`` is favoured; for the home team this
+    is ``dim_game.spread_line``, for the away team its negative);
+    ``total_line``; ``margin_sd`` (12.8) and ``total_sd`` (13.2) of the
+    game-level draws (D-056: residual sds against the lines, 2016-2024).
+    The unmodeled-receivers bucket (D-057): ``unmodeled_tgt_share`` is the
+    share of the team's pass attempts that do not go to a projected player
+    (throwaways, spikes, and targets of players without a row; null: one
+    minus the team's summed ``target_share``), caught at
+    ``unmodeled_catch_rate`` for ``unmodeled_yards_per_rec``.
 
 PlayerGameParams (one row per player per game; positions QB, RB, WR, TE, K)
     ``entity_id, game_id, team, position`` keys; ``availability_prob``;
-    expected shares of the team's targets, carries and dropbacks
+    expected shares of the team's targets, designed runs and dropbacks
     (``target_share``, ``carry_share``, ``dropback_share``; renormalised over
-    active players in every simulation); ``gl_carry_share`` and
+    active players in every simulation; ``carry_share`` is the share of the
+    team's designed runs, so a QB's scrambles, drawn with ``scramble_rate``
+    per non-sack dropback, and kneel-downs come on top); ``gl_carry_share`` and
     ``rz_target_share`` (used as touchdown weights when the TD shares are
     null); ``pass_td_share`` (share of the team's passing touchdowns caught)
     and ``rush_td_share``; ``share_conc`` Dirichlet concentration (null:
@@ -49,6 +58,10 @@ DstGameParams (one row per team defense per game; optional)
     the opposing offense's stat lines stay identical; ``def_td_rate``
     (defensive touchdowns per takeaway), ``st_td_rate`` (return touchdowns
     per game), ``safety_rate`` and ``block_rate`` (per game);
+    ``ff_rate`` expected forced fumbles per game (defense and special teams
+    combined, D-055) and ``ff_per_fum_rec`` (the share of the defense's
+    simulated fumble recoveries that count as forced; the remaining expected
+    forced fumbles are fumbles the offense recovered and are drawn as Poisson);
     ``yds_allowed_mean`` and ``yds_allowed_sd`` (when present, the simulated
     yards of the opposing offense are re-centred and re-scaled to them, which
     keeps the dependence on the opponent's simulated stat lines).
@@ -73,6 +86,8 @@ OFFENSE_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE")
 # Dirichlet concentration per position when share_conc is null (tuned later on
 # the validation seasons, MODELING.md section 6).
 DEFAULT_SHARE_CONC: dict[str, float] = {"QB": 100.0, "RB": 30.0, "WR": 60.0, "TE": 60.0, "K": 100.0}
+# Scrambles per non-sack dropback (QBs only; 2016-2024 league rate is about 0.045).
+DEFAULT_SCRAMBLE_RATE: dict[str, float] = {"QB": 0.045, "RB": 0.0, "WR": 0.0, "TE": 0.0, "K": 0.0}
 
 DEFAULT_FG_ATT_SHARE: dict[str, float] = {
     "0_19": 0.02,
@@ -199,11 +214,17 @@ class TeamGameParams(ParamsContract):
         "exp_off_td": _f(doc="expected offensive touchdowns", lower=0),
         "exp_fg_att": _f(doc="expected field-goal attempts", lower=0),
         "exp_two_pt_att": _f(0.12, "expected two-point attempts", lower=0),
+        "exp_kneels": _f(0.65, "expected QB kneel-downs (not in plays)", lower=0),
         "implied_total": _f(None, "implied team points (null: from lines)", nullable=True),
         "spread_line": _f(doc="expected margin of team over opponent (positive = favoured)"),
         "total_line": _f(doc="game total", lower=0),
-        "margin_sd": _f(13.5, "sd of the game margin draw", lower=0),
-        "total_sd": _f(10.0, "sd of the game total draw", lower=0),
+        "margin_sd": _f(12.8, "sd of the game margin draw (D-056)", lower=0),
+        "total_sd": _f(13.2, "sd of the game total draw (D-056)", lower=0),
+        "unmodeled_tgt_share": _f(
+            None, "share of attempts to the unmodeled bucket (null: 1 - sum)", 0, 1, True
+        ),
+        "unmodeled_catch_rate": _f(0.05, "completion rate of bucket attempts", 0, 1),
+        "unmodeled_yards_per_rec": _f(9.0, "yards per bucket completion", 0.1),
     }
 
 
@@ -236,6 +257,13 @@ class PlayerGameParams(ParamsContract):
         "yards_per_comp_shape": _f(1.2, "Gamma shape of yards per completion", 0.01),
         "int_rate": _f(0.023, "interceptions per attempt", 0, 1),
         "sack_rate": _f(0.065, "sacks per dropback", 0, 1),
+        "scramble_rate": Col(
+            pl.Float64,
+            dict(DEFAULT_SCRAMBLE_RATE),
+            "scrambles per non-sack dropback",
+            lower=0,
+            upper=1,
+        ),
         "fumble_rate": _f(0.005, "lost fumbles per touch", 0, 1),
         "two_pt_rate": _f(None, "scorer weight for two-point conversions", 0, None, True),
         "ret_td_rate": _f(0.0, "return touchdowns per game", 0),
@@ -272,6 +300,8 @@ class DstGameParams(ParamsContract):
         "st_td_rate": _f(0.04, "return touchdowns per game", 0),
         "safety_rate": _f(0.02, "safeties per game", 0),
         "block_rate": _f(0.05, "blocked kicks per game", 0),
+        "ff_rate": _f(0.82, "forced fumbles per game (defense and ST)", 0),
+        "ff_per_fum_rec": _f(0.84, "share of fumble recoveries that count as forced", 0, 1),
         "yds_allowed_mean": _f(None, "target mean of yards allowed", 0, None, True),
         "yds_allowed_sd": _f(None, "target sd of yards allowed", 0, None, True),
     }
@@ -366,6 +396,7 @@ def synthetic_slate(
 __all__ = [
     "DEFAULT_FG_ATT_SHARE",
     "DEFAULT_FG_MAKE_PROB",
+    "DEFAULT_SCRAMBLE_RATE",
     "DEFAULT_SHARE_CONC",
     "FG_ATT_SHARE_COLUMNS",
     "FG_MAKE_PROB_COLUMNS",

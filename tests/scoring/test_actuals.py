@@ -95,6 +95,7 @@ def store(tmp_path) -> SnapshotStore:
                 sacks=3,
                 interceptions=2,
                 fumble_recoveries=1,
+                forced_fumbles=2,
                 def_td=1,
                 return_td=1,
                 safeties=1,
@@ -130,6 +131,7 @@ def test_actual_statlines_mapping(store, tmp_settings):
     d = by["AAA"]
     assert d["position"] == "DST" and d["played"] is True and d["kickoff_utc"] == KICK
     assert (d["sacks"], d["def_int"], d["fum_rec"], d["def_td"], d["st_td"]) == (3, 2, 1, 1, 1)
+    assert d["forced_fumbles"] == 2 and qb["forced_fumbles"] == 0
     assert (d["safeties"], d["blocked_kicks"], d["pts_allowed"], d["yds_allowed"]) == (
         1,
         1,
@@ -152,6 +154,16 @@ def test_actual_statlines_score_end_to_end(store, tmp_settings):
     assert p["WR1"] == pytest.approx(6 + 8.8 + 6 + 6)
     assert p["K1"] == pytest.approx(3 + 4 + 5 - 1 + 3 - 1)
     assert p["AAA"] == pytest.approx(3 + 4 + 2 + 6 + 6 + 2 + 2 + 4)
+    league = ScoringRules.from_dict({"ff": 1, "def_st_ff": 1, "sack": 1})
+    assert dict(zip(out["entity_id"], league.score(out), strict=True))["AAA"] == 3 + 2
+
+
+def test_dst_snapshot_without_forced_fumbles_reads_zero():
+    from ffml.scoring.actuals import dst_statlines
+
+    old = pl.DataFrame([_dst_row()]).drop("forced_fumbles")
+    out = dst_statlines(old.with_columns(pl.lit(KICK).alias("kickoff_utc")))
+    assert out["forced_fumbles"].to_list() == [0]
 
 
 def test_postseason_kept_on_request(store, tmp_settings):

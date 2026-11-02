@@ -12,7 +12,8 @@ Column mapping from ``fact_player_game``: ``pass_cmp = completions``,
 ``fg_missed`` as is, ``xp_made = pat_made``, ``xp_missed = pat_att - pat_made``.
 
 From ``fact_dst_game``: ``def_int = interceptions``,
-``fum_rec = fumble_recoveries``, ``st_td = return_td``,
+``fum_rec = fumble_recoveries``, ``forced_fumbles`` as is (D-055; null in
+snapshots written before the column existed, read as 0), ``st_td = return_td``,
 ``pts_allowed = points_allowed``, ``yds_allowed = yards_allowed`` (rounded).
 
 Reading outcomes for a season is an evaluation access, so the holdout guard
@@ -100,6 +101,7 @@ _DST_SOURCE_COLUMNS: tuple[str, ...] = (
     "sacks",
     "interceptions",
     "fumble_recoveries",
+    "forced_fumbles",
     "def_td",
     "return_td",
     "safeties",
@@ -160,6 +162,8 @@ def dst_statlines(
 ) -> pl.DataFrame:
     """DST rows of ``fact_dst_game`` in the stat-line vocabulary (``entity_id`` = team)."""
     d = fact_dst_game
+    if "forced_fumbles" not in d.columns:  # snapshots written before D-055
+        d = d.with_columns(pl.lit(None, dtype=ACTUAL_STAT_DTYPE).alias("forced_fumbles"))
     if "kickoff_utc" not in d.columns:
         if dim_game is None:
             raise ValueError("dst_statlines needs kickoff_utc or dim_game")
@@ -168,6 +172,7 @@ def dst_statlines(
         "sacks": _int("sacks"),
         "def_int": _int("interceptions"),
         "fum_rec": _int("fumble_recoveries"),
+        "forced_fumbles": _int("forced_fumbles"),
         "def_td": _int("def_td"),
         "st_td": _int("return_td"),
         "safeties": _int("safeties"),
