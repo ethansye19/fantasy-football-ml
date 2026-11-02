@@ -642,6 +642,7 @@ def run_walk_forward(
     """
     wall_start = time.perf_counter()
     started_at = datetime.now(UTC).isoformat()
+    git_at_start = git_sha()
     seasons = sorted({int(s) for s in seasons})
     if not seasons:
         raise ValueError("seasons is empty")
@@ -692,7 +693,8 @@ def run_walk_forward(
     session = {
         "started_at": started_at,
         "finished_at": datetime.now(UTC).isoformat(),
-        "git": git_sha(),
+        "git": git_at_start,
+        "git_at_end": git_sha(),
         "pid": os.getpid(),
         "models": keys,
         "combine": combine,
@@ -727,7 +729,9 @@ def run_walk_forward(
         "created_at": sessions[0]["started_at"] if sessions else started_at,
         "written_at": datetime.now(UTC).isoformat(),
         "git": git_sha(),
-        "git_sessions": sorted({s["git"] for s in sessions}),
+        "git_sessions": sorted(
+            {s["git"] for s in sessions} | {s.get("git_at_end", s["git"]) for s in sessions}
+        ),
         "purpose": purpose,
         "seasons": seasons,
         "weeks": sorted({w for _, w in schedule}),
