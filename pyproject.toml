@@ -55,6 +55,9 @@ ffml = "ffml.cli:app"
 [tool.setuptools.packages.find]
 include = ["ffml*", "api*"]
 
+[tool.setuptools.package-data]
+ffml = ["data/schemas/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

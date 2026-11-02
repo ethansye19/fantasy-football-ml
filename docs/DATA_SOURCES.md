@@ -109,11 +109,13 @@ Not used: combine, draft picks, contracts, officials, trades.
    cp1252. Every project entry point sets `PYTHONUTF8=1`.
 2. `load_ff_opportunity` returns `season` as String and `week` as Float64.
    Cast on ingest; the schema test pins this.
-3. `load_injuries` for 2026 has no timestamp. Reports are week-keyed and are
-   refreshed daily, so the stored row for a past week is the final pre-game
-   report plus any later edits. Backtests therefore treat same-week injury
-   designations as a labelled sensitivity variant, not a primary feature
-   (MODELING.md, "Injury information policy").
+3. `load_injuries` for 2025 and 2026 has no timestamp; seasons 2016-2024 carry
+   a `date_modified` timestamp (kept as `report_modified_at`, D-029). Reports
+   are week-keyed and refreshed daily, so the stored row for a past week is
+   the final pre-game report plus any later edits. Backtests therefore treat
+   same-week injury designations as a labelled sensitivity variant, not a
+   primary feature (MODELING.md, "Injury information policy"); where the
+   historical timestamp exists it is used to audit that variant.
 4. Depth charts changed format in 2025: `dt` timestamps instead of weeks.
    Older seasons have weekly rows. The feature builder takes "latest snapshot
    at or before the cutoff" for 2025+ and "the week w-1 chart" before that.

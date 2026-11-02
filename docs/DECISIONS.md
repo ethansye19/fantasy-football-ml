@@ -31,6 +31,11 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-024 | 2026-11-01 | accepted | League scoring stored as Sleeper keys minus zero entries; missing key means 0 |
 | D-025 | 2026-11-01 | accepted | Sleeper client limits: 300 requests per minute, burst 30, one shared client per process |
 | D-026 | 2026-11-01 | accepted | Sleeper players snapshot id is the UTC date |
+| D-027 | 2026-11-01 | accepted | Schema pins follow the newest season; older-season layout differences only warn |
+| D-028 | 2026-11-01 | accepted | Seasons before a dataset's start are skipped and recorded; any other missing season fails |
+| D-029 | 2026-11-01 | accepted | Injury `date_modified` (present 2016-2024) is kept as `report_modified_at` |
+| D-030 | 2026-11-01 | accepted | Schema pin JSON ships as package data |
+| D-031 | 2026-11-01 | accepted | Nightly ingest refreshes only the current season; a full run follows Thursday stat corrections |
 
 ## D-001 Python 3.11
 
@@ -201,6 +206,22 @@ test league, including kicker distance buckets and DST points-allowed bands
 (D-024). Client limits are 300 requests per minute with a burst of 30 and one
 shared HTTP client per process (D-025). The players-map snapshot id is the
 UTC date and is fetched at most once per day (D-026).
+
+## D-027 to D-031 Ingestion policies (proposed by the Data Engineer, nflverse)
+
+The first full ingest (2016-2026, 20 datasets, 5,394,835 rows, 207 MB)
+showed per-season layout differences inside otherwise stable datasets: pbp
+`goal_to_go` is Int32 in some seasons and Float64 in others, weekly rosters
+`height` changed type in 2025, injuries 2016-2024 carry `date_modified` and
+`season_type` while 2025+ drop them for `game_type`, and depth charts have a
+15-column and a 12-column format. Decisions: the pinned schema is the newest
+season's and older seasons only warn (D-027); a season that nflreadpy reports
+as before the dataset's start is skipped and listed in the manifest, any
+other failure aborts (D-028); the historical injury timestamp is preserved in
+`fact_injury_report.report_modified_at` so point-in-time audits can use it
+where it exists (D-029, refines D-006); the schema pins are package data
+(D-030); the nightly refresh ingests only the current season and the
+Thursday run after NFL stat corrections re-ingests everything (D-031).
 
 ## Owner answers received 2026-11-01
 
