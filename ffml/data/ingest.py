@@ -113,7 +113,7 @@ def save_pins(path: Path, pins: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = {name: pins[name] for name in sorted(pins)}
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(ordered, indent=1) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(ordered, indent=1) + "\n", encoding="utf-8", newline="\n")
     tmp.replace(path)
 
 
