@@ -45,6 +45,9 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-043 | 2026-11-02 | accepted | fact_player_game includes roster-only rows with `played=false`; kickers count in the coverage metric |
 | D-044 | 2026-11-02 | accepted | Next Gen Stats postseason weeks are remapped to nflverse week numbers by rank |
 | D-045 | 2026-11-02 | accepted | DST attribution rules for return and defensive touchdowns, blocks, and points allowed |
+| D-046 | 2026-11-02 | accepted | Feature cutoff is the first kickoff of the season-week; off-field snapshots use an as-of time one hour before that cutoff |
+| D-047 | 2026-11-02 | accepted | Feature naming `<group>__<stat>__<window>`, targets prefixed `y_`, availability inputs prefixed `avail__` |
+| D-048 | 2026-11-02 | accepted | Canonical stat-line vocabulary shared by simulations, actuals, and scoring |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -284,6 +287,22 @@ defense, kick and punt returns to the special-teams unit, blocked punts,
 field goals and extra points as blocks, points allowed as the opponent's
 final score (D-045). Crosswalk coverage came out at 99.6 to 100 percent for
 every season 2016-2026, so D-035 was not needed.
+
+## D-046 to D-048 Phase 3 contracts (orchestrator)
+
+Game-derived features for any row in season-week w use only games whose
+kickoff precedes the first kickoff of that week, so projections published
+before Thursday are reproducible and Thursday and Sunday players share one
+information set; depth charts, roster status, and lines use an as-of time one
+hour before that cutoff for historical rows and the current time for live
+rows (D-046). Feature columns are named `<group>__<stat>__<window>` with
+groups ctx, team, def, opp, eff, attr, depth, avail and windows l1, l3, l5,
+ew, std, ps, car; targets carry the `y_` prefix and are null for future rows;
+same-week injury and roster inputs carry the `avail__` prefix and are not
+model features in the primary configuration (D-047, refines D-006). One
+stat-line vocabulary (`ffml/scoring/statline.py`) is used by simulated
+samples, actual outcomes, and the scoring engine, so any league's rules apply
+to either (D-048, implements D-003).
 
 ## Owner answers received 2026-11-01
 

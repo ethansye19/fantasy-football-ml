@@ -16,7 +16,7 @@ data/
   processed/<table>/snapshot=<...>/season=<YYYY>/part-0.parquet
   processed/<table>/snapshot=<...>/_manifest.json      lists the raw snapshot ids it was built from
   processed/<table>/LATEST
-  features/<feature_set>/version=<semver>/season=<YYYY>/part-0.parquet
+  features/<feature_set>/snapshot=<...>/season=<YYYY>/part-0.parquet   (same store; manifest carries feature_version)
   predictions/season=<YYYY>/week=<WW>/run=<run_id>/player_sims.parquet
   predictions/season=<YYYY>/week=<WW>/run=<run_id>/player_summary.parquet
   predictions/season=<YYYY>/week=<WW>/run=<run_id>/team_env.parquet
