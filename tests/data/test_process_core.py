@@ -461,7 +461,7 @@ def _schedules() -> pl.DataFrame:
 _PBP_STRINGS = {
     "game_id", "posteam", "defteam", "play_type", "two_point_conv_result", "td_team", "field_goal_result",
     "extra_point_result", "fumbled_1_team", "fumble_recovery_1_team", "receiver_player_id", "rusher_player_id",
-    "passer_player_id", "passer_id",
+    "passer_player_id", "passer_id", "forced_fumble_player_1_team", "forced_fumble_player_2_team",
 }  # fmt: skip
 _PBP_NULL_DEFAULT = {"pass_oe", "air_yards", "passing_yards", "down"}
 

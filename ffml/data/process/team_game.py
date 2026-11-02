@@ -81,6 +81,8 @@ PBP_COLUMNS: list[str] = [
     "fumble_lost",
     "fumbled_1_team",
     "fumble_recovery_1_team",
+    "forced_fumble_player_1_team",
+    "forced_fumble_player_2_team",
     "receiver_player_id",
     "rusher_player_id",
     "passer_player_id",
@@ -126,7 +128,15 @@ _FLOAT_COLUMNS = (
     "passing_yards",
     "play_id",
 )
-_TEAM_COLUMNS = ("posteam", "defteam", "td_team", "fumbled_1_team", "fumble_recovery_1_team")
+_TEAM_COLUMNS = (
+    "posteam",
+    "defteam",
+    "td_team",
+    "fumbled_1_team",
+    "fumble_recovery_1_team",
+    "forced_fumble_player_1_team",
+    "forced_fumble_player_2_team",
+)
 
 EXCLUDED_PLAY_TYPES = ("no_play", "qb_kneel", "qb_spike")
 RZ_PLAY_TYPES = ("pass", "run", "qb_kneel", "qb_spike", "field_goal")
@@ -223,6 +233,7 @@ DST_METRICS: list[str] = [
     "sacks",
     "interceptions",
     "fumble_recoveries",
+    "forced_fumbles",
     "def_td",
     "return_td",
     "safeties",
@@ -460,8 +471,23 @@ def defense_metrics(pbp: pl.DataFrame) -> pl.DataFrame:
         .agg(pl.len().alias("fumble_recoveries"))
         .rename({"fumble_recovery_1_team": "team"})
     )
-    return by_def.join(returns, on=["game_id", "team"], how="left").join(
-        recoveries, on=["game_id", "team"], how="left"
+    # Forced fumbles credited to the team of either listed forcing player, on any
+    # play (defense and special teams); Sleeper scores these with ff / def_st_ff.
+    forced = (
+        pl.concat(
+            [
+                pbp.select("game_id", pl.col(col).alias("team"))
+                for col in ("forced_fumble_player_1_team", "forced_fumble_player_2_team")
+            ]
+        )
+        .drop_nulls("team")
+        .group_by(["game_id", "team"])
+        .agg(pl.len().alias("forced_fumbles"))
+    )
+    return (
+        by_def.join(returns, on=["game_id", "team"], how="left")
+        .join(recoveries, on=["game_id", "team"], how="left")
+        .join(forced, on=["game_id", "team"], how="left")
     )
 
 

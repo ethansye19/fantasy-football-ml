@@ -46,8 +46,11 @@ SKILL_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "K")
 
 
 def canonical_team(column: str) -> pl.Expr:
-    """Expression mapping historical or third-party team codes to canonical codes."""
-    return pl.col(column).replace(TEAM_ALIASES).alias(column)
+    """Expression mapping historical or third-party team codes to canonical codes.
+
+    The column is cast to String first so an all-null column (Null dtype) maps cleanly.
+    """
+    return pl.col(column).cast(pl.String).replace(TEAM_ALIASES).alias(column)
 
 
 def canonical_team_value(code: str | None) -> str | None:

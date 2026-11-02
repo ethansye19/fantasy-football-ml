@@ -52,6 +52,12 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-050 | 2026-11-02 | accepted | Evaluation conventions: rank tie-breaks, startable sets, lineup pool, population alignment across models |
 | D-051 | 2026-11-02 | accepted | Baseline 3 (consensus rankings) lives only in `ffml/eval`; no model, feature, API, or web code reads restricted data |
 | D-052 | 2026-11-02 | accepted | Consensus rank-to-points curve built from prior seasons only; the evaluator keeps its own PPR scoring and cross-checks it against `ffml/scoring` |
+| D-053 | 2026-11-03 | accepted (modified) | Each baseline's median is its own estimate; intervals are re-centred residual quantiles; a rolling-median baseline is added |
+| D-054 | 2026-11-03 | accepted | Scoring conventions: two-point weight, return-TD key precedence, exclusive yardage bands |
+| D-055 | 2026-11-03 | accepted | `fact_dst_game.forced_fumbles` added; the stat-line vocabulary gains a scored forced-fumble column |
+| D-056 | 2026-11-03 | accepted | Game-level simulation draws use total sd 13.2 and margin sd 12.8, fitted on 2016-2024 |
+| D-057 | 2026-11-03 | accepted (modified) | QB passing totals are derived from the same simulation's receiver outcomes |
+| D-058 | 2026-11-03 | accepted | 2025 stays locked until the evaluator's single holdout session; a release marker then unlocks it for refits and 2026 history |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -322,6 +328,55 @@ rank-to-points curve is fitted on seasons strictly before the evaluated
 season; the evaluator computes PPR actuals independently and reconciles them
 with `ffml/scoring` during the validation report, because
 `fantasy_points_ppr_ref` omits kicking points (D-052).
+
+## D-053 to D-058 Scoring, baselines, and simulation (proposed by the ML Engineer, rulings by the orchestrator)
+
+**D-053 (modified).** As first specified, every baseline variant took its
+quantiles, including the median, from the same last-8-games distribution,
+so the rolling-average and prior-season baselines had identical median
+errors. Ruling: each baseline's point estimate is its own average (the brief
+defines baseline 1 as a rolling player average and baseline 2 as a
+prior-season average), `pred_q50 = pred_mean` = that average, and `q10` and
+`q90` are the estimate plus the entity's empirical residual quantiles over
+its last 8 games (position residuals when fewer than 4 exist). A third
+transparent baseline, the median of the last 8 games, is added because it is
+the strongest simple predictor under MAE; the model must be compared against
+it too. The evaluator reports MAE of both `pred_mean` and `pred_q50`.
+
+**D-054.** Two-point conversions are scored with the mean of the league's
+pass, rush, and receiving two-point values present; `fum_rec_td` takes
+precedence over `st_td` for offensive return touchdowns; yardage-allowed
+bands are mutually exclusive. Sleeper and the engine agree on 82 of 83
+offensive players in 2026 week 8; the one gap is a stat-recording
+difference, not a rules difference.
+
+**D-055.** All four defense mismatches in week 8 equal that defense's forced
+fumbles in play-by-play. `fact_dst_game.forced_fumbles` now counts plays where
+either listed forcing player belongs to the team (defense and special teams
+together; leagues that weight `ff` and `def_st_ff` differently are
+approximated). The ML Engineer adds the column to the stat-line vocabulary
+and the `ff` key to the scoring engine in wave two.
+
+**D-056.** With total sd 10.0 and margin sd 13.5, opponents' simulated points
+correlated at -0.29. Historical residuals against Vegas lines (2016-2024, no
+holdout) give 13.2 and 12.8 with near-zero correlation, so those are the
+defaults.
+
+**D-057 (modified).** In wave one the QB's completions and yards were drawn
+from the QB's own parameters, so they matched his receivers only on average.
+Ruling: within each simulation, QB completions, passing yards, and passing
+touchdowns are the sums over that team's simulated receptions, receiving
+yards, and receiving touchdowns (with an unmodeled-receiver bucket for
+targets to players without projections). This preserves the QB to receiver
+correlation the brief asks for.
+
+**D-058.** Forward predictions for 2026 need 2025 as history, which the
+holdout lock forbids. Ruling: nothing reads 2025 until the Independent
+Evaluator's single holdout session (D-049) approves a model. The evaluator
+then calls `ffml.holdout.release_holdout(model_version, report)`, which writes
+`artifacts/holdout_release.json` and permanently unlocks the season. After
+release, production models are refit through 2025 and 2026 to date, and the
+weekly predictions use 2025 history. Accesses after release are still logged.
 
 ## Owner answers received 2026-11-01
 

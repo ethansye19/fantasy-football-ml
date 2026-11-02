@@ -172,22 +172,31 @@ when constructing training rows.
 
 ## 4. Predictions
 
+Layout: `data/predictions/season=<YYYY>/week=<WW>/run=<run_id>/` holding the
+three files below and `_manifest.json` (model_version, seeds, n_sims, input
+snapshot ids); `data/predictions/LATEST` is JSON with season, week, run_id,
+model_version, and path. Runs are immutable (`ffml/sim/snapshot.py`).
+
 ### player_sims.parquet
-Long format, one row per player per simulation. Columns:
-`player_id, season, week, game_id, team, position, sim (int16), active (bool),
-pass_att, pass_cmp, pass_yds, pass_td, pass_int, rush_att, rush_yds, rush_td,
-targets, rec, rec_yds, rec_td, fum_lost, two_pt, ret_td,
-fg_made_0_39, fg_made_40_49, fg_made_50p, fg_missed, xp_made, xp_missed,
-rec_yds_bonus flags are not stored; bonuses are computed by the scoring engine`.
-DST rows use `team` as the entity with `sacks, def_int, fum_rec, def_td,
-safeties, blocked_kicks, pts_allowed, yds_allowed`.
-Default 2,000 simulations per entity; seeds are recorded in the manifest.
+Long format, one row per entity per simulation, in the stat-line vocabulary of
+`ffml/scoring/statline.py` (D-048). Keys: `entity_id` (gsis id, or team code
+for DST), `season, week, game_id, team, position, sim (Int16), active (Boolean)`.
+Offense: `pass_att, pass_cmp, pass_yds, pass_td, pass_int, rush_att, rush_yds,
+rush_td, targets, rec, rec_yds, rec_td, two_pt, fum_lost, ret_td`. Kicking:
+`fg_made_0_19, fg_made_20_29, fg_made_30_39, fg_made_40_49, fg_made_50_59,
+fg_made_60p, fg_missed, xp_made, xp_missed`. DST: `sacks, def_int, fum_rec,
+def_td, st_td, safeties, blocked_kicks, pts_allowed, yds_allowed` (plus
+`forced_fumbles` once D-055 lands in the vocabulary). Counts are Int16.
+Yardage bonuses are not stored; the scoring engine computes them from the
+samples. Default 2,000 simulations per entity; seeds are in the manifest.
 
 ### player_summary.parquet
-`player_id, season, week, team, opponent, kickoff_utc, position, availability_prob,
-expected stat line (means of the columns above), ppr_q10, ppr_q50, ppr_q90,
-half_q50, std_q50, drivers (json: opportunity, efficiency, matchup, environment,
-availability with signed contributions in points), model_version, run_id`.
+Written per run for reference scorings (PPR, half, standard); league scoring
+is applied at request time by the API from `player_sims` (D-003). Columns:
+`entity_id, position, mean, q10, q50, q90, boom_prob, bust_prob, n_sims,
+active_prob`, plus `scoring` and, from wave two, the expected stat line and
+`drivers` (JSON with signed point contributions from opportunity, efficiency,
+matchup, environment, and availability), `model_version`, `run_id`.
 
 ### team_env.parquet
 `team, season, week, game_id, opponent, exp_plays, exp_pass_rate, exp_pass_att,
