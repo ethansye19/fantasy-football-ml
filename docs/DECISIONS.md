@@ -8,10 +8,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-001 | 2026-11-01 | accepted | Python 3.11 virtual environment |
 | D-002 | 2026-11-01 | accepted | Monorepo layout with `ffml`, `api`, `web` |
 | D-003 | 2026-11-01 | accepted | Scoring applied after simulation at request time |
-| D-004 | 2026-11-01 | proposed | SQLite for local development, PostgreSQL in deployment and CI |
+| D-004 | 2026-11-01 | accepted | SQLite for local development, PostgreSQL in deployment and CI |
 | D-005 | 2026-11-01 | accepted | 2025 season is the final holdout; 2022-2024 walk-forward validation |
 | D-006 | 2026-11-01 | accepted | Injury information policy: lagged in the model, latest report in the availability layer |
-| D-007 | 2026-11-01 | proposed | Public consensus baseline from the FantasyPros archive, evaluation only |
+| D-007 | 2026-11-01 | accepted | Public consensus baseline from the FantasyPros archive, private evaluation only |
 | D-008 | 2026-11-01 | accepted | Vegas lines from nflverse schedules with a documented closing-line caveat |
 | D-009 | 2026-11-01 | accepted | FTN charting features off by default |
 | D-010 | 2026-11-01 | accepted | Full chain for QB, RB, WR, TE; simplified chains for K and DST |
@@ -22,6 +22,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-015 | 2026-11-01 | accepted | UTF-8 everywhere on Windows |
 | D-016 | 2026-11-01 | accepted | Ingestion bypasses the nflreadpy cache and keeps its own snapshots |
 | D-017 | 2026-11-01 | accepted | Boom and bust defined by positional finish in the simulation |
+| D-018 | 2026-11-01 | accepted | Node.js LTS installed locally with winget |
+| D-019 | 2026-11-01 | accepted | Private GitHub repository as the remote; CI and scheduled jobs run there |
+| D-020 | 2026-11-01 | accepted | Sleeper user `ethanye19` is the test league source |
+| D-021 | 2026-11-01 | accepted | Gates are never weakened for the week 9 kickoff |
 
 ## D-001 Python 3.11
 
@@ -45,14 +49,14 @@ stat-line distributions; the API applies a ScoringRules vector to simulated
 stat lines. Consequence: predictions are stored as simulation samples
 (about 15 MB per week), and the API keeps them in memory.
 
-## D-004 SQLite locally, PostgreSQL in deployment (proposed, needs owner input)
+## D-004 SQLite locally, PostgreSQL in deployment
 
 Docker and PostgreSQL are not installed locally. WSL2 with Ubuntu exists and
-winget offers Docker Desktop 4.97. Options: install Docker Desktop for full
-local parity, or develop against SQLite through SQLAlchemy with PostgreSQL in
-docker compose and as a CI service. Recommendation: the second option, since
-the app database holds only league state and the analytical work lives in
-Parquet and DuckDB. Consequence: migrations are tested on both engines in CI.
+winget offers Docker Desktop 4.97. Owner decision (2026-11-01): develop
+against SQLite through SQLAlchemy, run PostgreSQL in docker compose and as a
+CI service, and do not install Docker Desktop for now. Consequence:
+migrations and the API test suite run on both engines in CI; container
+builds and the fresh-install check are verified in CI, not locally.
 
 ## D-005 Holdout and validation
 
@@ -68,14 +72,18 @@ information; the simulation applies the latest report as an availability
 layer at prediction time; a labelled final-report variant is reported as a
 sensitivity. See MODELING.md section 9.
 
-## D-007 Consensus baseline (proposed, needs owner input)
+## D-007 Consensus baseline, private evaluation only
 
 The DynastyProcess archive of FantasyPros weekly ECR has dated scrapes from
 October 2020 and near-weekly coverage 2021-2026, so timestamps make a valid
 comparison possible. Its data license is not stated and FantasyPros content
-is proprietary. Decision proposed: use it only inside the backtest report,
-never store it in served tables or show it in the UI; drop it entirely if
-the owner prefers.
+is proprietary. Owner decision (2026-11-01): use it for private evaluation
+only. Consequences: the raw archive and any derived table stay under
+`data/` (gitignored) and are never loaded by the API or the web app; the
+committed backtest report and model card show only aggregate comparison
+metrics (no ranking rows); if a public report is ever produced, the
+comparison is removed unless the license is confirmed. The evaluator checks
+these constraints at Gate 3.
 
 ## D-008 Vegas lines
 
@@ -138,6 +146,28 @@ probability of finishing outside the startable range, with thresholds per
 position listed in MODELING.md. These are league-scoring aware because the
 ranks are computed after scoring is applied.
 
+## D-018 Node.js via winget
+
+Owner approved installing Node.js LTS with winget (package
+`OpenJS.NodeJS.LTS`) so the Next.js app and Playwright run locally.
+
+## D-019 Private GitHub remote
+
+Owner approved creating a private repository under the authenticated GitHub
+account and pushing `main`. CI, scheduled data-quality and refresh workflows,
+and the clean-runner fresh-install check run there.
+
+## D-020 Test league
+
+Owner provided Sleeper username `ethanye19` for import tests. Only public
+league data is read; nothing is written to Sleeper.
+
+## D-021 Gates are not weakened for kickoff
+
+Owner instruction: do not weaken any gate to make the week 9 kickoff. If a
+gate is not passed in time, week 9 ships late or not at all, and the status
+notes say so.
+
 ## Assumptions recorded
 
 - Regular season weeks 1-18; fantasy playoffs default to weeks 15-17 unless
@@ -151,18 +181,17 @@ ranks are computed after scoring is applied.
 - The deployment target is a single host running docker compose; the guide
   notes how to split services.
 
-## Open questions for the owner (answers change the work)
+## Owner answers received 2026-11-01
 
-1. **Node.js.** Install Node.js LTS (winget `OpenJS.NodeJS.LTS`, currently
-   26.13.0) so the Next.js app and Playwright can be built and tested
-   locally? Without it the web app is only verified in CI.
-2. **Database and containers.** Accept D-004 (SQLite locally, PostgreSQL in
-   compose and CI), or install Docker Desktop for local parity?
-3. **GitHub remote.** Create a private repository under the authenticated
-   account and push, so scheduled workflows and the fresh-install check can
-   run in GitHub Actions?
-4. **Consensus baseline.** Accept D-007 (evaluation-only use of the
-   FantasyPros archive), or exclude it?
-5. **Test league.** A Sleeper username or league id to use for import tests
-   would make Phase 4 verification concrete; otherwise a public league id is
-   used.
+1. Node.js LTS: install with winget (D-018).
+2. Database: SQLite locally, PostgreSQL in compose and CI, no Docker Desktop
+   for now (D-004).
+3. GitHub: create a private repository and push (D-019).
+4. Consensus baseline: private evaluation only; raw data stays out of git,
+   the app, and any public report unless the license is confirmed (D-007).
+5. Test league: Sleeper user `ethanye19` (D-020).
+6. Gates are never weakened to make the week 9 kickoff (D-021).
+
+## Open questions
+
+None at this time.

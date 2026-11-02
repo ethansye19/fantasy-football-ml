@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ffml"
+version = "0.1.0"
+description = "Football-first ML projections and league tools for fantasy football (nflverse data, scoring-agnostic simulation)."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+dependencies = [
+  "nflreadpy==0.1.5",
+  "polars==2.1.0",
+  "duckdb==2.0.0",
+  "pyarrow==26.0.0",
+  "numpy>=2.2,<3",
+  "scipy>=1.15,<2",
+  "pandas>=2.2,<3",
+  "scikit-learn==1.9.1",
+  "lightgbm==4.7.0",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "httpx>=0.28,<1",
+  "tenacity>=9,<10",
+  "typer>=0.15,<1",
+  "rich>=13",
+  "python-dotenv>=1.0",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+api = [
+  "fastapi==0.162.0",
+  "uvicorn[standard]>=0.34",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.14",
+  "psycopg[binary]>=3.2",
+  "itsdangerous>=2.2",
+  "apscheduler>=3.11,<4",
+]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=6",
+  "ruff>=0.9",
+  "mypy>=1.14",
+  "pip-audit>=2.8",
+  "respx>=0.22",
+  "freezegun>=1.5",
+]
+
+[project.scripts]
+ffml = "ffml.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["ffml*", "api*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["web", "data", "artifacts", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "network: test downloads data from nflverse or Sleeper (skipped when FFML_OFFLINE=1)",
+  "slow: test takes more than a minute",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
