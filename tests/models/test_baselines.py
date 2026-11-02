@@ -11,14 +11,21 @@ import pytest
 from ffml.holdout import HoldoutLockedError
 from ffml.models.baselines import (
     PREDICTION_COLUMNS,
+    QUANTILE_COLUMNS,
     PriorSeasonBaseline,
     RollingAverageBaseline,
+    RollingMedianBaseline,
+    default_baselines,
+    week_cutoffs,
 )
+from ffml.models.protocol import WeeklyModel, validate_predictions
 from ffml.scoring import ScoringRules
 from ffml.scoring.statline import ensure_stat_columns
 
 # Points equal receptions, so expected values are easy to write down.
-REC_ONLY = ScoringRules.from_dict({"rec": 1})
+REC_ONLY = ScoringRules.from_dict({"rec": 1}, name="rec")
+TAILS = (0.05, 0.10, 0.25, 0.75, 0.90, 0.95)
+TAIL_COLS = ("pred_q05", "pred_q10", "pred_q25", "pred_q75", "pred_q90", "pred_q95")
 
 
 def kickoff(season: int, week: int, day_offset: float = 0.0) -> datetime:
@@ -67,39 +74,82 @@ def pred(frame: pl.DataFrame, entity: str, season: int, week: int) -> dict:
     return rows.row(0, named=True)
 
 
+def all_models():
+    return [
+        RollingAverageBaseline(window=4),
+        RollingAverageBaseline(window=3),
+        RollingAverageBaseline(ew_alpha=0.35),
+        PriorSeasonBaseline(),
+        RollingMedianBaseline(window=8),
+    ]
+
+
+def random_world(seed: int = 0) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for e in range(12):
+        pos = ("WR", "RB", "TE")[e % 3]
+        for season in (2019, 2020, 2021):
+            n = int(rng.integers(6, 17))
+            values = rng.poisson(lam=3 + e % 5, size=n).tolist()
+            rows += series(f"P{e}", season, values, position=pos)
+    return actuals(rows)
+
+
 # --------------------------------------------------------------------------- #
-# Rolling average
+# Names, contract, protocol
 # --------------------------------------------------------------------------- #
+
+
+def test_names_and_contract():
+    names = [m.name for m in default_baselines()]
+    assert names == [
+        "rolling_avg_4",
+        "rolling_avg_3",
+        "rolling_ew_035",
+        "prior_season",
+        "rolling_median_8",
+    ]
+    data = random_world()
+    for model in all_models():
+        assert isinstance(model, WeeklyModel)
+        out = model.predict_from_actuals(data, [2021], REC_ONLY)
+        assert out.columns == list(PREDICTION_COLUMNS)
+        validate_predictions(out)
+        assert set(out["scoring"]) == {"rec"}
+        assert set(out["model"]) == {model.name}
+        # D-053: the point estimate is the median
+        assert out["pred_mean"].to_list() == out["pred_q50"].to_list()
 
 
 def test_rolling_mean_uses_only_earlier_games():
     data = actuals(series("A", 2021, [10, 20, 30, 40, 50, 60]))
     out = RollingAverageBaseline(window=4).predict_from_actuals(data, [2021], REC_ONLY)
-    assert out.columns == list(PREDICTION_COLUMNS)
     assert pred(out, "A", 2021, 5)["pred_mean"] == pytest.approx(25.0)
     assert pred(out, "A", 2021, 6)["pred_mean"] == pytest.approx(35.0)
     assert pred(out, "A", 2021, 2)["pred_mean"] == pytest.approx(10.0)
-    assert set(out["model"]) == {"rolling_l4"}
+    assert set(out["model"]) == {"rolling_avg_4"}
 
 
-def test_current_game_never_leaks_into_its_prediction():
-    base = series("A", 2021, [10, 20, 30, 40, 50, 60]) + series("B", 2021, [5, 5, 5, 5, 5, 5])
-    bumped = [dict(r, rec=999) if (r["entity_id"] == "A" and r["week"] == 5) else r for r in base]
-    for model in (
-        RollingAverageBaseline(window=4),
-        RollingAverageBaseline(ew_alpha=0.35),
-        PriorSeasonBaseline(),
-    ):
-        a = model.predict_from_actuals(actuals(base), [2021], REC_ONLY, diagnostics=True)
-        b = model.predict_from_actuals(actuals(bumped), [2021], REC_ONLY, diagnostics=True)
-        # predictions up to and including week 5 are identical; week 6 sees the change
-        upto5 = pl.col("week") <= 5
-        assert a.filter(upto5).equals(b.filter(upto5)), model
-        if isinstance(model, RollingAverageBaseline):
-            assert pred(a, "A", 2021, 6)["pred_mean"] != pred(b, "A", 2021, 6)["pred_mean"]
+@pytest.mark.parametrize("week", [3, 6, 9])
+def test_current_and_later_games_never_reach_a_prediction(week):
+    """Perturbing week w and every later game leaves the week-w predictions unchanged."""
+    base = random_world(seed=week)
+    later = (pl.col("season") == 2021) & (pl.col("week") >= week)
+    bumped = base.with_columns(
+        pl.when(later).then(pl.col("rec") * 7 + 13).otherwise(pl.col("rec")).alias("rec")
+    )
+    for model in all_models():
+        a = model.predict_from_actuals(base, [2021], REC_ONLY, diagnostics=True)
+        b = model.predict_from_actuals(bumped, [2021], REC_ONLY, diagnostics=True)
+        upto = pl.col("week") <= week
+        assert a.filter(upto).equals(b.filter(upto)), model
+        if not isinstance(model, PriorSeasonBaseline):
+            nxt = pl.col("week") == week + 1
+            assert not a.filter(nxt).equals(b.filter(nxt)), model
 
 
-def test_window_three_and_exponential_variants():
+def test_window_three_exponential_and_median_variants():
     data = actuals(series("A", 2021, [10, 20, 30, 40, 50]))
     l3 = RollingAverageBaseline(window=3).predict_from_actuals(data, [2021], REC_ONLY)
     assert pred(l3, "A", 2021, 5)["pred_mean"] == pytest.approx(30.0)
@@ -108,7 +158,21 @@ def test_window_three_and_exponential_variants():
     assert pred(ew, "A", 2021, 4)["pred_mean"] == pytest.approx(
         float(np.dot(w, [10, 20, 30]) / w.sum())
     )
-    assert set(ew["model"]) == {"rolling_ew0.35"}
+    assert set(ew["model"]) == {"rolling_ew_035"}
+
+
+def test_median_baseline_is_the_median_of_the_last_eight_games():
+    values = [0, 30, 2, 2, 2, 9, 9, 9, 1, 50, 4]
+    data = actuals(series("A", 2021, values))
+    out = RollingMedianBaseline().predict_from_actuals(data, [2021], REC_ONLY)
+    assert set(out["model"]) == {"rolling_median_8"}
+    # week 11: last 8 games are weeks 3-10
+    assert pred(out, "A", 2021, 11)["pred_mean"] == pytest.approx(float(np.median(values[2:10])))
+    # week 4: only three games, median of those
+    assert pred(out, "A", 2021, 4)["pred_q50"] == pytest.approx(2.0)
+    # an outlier moves the mean, not the median
+    l4 = RollingAverageBaseline(window=4).predict_from_actuals(data, [2021], REC_ONLY)
+    assert pred(l4, "A", 2021, 11)["pred_mean"] > pred(out, "A", 2021, 11)["pred_mean"]
 
 
 def test_history_crosses_season_boundary():
@@ -149,61 +213,78 @@ def test_cutoff_is_first_kickoff_of_the_week():
     assert b5["n_hist"] == 4 and b5["pred_mean"] == pytest.approx(2.5)
 
 
-def test_only_played_rows_in_requested_seasons_are_predicted():
+def test_every_rostered_row_in_requested_seasons_is_predicted():
     rows = series("A", 2020, [5, 6]) + series("A", 2021, [7, 8])
     rows.append({"entity_id": "A", "season": 2021, "week": 3, "rec": 0, "played": False})
     out = RollingAverageBaseline().predict_from_actuals(actuals(rows), [2021], REC_ONLY)
-    assert sorted(out["week"].to_list()) == [1, 2]
+    assert sorted(out["week"].to_list()) == [1, 2, 3]
     assert set(out["season"]) == {2021}
+    # the unplayed week-3 row is predicted from the played games before it
+    assert pred(out, "A", 2021, 3)["pred_mean"] == pytest.approx((5 + 6 + 7 + 8) / 4)
 
 
 # --------------------------------------------------------------------------- #
-# Quantiles
+# Residual quantiles (D-053)
 # --------------------------------------------------------------------------- #
 
 
-def test_entity_quantiles_from_last_eight_games():
-    values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+def test_entity_residual_quantiles_from_last_eight_games():
+    values = [3, 9, 1, 7, 12, 4, 6, 10, 2, 8, 5]
     data = actuals(series("A", 2021, values))
-    out = RollingAverageBaseline().predict_from_actuals(data, [2021], REC_ONLY, diagnostics=True)
-    row = pred(out, "A", 2021, 11)  # history = weeks 1-10, last 8 = 3..10
-    expected = np.quantile(np.arange(3, 11), [0.1, 0.5, 0.9])
-    assert [row["pred_q10"], row["pred_q50"], row["pred_q90"]] == pytest.approx(list(expected))
-    assert row["quantile_source"] == "entity"
-    row5 = pred(out, "A", 2021, 5)  # four games available
-    assert row5["quantile_source"] == "entity"
-    assert row5["pred_q50"] == pytest.approx(2.5)
-
-
-def test_shifted_quantiles_recentre_the_empirical_shape_on_the_mean():
-    data = actuals(series("A", 2021, list(range(1, 12))))
-    emp = RollingAverageBaseline().predict_from_actuals(data, [2021], REC_ONLY)
-    shf = RollingAverageBaseline(quantile_mode="shifted").predict_from_actuals(
-        data, [2021], REC_ONLY
+    out = RollingAverageBaseline(window=4).predict_from_actuals(
+        data, [2021], REC_ONLY, diagnostics=True
     )
-    assert set(shf["model"]) == {"rolling_l4_shifted"}
-    e, s = pred(emp, "A", 2021, 11), pred(shf, "A", 2021, 11)
-    assert s["pred_mean"] == pytest.approx(8.5) == e["pred_mean"]
-    # last 8 games are 3..10 with mean 6.5: quantiles move by 8.5 - 6.5
-    for q in ("pred_q10", "pred_q50", "pred_q90"):
-        assert s[q] == pytest.approx(e[q] + 2.0)
-    with pytest.raises(ValueError):
-        PriorSeasonBaseline(quantile_mode="normal")
+    # estimates issued for weeks 2..11 and the residuals of weeks 2..10
+    est = {w: float(np.mean(values[max(0, w - 5) : w - 1])) for w in range(2, 12)}
+    resid = [values[w - 1] - est[w] for w in range(2, 11)]
+    row = pred(out, "A", 2021, 11)
+    assert row["quantile_source"] == "entity" and row["n_resid"] == 8
+    expected = est[11] + np.quantile(resid[-8:], TAILS)
+    expected[:3] = np.minimum(expected[:3], est[11])
+    expected[3:] = np.maximum(expected[3:], est[11])
+    floor = 0.0  # no prior season: no position minimum, so no clipping beyond the estimate
+    expected = np.maximum(expected, floor)
+    assert [row[c] for c in TAIL_COLS] == pytest.approx(list(expected))
+    assert row["pred_q50"] == pytest.approx(est[11])
+    # week 6 has four residuals (weeks 2-5): entity quantiles start there
+    assert pred(out, "A", 2021, 6)["quantile_source"] == "entity"
+    assert pred(out, "A", 2021, 5)["n_resid"] == 3
 
 
-def test_quantile_fallback_to_prior_season_position_distribution():
-    prior = series("W1", 2020, [0, 10, 20, 30, 40]) + series("T1", 2020, [100, 100], "TE")
+def test_position_residual_fallback_and_minimum_clip():
+    # prior season: one WR with known residuals against its own rolling mean
+    prior = series("W1", 2020, [0, 10, 0, 10, 0, 10, 0, 10]) + series("T1", 2020, [50] * 6, "TE")
     current = series("A", 2021, [7, 7, 7, 7])
-    out = RollingAverageBaseline().predict_from_actuals(
-        actuals(prior + current), [2021], REC_ONLY, diagnostics=True
-    )
-    row = pred(out, "A", 2021, 4)  # three earlier games: position fallback
+    data = actuals(prior + current)
+    model = RollingAverageBaseline(window=4)
+    out = model.predict_from_actuals(data, [2021], REC_ONLY, diagnostics=True)
+    row = pred(out, "A", 2021, 4)  # three earlier games, two residuals
     assert row["quantile_source"] == "position"
-    expected = np.quantile([0, 10, 20, 30, 40], [0.1, 0.5, 0.9])
-    assert [row["pred_q10"], row["pred_q50"], row["pred_q90"]] == pytest.approx(list(expected))
-    assert row["pred_mean"] == pytest.approx(7.0)  # the mean still uses the entity history
-    # the current season's own games never feed the position distribution
-    assert pred(out, "A", 2021, 1)["pred_q50"] == pytest.approx(20.0)
+    vals = [0, 10, 0, 10, 0, 10, 0, 10]
+    w1_resid = [vals[w - 1] - np.mean(vals[max(0, w - 5) : w - 1]) for w in range(2, 9)]
+    expected = 7.0 + np.quantile(w1_resid, TAILS)
+    expected[:3] = np.minimum(expected[:3], 7.0)
+    expected[3:] = np.maximum(expected[3:], 7.0)
+    expected = np.maximum(expected, 0.0)  # WR minimum observed in 2020 is 0
+    assert [row[c] for c in TAIL_COLS] == pytest.approx(list(expected))
+    assert row["pred_q05"] >= 0.0
+    # TE residuals never enter the WR fallback
+    assert row["pred_q95"] < 50
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_residual_quantiles_are_monotone(seed):
+    data = random_world(seed)
+    for model in all_models():
+        out = model.predict_from_actuals(data, [2020, 2021], REC_ONLY)
+        # rows of the first data seasons can lack an estimate or prior residuals
+        out = out.drop_nulls(QUANTILE_COLUMNS)
+        assert out.height > 100
+        q = out.select(QUANTILE_COLUMNS).to_numpy()
+        assert np.all(np.diff(q, axis=1) >= -1e-9), model
+        validate_predictions(out)
+        lower = out.select(pl.min_horizontal(QUANTILE_COLUMNS)).to_series()
+        assert (lower >= -1e-9).all()  # receptions are never negative
 
 
 # --------------------------------------------------------------------------- #
@@ -262,13 +343,14 @@ def test_rookie_fallback_uses_position_and_draft_round():
 
 def test_rolling_baseline_falls_back_for_players_without_games():
     data, players = _rookie_world()
-    out = RollingAverageBaseline().predict_from_actuals(
-        data, [2021], REC_ONLY, players=players, diagnostics=True
-    )
-    n1 = pred(out, "N1", 2021, 1)
-    assert n1["n_hist"] == 0 and n1["mean_source"] == "fallback"
-    assert n1["pred_mean"] == pytest.approx(6.0)
-    assert pred(out, "N1", 2021, 2)["pred_mean"] == pytest.approx(50.0)
+    for model in (RollingAverageBaseline(), RollingMedianBaseline()):
+        out = model.predict_from_actuals(
+            data, [2021], REC_ONLY, players=players, diagnostics=True
+        )
+        n1 = pred(out, "N1", 2021, 1)
+        assert n1["n_hist"] == 0 and n1["mean_source"] == "fallback"
+        assert n1["pred_mean"] == pytest.approx(6.0)
+        assert pred(out, "N1", 2021, 2)["pred_mean"] == pytest.approx(50.0)
 
 
 def test_season_after_first_data_season_uses_position_average():
@@ -278,15 +360,43 @@ def test_season_after_first_data_season_uses_position_average():
 
 
 # --------------------------------------------------------------------------- #
-# Loader path
+# WeeklyModel adapter and loader path
 # --------------------------------------------------------------------------- #
+
+
+def test_weekly_protocol_returns_one_week_per_scoring(monkeypatch):
+    data = random_world()
+    model = RollingAverageBaseline(window=4)
+
+    def fake_load(season, purpose, store=None):
+        return {"actuals": data, "players": None, "cutoffs": week_cutoffs(data), "max_season": 2021}
+
+    monkeypatch.setattr(model, "_load", fake_load)
+    half = ScoringRules.from_dict({"rec": 0.5}, name="half")
+    scorings = {"rec": REC_ONLY, "half": half}
+    model.fit((2021, 4))
+    frame = model.predict(2021, 4, scorings)
+    validate_predictions(frame)
+    assert set(frame["week"]) == {4} and set(frame["season"]) == {2021}
+    assert sorted(set(frame["scoring"])) == ["half", "rec"]
+    batch = model.predict_from_actuals(data, [2021], REC_ONLY)
+    want = batch.filter(pl.col("week") == 4).sort("entity_id")
+    got = frame.filter(pl.col("scoring") == "rec").sort("entity_id")
+    assert got.equals(want)
+    rec = got.select("entity_id", "pred_mean")
+    hf = frame.filter(pl.col("scoring") == "half").sort("entity_id").select("pred_mean")
+    assert np.allclose(hf.to_series().to_numpy(), 0.5 * rec["pred_mean"].to_numpy())
+    with pytest.raises(ValueError):
+        model.predict(2021, 3, scorings)  # before the fit cutoff
 
 
 def test_predict_applies_the_holdout_guard(tmp_settings):
     with pytest.raises(HoldoutLockedError):
-        RollingAverageBaseline().predict([2025], REC_ONLY)
+        RollingAverageBaseline().predict_seasons([2025], REC_ONLY)
     with pytest.raises(HoldoutLockedError):
-        PriorSeasonBaseline().predict([2026], REC_ONLY)  # 2026 lags read 2025 outcomes
+        PriorSeasonBaseline().predict_seasons([2026], REC_ONLY)  # 2026 lags read 2025 outcomes
+    with pytest.raises(HoldoutLockedError):
+        RollingMedianBaseline().fit((2025, 1)).predict(2025, 1, {"rec": REC_ONLY})
 
 
 def test_invalid_parameters():
@@ -294,3 +404,5 @@ def test_invalid_parameters():
         RollingAverageBaseline(window=0)
     with pytest.raises(ValueError):
         RollingAverageBaseline(ew_alpha=1.5)
+    with pytest.raises(ValueError):
+        RollingMedianBaseline(window=0)
