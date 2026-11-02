@@ -6,9 +6,11 @@ explained drivers, waiver-wire rankings for a specific roster, a trade analyzer,
 and rest-of-season rankings. League setup via Sleeper import or manual settings,
 with custom scoring and roster rules applied at request time (no retraining).
 
-**Status:** Phase 1 (Plan) complete on 2026-11-01. Nothing below the plan is built yet.
+**Status:** Phase 2 (Data) passed its gate on 2026-11-02
+([docs/status/gate-2.md](docs/status/gate-2.md)); Phase 3 (Models) is in
+progress. No projections are published yet, so the app layer is not built.
 See [docs/PLAN.md](docs/PLAN.md) for phases and gates, and
-[docs/DECISIONS.md](docs/DECISIONS.md) for the decision log and open questions.
+[docs/DECISIONS.md](docs/DECISIONS.md) for the decision log.
 
 ## Documents
 

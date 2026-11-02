@@ -1,7 +1,8 @@
 # Build Plan
 
-Phase 1 (Plan) is complete as of 2026-11-01. Phases 2-6 start only after the
-prior gate passes. Task ids use role prefixes: DE data, FE features, ML
+Phase 1 (Plan) is complete as of 2026-11-01. Phase 2 (Data) passed Gate 2 on
+2026-11-02 (docs/status/gate-2.md). Phases 3-6 start only after the prior
+gate passes. Task ids use role prefixes: DE data, FE features, ML
 models, EV evaluator, BE backend, UI frontend, QA quality and security, OR
 orchestrator.
 
