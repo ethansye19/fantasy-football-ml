@@ -228,6 +228,23 @@ def _with_times(
     return out
 
 
+def _null_unfinished(ctx: FeatureContext, df: pl.DataFrame, names: list[str]) -> pl.DataFrame:
+    """Null every ``y_`` column of rows whose game is not final in dim_game.
+
+    fact_player_game can hold roster-only rows (``played = false``) for games
+    that were scheduled or in progress when the table was built; those zeros
+    are not outcomes and must not train the availability model.
+    """
+    if "status" not in ctx.dim_game.columns:
+        return df
+    final = ctx.dim_game.select("game_id", (pl.col("status") == "final").alias("_final"))
+    out = df.join(final, on="game_id", how="left")
+    done = pl.col("_final").fill_null(False)
+    return out.with_columns(
+        [pl.when(done).then(pl.col(n)).otherwise(None).alias(n) for n in names]
+    ).drop("_final")
+
+
 def _f(expr: pl.Expr) -> pl.Expr:
     return expr.cast(pl.Float64)
 
@@ -254,7 +271,7 @@ def player_targets(ctx: FeatureContext, seasons: list[int] | None = None) -> pl.
         ys.append(ratio(_f(pl.col(num)), _f(pl.col(dcol))).alias(f"y_{name}"))
     for name, num, d in PLAYER_RATE_TARGETS:
         ys.append(ratio(_f(pl.col(num)), _f(pl.col(d))).alias(f"y_{name}"))
-    out = df.select(*PLAYER_KEYS, *ys)
+    out = _null_unfinished(ctx, df.select(*PLAYER_KEYS, *ys), player_target_names())
     out = _with_times(ctx, out)
     return out.select(*PLAYER_KEYS, *TIME_COLS, *player_target_names()).sort(
         "season", "week", "team", "player_id"
@@ -268,7 +285,7 @@ def team_targets(ctx: FeatureContext, seasons: list[int] | None = None) -> pl.Da
         tg = tg.filter(pl.col("season").is_in(seasons))
     tg = tg.with_columns((pl.col("pass_td") + pl.col("rush_td")).alias("offensive_td"))
     out = tg.select(*TEAM_KEYS, *[_f(pl.col(c)).alias(f"y_{c}") for c in TEAM_TARGETS])
-    out = _with_times(ctx, out)
+    out = _with_times(ctx, _null_unfinished(ctx, out, team_target_names()))
     return out.select(*TEAM_KEYS, *TIME_COLS, *team_target_names()).sort("season", "week", "team")
 
 
@@ -278,7 +295,7 @@ def dst_targets(ctx: FeatureContext, seasons: list[int] | None = None) -> pl.Dat
     if seasons is not None:
         dst = dst.filter(pl.col("season").is_in(seasons))
     out = dst.select(*TEAM_KEYS, *[_f(pl.col(c)).alias(f"y_{c}") for c in DST_TARGETS])
-    out = _with_times(ctx, out)
+    out = _with_times(ctx, _null_unfinished(ctx, out, dst_target_names()))
     return out.select(*TEAM_KEYS, *TIME_COLS, *dst_target_names()).sort("season", "week", "team")
 
 
