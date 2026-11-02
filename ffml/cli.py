@@ -91,11 +91,17 @@ def validate(
 
 
 @app.command()
-def process(seasons: str = typer.Option("2016-2026")) -> None:
+def process(
+    seasons: str = typer.Option("2016-2026"),
+    tables: str = typer.Option("all", help="Comma-separated processed table names or 'all'"),
+) -> None:
     """Build processed tables (dim_*, fact_*) from the latest raw snapshots."""
     from ffml.data.process import run_process
 
-    run_process(seasons=_parse_seasons(seasons))
+    run_process(
+        seasons=_parse_seasons(seasons),
+        tables=None if tables == "all" else [t.strip() for t in tables.split(",") if t.strip()],
+    )
 
 
 @app.command()
@@ -103,7 +109,17 @@ def warehouse() -> None:
     """Rebuild the DuckDB warehouse views over the latest snapshots."""
     from ffml.data.warehouse import rebuild_warehouse
 
-    rebuild_warehouse()
+    path = rebuild_warehouse()
+    console.print(f"warehouse written to {path}")
+
+
+@app.command()
+def dictionary() -> None:
+    """Regenerate docs/DATA_DICTIONARY.md from the latest processed snapshots."""
+    from ffml.data.dictionary import write_data_dictionary
+
+    path = write_data_dictionary()
+    console.print(f"data dictionary written to {path}")
 
 
 @app.command()
