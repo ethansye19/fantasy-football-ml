@@ -55,7 +55,7 @@ def ranked(sims: pl.DataFrame, rules: ScoringRules) -> pl.DataFrame:
 def conditional(scored: pl.DataFrame) -> pl.DataFrame:
     """Columns conditional on active, per entity."""
     act = scored.filter(pl.col("active"))
-    return act.group_by(["entity_id", "game_id"]).agg(
+    return act.group_by(["entity_id", "game_id"], maintain_order=True).agg(
         pl.col("points").mean().alias("pred_mean"),
         *[
             pl.col("points").quantile(q, interpolation="linear").alias(c)
@@ -68,7 +68,7 @@ def conditional(scored: pl.DataFrame) -> pl.DataFrame:
 
 
 def unconditional(scored: pl.DataFrame) -> pl.DataFrame:
-    return scored.group_by(["entity_id", "game_id"]).agg(
+    return scored.group_by(["entity_id", "game_id"], maintain_order=True).agg(
         pl.col("position").first(),
         pl.col("team").first(),
         pl.col("season").first(),

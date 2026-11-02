@@ -415,8 +415,10 @@ class ChainModel:
         q = out.select(QCOLS).to_numpy()
         q = np.maximum.accumulate(q, axis=1)
         out = out.with_columns([pl.Series(c, q[:, i]) for i, c in enumerate(QCOLS)])
+        # total order (ties in pred_mean are common for zero-usage players)
         return out.select(cols).sort(
-            ["scoring", "position", "pred_mean"], descending=[False, False, True]
+            ["scoring", "position", "pred_mean", "entity_id", "game_id"],
+            descending=[False, False, True, False, False],
         )
 
     def _empty_frame(self) -> pl.DataFrame:

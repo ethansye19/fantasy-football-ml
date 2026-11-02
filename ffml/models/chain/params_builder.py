@@ -123,7 +123,7 @@ def build_team_params(
         },
         strict=False,
     )
-    return TeamGameParams.validate(frame)
+    return TeamGameParams.validate(frame).sort(["game_id", "team"])
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +194,10 @@ def build_player_params(
     tp = team_params.select(
         "game_id", "team", "exp_plays", "exp_pass_rate", "exp_kneels", "unmodeled_tgt_share"
     )
-    p = players.join(tp, on=["game_id", "team"], how="inner")
+    # deterministic row order: every per-team sum below is then summed in a fixed order
+    p = players.join(tp, on=["game_id", "team"], how="inner").sort(
+        ["game_id", "team", "position", "player_id"]
+    )
     p = p.filter(pl.col("position").is_in(["QB", "RB", "WR", "TE", "K"]))
     pos = np.asarray(p["position"].to_list(), dtype=object)
     team = np.asarray([f"{g}|{t}" for g, t in zip(p["game_id"], p["team"], strict=True)])
@@ -290,7 +293,9 @@ def build_player_params(
             else 0.95
         )
         cols[name] = np.where(np.isnan(full), default, full)
-    return PlayerGameParams.validate(pl.DataFrame(cols, strict=False))
+    return PlayerGameParams.validate(pl.DataFrame(cols, strict=False)).sort(
+        ["game_id", "team", "position", "entity_id"]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -305,7 +310,8 @@ def _offense_rates(player_params: pl.DataFrame) -> pl.DataFrame:
         w_touch=(pl.col("dropback_share") + pl.col("target_share") + pl.col("carry_share"))
         * pl.col("availability_prob"),
     )
-    return p.group_by(["game_id", "team"]).agg(
+    p = p.sort(["game_id", "team", "position", "entity_id"])
+    return p.group_by(["game_id", "team"], maintain_order=True).agg(
         ((pl.col("sack_rate") * pl.col("w_db")).sum() / pl.col("w_db").sum()).alias("off_sack"),
         ((pl.col("int_rate") * pl.col("w_db")).sum() / pl.col("w_db").sum()).alias("off_int"),
         ((pl.col("fumble_rate") * pl.col("w_touch")).sum() / pl.col("w_touch").sum()).alias(
@@ -373,7 +379,7 @@ def build_dst_params(
             "ff_per_fum_rec": np.full(d.height, float(consts.get("ff_per_fum_rec", 0.84))),
         }
     )
-    return DstGameParams.validate(frame)
+    return DstGameParams.validate(frame).sort(["game_id", "team"])
 
 
 __all__ = [

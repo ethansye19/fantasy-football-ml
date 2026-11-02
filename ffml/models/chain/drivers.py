@@ -72,8 +72,12 @@ def _team_passing(pp: pl.DataFrame, tp: pl.DataFrame) -> pl.DataFrame:
         "unmodeled_catch_rate",
         "unmodeled_yards_per_rec",
     )
-    p = pp.join(b, on=["game_id", "team"], how="left").with_columns(w=pl.col("availability_prob"))
-    agg = p.group_by(["game_id", "team"]).agg(
+    p = (
+        pp.join(b, on=["game_id", "team"], how="left")
+        .with_columns(w=pl.col("availability_prob"))
+        .sort(["game_id", "team", "position", "entity_id"])
+    )
+    agg = p.group_by(["game_id", "team"], maintain_order=True).agg(
         (pl.col("w") * pl.col("target_share") * pl.col("catch_rate")).sum().alias("rec_pa"),
         (pl.col("w") * pl.col("target_share") * pl.col("catch_rate") * pl.col("yards_per_rec"))
         .sum()
@@ -230,7 +234,9 @@ def offense_drivers(
     A = _arrays(a, allp)
     N = _arrays(n, allp)
     R: dict[str, np.ndarray] = {}
-    teams = a.unique(["game_id", "team"])
+    teams = a.unique(["game_id", "team"], keep="first", maintain_order=True).sort(
+        ["game_id", "team"]
+    )
     for name in ENV:
         R[name] = np.full(a.height, float(np.nanmean(_col(teams, name))))
     for name in OPP + EFF:
@@ -328,8 +334,10 @@ def dst_drivers(dst_scored: pl.DataFrame, rules: ScoringRules) -> pl.DataFrame:
         [pl.col(c).cast(pl.Float64) * w for c, w in lin.items() if c in dst_scored.columns]
         or [pl.lit(0.0)]
     )
-    per = dst_scored.group_by(["entity_id", "game_id"]).agg(
-        linear.mean().alias("events"), pl.col("points").mean().alias("total")
+    per = (
+        dst_scored.sort(["entity_id", "game_id", "sim"])
+        .group_by(["entity_id", "game_id"], maintain_order=True)
+        .agg(linear.mean().alias("events"), pl.col("points").mean().alias("total"))
     )
     per = per.with_columns(bands=pl.col("total") - pl.col("events"))
     ev, bd = per["events"].mean(), per["bands"].mean()
