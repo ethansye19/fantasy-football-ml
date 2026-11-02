@@ -228,6 +228,11 @@ COUNT_COLUMNS: list[str] = [
     "fg_made_0_39",
     "fg_made_40_49",
     "fg_made_50p",
+    "fg_made_0_19",
+    "fg_made_20_29",
+    "fg_made_30_39",
+    "fg_made_50_59",
+    "fg_made_60p",
     "fg_missed",
     "fg_blocked",
     "pat_att",
@@ -326,6 +331,11 @@ OUTPUT_COLUMNS: list[str] = [
     "fg_made_0_39",
     "fg_made_40_49",
     "fg_made_50p",
+    "fg_made_0_19",
+    "fg_made_20_29",
+    "fg_made_30_39",
+    "fg_made_50_59",
+    "fg_made_60p",
     "fg_missed",
     "fg_blocked",
     "pat_att",
@@ -385,6 +395,13 @@ def base_rows(stats: pl.DataFrame, dim_player: pl.DataFrame) -> pl.DataFrame:
             "fg_made_0_39"
         ),
         (_int("fg_made_50_59") + _int("fg_made_60_")).alias("fg_made_50p"),
+        # Fine distance buckets are kept as well because league scoring (Sleeper
+        # fgm_0_19 ... fgm_60p) distinguishes them.
+        _int("fg_made_0_19").alias("fg_made_0_19"),
+        _int("fg_made_20_29").alias("fg_made_20_29"),
+        _int("fg_made_30_39").alias("fg_made_30_39"),
+        _int("fg_made_50_59").alias("fg_made_50_59"),
+        _int("fg_made_60_").alias("fg_made_60p"),
         (
             _int("sack_fumbles_lost")
             + _int("rushing_fumbles_lost")
