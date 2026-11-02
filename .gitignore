@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Data and model artifacts (versioned Parquet lives outside git; samples live in tests/fixtures)
+data/*
+!data/README.md
+artifacts/*
+!artifacts/README.md
+*.duckdb
+*.duckdb.wal
+
+# Node / Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/playwright-report/
+web/test-results/
+node_modules/
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
