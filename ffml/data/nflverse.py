@@ -11,9 +11,11 @@ Specs with ``restricted=True`` (currently ``ff_rankings_all``, the FantasyPros
 expert-consensus archive redistributed by DynastyProcess) are written under
 ``<raw>/restricted/<dataset>/...`` so the path itself says so, and their
 manifests carry ``"restricted": true``. Per docs/DECISIONS.md D-007 these
-files are private evaluation inputs only: **nothing outside ``ffml/eval`` may
-read them** - not the processed tables, not the feature builders, not the API,
-not the web app, and no committed report may contain their rows.
+files are private evaluation inputs only: **the only readers are
+``ffml/data/process/ecr.py`` (which derives the equally restricted
+``fact_ecr_weekly`` under ``processed/restricted``) and ``ffml/eval``** - not
+the feature builders, not the models, not the API, not the web app, not the
+warehouse views, and no committed report may contain their rows.
 
 Network behaviour
 -----------------

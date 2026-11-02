@@ -38,13 +38,17 @@ the lake but excluded because fantasy seasons end at week 17 or 18).
 2. **Prior-season average**: prior season per-game average; rookies and
    players without a prior season use the position-and-draft-round average.
 3. **Public consensus**: FantasyPros weekly expert consensus rankings from
-   the DynastyProcess archive (`ecr_type = "wp"`, pages for PPR, half-PPR and
-   standard). Used only where `scrape_date` precedes the first kickoff of the
-   week; seasons 2021-2025 have near-complete weekly coverage. Because ECR is
-   a rank, the comparison uses rank correlation and start/sit accuracy; a
+   the DynastyProcess archive (`ecr_type = "wp"`). The archive is scraped on
+   Fridays, so a row is used only where `valid_for_game` holds (the scrape
+   date precedes the date of that player's own game); Thursday-night players
+   are therefore excluded from this comparison and the report says so.
+   Weekly pages exist only as PPR for RB, WR, TE and as scoring-free pages for
+   QB, K, DST, so the comparison is run under PPR scoring; coverage is
+   2020 week 6 through 2026, with 2024 starting in week 4. Because ECR is a
+   rank, the comparison uses rank correlation and start/sit accuracy; a
    points comparison uses a rank-to-points curve fitted on prior seasons
-   only. Licensing is unverified, so this baseline lives in the backtest
-   report only (DECISIONS D-007).
+   only. Licensing is unverified, so this baseline lives in the private
+   backtest report only, as aggregate metrics (DECISIONS D-007).
 
 Structural baselines also exist per stage: team plays = L5 mean, pass rate =
 EW mean adjusted by spread via a one-parameter linear fit, shares = EW share,

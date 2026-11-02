@@ -40,6 +40,11 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-033 | 2026-11-02 | accepted | Weekly volume checks are normalised per final game |
 | D-034 | 2026-11-02 | accepted | Datasets whose schema is fixed in code (Sleeper players) are exempt from schema pins |
 | D-035 | 2026-11-02 | proposed | If 2016-2019 crosswalk coverage is below 98 percent, the gate applies to the current season only |
+| D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
+| D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
+| D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
+| D-039 | 2026-11-02 | accepted | Warehouse views and the data dictionary never expose restricted data |
+| D-040 | 2026-11-02 | accepted | ECR normalisation: page basename, FA team to null, PK to K, DEF to DST |
 
 ## D-001 Python 3.11
 
@@ -239,6 +244,23 @@ so bye weeks do not trip them (D-033). The Sleeper players cache has a
 schema fixed in code and is exempt from the nflverse schema pins (D-034).
 D-035 is conditional on the crosswalk coverage numbers for 2016-2019 and is
 decided at the Gate 2 review.
+
+## D-036 to D-040 Context tables and restricted rankings (proposed by the Data Engineer, context)
+
+The rankings archive is scraped on Fridays, after Thursday games, so the
+week-level validity flag is true for almost no week. The per-game flag
+`valid_for_game` (scrape date before the date of the player's own game,
+Eastern time) holds for about 90 percent of rows and is what the evaluator
+uses; Thursday players drop out of that comparison (D-036). Legacy weekly
+depth charts receive a synthetic `snapshot_ts` 48 hours before the first
+kickoff of the week; timestamped charts are assigned the week whose window
+contains them, with the pre-season folded into week 1; rows without a
+`gsis_id` (29,910) are dropped and counted (D-037). Injury and roster tables
+key on `(season, week, player_id, team)` because trades can place a player
+on two teams in one week (D-038). The DuckDB warehouse and the generated
+data dictionary never reference anything under a restricted directory
+(D-039). ECR pages are normalised by basename, free agents get a null team,
+PK becomes K and DEF becomes DST (D-040).
 
 ## Owner answers received 2026-11-01
 

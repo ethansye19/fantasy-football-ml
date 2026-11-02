@@ -116,23 +116,40 @@ Team defense and special teams scoring inputs per game: `sacks`,
 `blocked_kicks`, `points_allowed`, `yards_allowed`.
 
 ### fact_injury_report
-`season, week, team, player_id, report_status, practice_status,
-report_primary_injury, practice_primary_injury, snapshot_ts`. Snapshot time is
-the ingest time because the source has no timestamp. Key
-`(snapshot_ts, season, week, player_id)`.
+`season, week, game_type, team, player_id, position, full_name, report_status,
+practice_status, report_primary_injury, report_secondary_injury,
+practice_primary_injury, practice_secondary_injury, report_modified_at,
+snapshot_ts`. `report_modified_at` is the source timestamp where nflverse
+publishes one (2016-2024, D-029) and null otherwise; `snapshot_ts` is the
+ingest time of the raw snapshot. Duplicates keep the latest timestamp, then
+the most severe status. Key `(season, week, player_id, team)`.
 
 ### fact_depth_chart
-`snapshot_ts (dt or derived week date), season, week, team, player_id,
-pos_grp, pos_abb, pos_rank`. Key `(snapshot_ts, team, player_id, pos_abb)`.
+`snapshot_ts, snapshot_kind (weekly | timestamped), season, week, game_type,
+team, player_id, player_name, pos_grp, pos_abb, pos_rank, formation`. Legacy
+weekly charts (2016-2024) get `snapshot_ts` = first kickoff of that week
+minus 48 hours; timestamped charts (2025+) are assigned the week whose window
+contains the timestamp, with the pre-season window folded into week 1, so
+consumers must select "latest snapshot at or before cutoff" by
+`snapshot_ts`, never by week alone. Rows without a `gsis_id` are dropped and
+counted. Key `(snapshot_ts, team, player_id, pos_abb)`.
 
 ### fact_roster_week
-`season, week, team, player_id, status, status_description, depth_chart_position,
-years_exp, snapshot_ts`. Key `(season, week, player_id, snapshot_ts)`.
+`season, week, game_type, team, player_id, position, status, status_description,
+depth_chart_position, jersey_number, years_exp, sleeper_id, espn_id, yahoo_id,
+pfr_id, snapshot_ts`. A player traded during a week can appear for two teams.
+Key `(season, week, player_id, team)`.
 
-### fact_ecr_weekly (evaluation only, never served)
-`season, week, scrape_date, scoring (ppr, half, std), position, fantasypros_id,
-player_id, ecr, sd, best, worst, valid_for_week` where `valid_for_week` is true
-when `scrape_date` precedes the first kickoff of that week.
+### fact_ecr_weekly (restricted: private evaluation only, never served)
+`season, week, scrape_date, scoring, position, fantasypros_id, player_id,
+player_name, team, ecr, sd, best, worst, team_game_date, valid_for_week,
+valid_for_game, fp_page`. Stored under `data/processed/restricted/`. The
+archive is scraped on Fridays, after Thursday games, so `valid_for_week`
+(scrape before the first kickoff of the week) is rarely true; the evaluator
+uses `valid_for_game` (scrape before the date of the player's own game,
+Eastern time), which holds for about 90 percent of rows. Weekly pages exist
+only as PPR for RB, WR, TE and as scoring-free pages for QB, K, DST; 2024
+coverage starts in week 4.
 
 ### sleeper_players
 Daily dump of the Sleeper players map: `sleeper_id, full_name, position,
