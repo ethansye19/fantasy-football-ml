@@ -132,6 +132,7 @@ MANIFEST = "_manifest.json"
 PREDICTIONS = "predictions.parquet"
 SESSIONS = "_sessions.jsonl"
 TIMING = "_timing.json"
+PARAMS = "_params.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -517,7 +518,29 @@ def _run_model(
             len(pending),
             eta,
         )
+    _store_params(model, mdir / PARAMS)
     return timing
+
+
+def _store_params(model: Any, path: Path) -> None:
+    """Persist ``model.params`` (merged with earlier sessions) so the manifest can report it."""
+    params = getattr(model, "params", None)
+    if not isinstance(params, Mapping):
+        return
+    merged: dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for k, v in params.items():
+        if isinstance(v, Mapping) and isinstance(merged.get(k), Mapping):
+            merged[k] = {**merged[k], **v}
+        elif v not in (None, {}, []) or k not in merged:
+            merged[k] = v
+    _write_json_atomic(merged, path)
+
+
+def _model_params(model: Any, run_dir: Path) -> Any:
+    path = run_dir / "parts" / _slug(model_key(model)) / PARAMS
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return getattr(model, "params", None)
 
 
 def _load_actuals(
@@ -728,7 +751,7 @@ def run_walk_forward(
                 "name": str(m.name),
                 "class": f"{type(m).__module__}.{type(m).__qualname__}",
                 "repr": repr(m),
-                "params": getattr(m, "params", None),
+                "params": _model_params(m, run_dir),
                 "wall_time_seconds": round(
                     timings[model_key(m)]["fit_seconds"] + timings[model_key(m)]["predict_seconds"],
                     3,

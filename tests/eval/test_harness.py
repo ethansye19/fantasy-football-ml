@@ -85,6 +85,10 @@ class FakeModel:
         self.fail_at = fail_at
         self.crossed = crossed
 
+    @property
+    def params(self):
+        return {"kind": "fake", "fitted_at": {f"{s}_{w}": True for s, w in self.fits}}
+
     def fit(self, cutoff):
         self.fits.append(tuple(cutoff))
         return self
@@ -395,3 +399,14 @@ def test_manifest_calibration_and_evaluate_accepts_the_output(tmp_settings, tmp_
     assert mae["value"].is_not_null().all()
     assert "pit_max_dev" in set(result.summary["metric"])
     assert "brier_boom" not in set(result.summary["metric"])  # no boom_prob from the fake model
+
+
+def test_manifest_params_survive_a_combine_only_session(tmp_settings, tmp_path):
+    actuals = synthetic_actuals()
+    run(tmp_path, [FakeModel(actuals)], run_id="params")
+    # a second process that only combines (as in a parallel run) never fits
+    idle = FakeModel(actuals)
+    run_dir = run(tmp_path, [idle], run_id="params")
+    assert idle.fits == []
+    params = read_manifest(run_dir)["models"][0]["params"]
+    assert params["kind"] == "fake" and len(params["fitted_at"]) == 8
