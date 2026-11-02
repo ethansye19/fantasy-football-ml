@@ -17,6 +17,12 @@ Prediction frame
 ----------------
 ``predict`` returns one row per entity per scoring with the columns in
 ``PREDICTION_COLUMNS``; optional columns are listed in ``OPTIONAL_COLUMNS``.
+All ``pred_*`` columns are **conditional on the entity being active** that
+week, because the headline evaluation population is active players
+(docs/MODELING.md section 7). Models with an availability layer also return
+``active_prob`` and the unconditional ``pred_mean_uncond`` and
+``pred_q50_uncond`` (inactive counts as zero points), which the app uses and the
+evaluator's secondary table measures.
 The harness joins actual outcomes, active flags, and boom/bust outcomes; models
 never see actuals for the predicted week. ``entity_id`` is the gsis player id,
 or the team code for DST. Quantile columns must be monotone non-decreasing.
@@ -56,8 +62,8 @@ OPTIONAL_COLUMNS: tuple[str, ...] = (
     "boom_prob",  # P(top-N positional finish this week), D-017
     "bust_prob",  # P(finish outside the startable range)
     "active_prob",  # P(player is active), from the availability layer
-    "pred_mean_if_active",
-    "pred_q50_if_active",
+    "pred_mean_uncond",  # inactive counts as zero points
+    "pred_q50_uncond",
     "drivers",  # JSON string with signed point contributions
 )
 
