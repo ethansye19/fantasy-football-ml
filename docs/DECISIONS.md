@@ -36,6 +36,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-029 | 2026-11-01 | accepted | Injury `date_modified` (present 2016-2024) is kept as `report_modified_at` |
 | D-030 | 2026-11-01 | accepted | Schema pin JSON ships as package data |
 | D-031 | 2026-11-01 | accepted | Nightly ingest refreshes only the current season; a full run follows Thursday stat corrections |
+| D-032 | 2026-11-02 | accepted | Validation severity: exit 1 only on FAIL; absent tables SKIP; a crashing check is FAIL; gaps in the current week WARN |
+| D-033 | 2026-11-02 | accepted | Weekly volume checks are normalised per final game |
+| D-034 | 2026-11-02 | accepted | Datasets whose schema is fixed in code (Sleeper players) are exempt from schema pins |
+| D-035 | 2026-11-02 | proposed | If 2016-2019 crosswalk coverage is below 98 percent, the gate applies to the current season only |
 
 ## D-001 Python 3.11
 
@@ -222,6 +226,19 @@ other failure aborts (D-028); the historical injury timestamp is preserved in
 where it exists (D-029, refines D-006); the schema pins are package data
 (D-030); the nightly refresh ingests only the current season and the
 Thursday run after NFL stat corrections re-ingests everything (D-031).
+
+## D-032 to D-035 Validation policies (proposed by QA)
+
+`ffml validate` runs twelve checks in a raw tier and a processed tier and
+writes a markdown report. Exit status is non-zero only when a check FAILS;
+checks whose table is absent report SKIP; an exception inside a check is
+reported as FAIL rather than crashing the run; completeness gaps for games
+less than three days old are WARN because nflverse may still be loading them
+(D-032). Weekly volume thresholds compare rows per final game, not raw rows,
+so bye weeks do not trip them (D-033). The Sleeper players cache has a
+schema fixed in code and is exempt from the nflverse schema pins (D-034).
+D-035 is conditional on the crosswalk coverage numbers for 2016-2019 and is
+decided at the Gate 2 review.
 
 ## Owner answers received 2026-11-01
 
