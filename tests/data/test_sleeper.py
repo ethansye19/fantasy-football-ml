@@ -207,9 +207,17 @@ def test_token_bucket_rejects_bad_parameters():
 
 
 def test_client_rate_limiter_sleeps_between_bursts(api, sleeps):
+    # The client builds its bucket on time.monotonic, so the real elapsed time
+    # between the two calls would shrink the wait (observed 0.984 under load).
+    # Swap in a bucket with a frozen clock: no refill, so the wait is exactly
+    # one token regardless of how long the first request took.
+    frozen = 100.0
     with s.SleeperClient(
         base_url=BASE, rate_limit_per_minute=60, burst=1, sleep=sleeps.append
     ) as c:
+        c.bucket = s.TokenBucket(
+            rate_per_minute=60, capacity=1, clock=lambda: frozen, sleep=sleeps.append
+        )
         c.get_state()
         c.get_state()
     assert sleeps == [pytest.approx(1.0)]
