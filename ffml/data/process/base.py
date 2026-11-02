@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 import polars as pl
 
@@ -127,3 +126,76 @@ def assert_unique(df: pl.DataFrame, keys: list[str], table: str) -> None:
     if dup:
         sample = df.filter(df.select(keys).is_duplicated()).select(keys).head(5)
         raise ValueError(f"{table}: {dup} duplicate rows on {keys}; sample:\n{sample}")
+
+
+# ----- additive helpers shared by the core-table builders ---------------------------------
+
+#: Raw positions folded into a fantasy position (``position_raw`` keeps the source value).
+FANTASY_POSITION_MAP: dict[str, str] = {"FB": "RB"}
+
+#: Historical codes grouped by the canonical code they map to (``dim_team.aliases``).
+TEAM_ALIAS_GROUPS: dict[str, list[str]] = {}
+for _alias, _canonical in TEAM_ALIASES.items():
+    TEAM_ALIAS_GROUPS.setdefault(_canonical, []).append(_alias)
+
+
+def fantasy_position(column: str) -> pl.Expr:
+    """Expression mapping a raw position to the fantasy position (FB to RB, others unchanged)."""
+    return pl.col(column).replace(FANTASY_POSITION_MAP).alias(column)
+
+
+def read_raw_or_none(
+    ctx: ProcessContext,
+    dataset: str,
+    seasons: list[PartitionKey] | None = None,
+    columns: list[str] | None = None,
+) -> pl.DataFrame | None:
+    """``ctx.read_raw`` that returns ``None`` (and logs) when the partition does not exist."""
+    try:
+        return ctx.read_raw(dataset, seasons=seasons, columns=columns)
+    except FileNotFoundError as exc:
+        log.warning("raw %s has no partition for %s (%s)", dataset, seasons, exc)
+        return None
+
+
+def team_game_map(dim_game: pl.DataFrame) -> pl.DataFrame:
+    """Long form of ``dim_game``: one row per (season, week, team) with the game context.
+
+    Columns: ``season, week, team, game_id, opponent, home, game_type, kickoff_utc``
+    plus ``points`` (the team's score) and ``points_allowed`` (the opponent's score).
+    """
+    base_cols = ["game_id", "season", "week", "game_type", "kickoff_utc"]
+    home = dim_game.select(
+        *base_cols,
+        pl.col("home_team").alias("team"),
+        pl.col("away_team").alias("opponent"),
+        pl.lit(True).alias("home"),
+        pl.col("home_score").alias("points"),
+        pl.col("away_score").alias("points_allowed"),
+    )
+    away = dim_game.select(
+        *base_cols,
+        pl.col("away_team").alias("team"),
+        pl.col("home_team").alias("opponent"),
+        pl.lit(False).alias("home"),
+        pl.col("away_score").alias("points"),
+        pl.col("home_score").alias("points_allowed"),
+    )
+    return pl.concat([home, away]).select(
+        "season",
+        "week",
+        "team",
+        "game_id",
+        "opponent",
+        "home",
+        "game_type",
+        "kickoff_utc",
+        "points",
+        "points_allowed",
+    )
+
+
+def clean_id(column: str) -> pl.Expr:
+    """Cast an external id to a stripped string, turning blanks into nulls (D-023)."""
+    text = pl.col(column).cast(pl.String).str.strip_chars()
+    return pl.when(text == "").then(None).otherwise(text).alias(column)

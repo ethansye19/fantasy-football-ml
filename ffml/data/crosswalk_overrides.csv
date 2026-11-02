@@ -1,0 +1,11 @@
+gsis_id,sleeper_id,espn_id,yahoo_id,position,note
+00-0040331,12901,,,,Patrick Herbert TE LAC; absent from ff_playerids and weekly rosters; Sleeper 12901 verified by name+position+team on 2026-11-01
+00-0040879,13324,,,,Matthew Hibner TE BAL; Sleeper lists him as Matt Hibner (13324); same position and team on 2026-11-01
+00-0041194,13602,,,,Jack Strand QB ATL; Sleeper 13602 verified by name+position+team on 2026-11-01
+00-0041081,13516,,,,Max Bredeson RB MIN; Sleeper 13516 verified by name+position+team on 2026-11-01
+00-0040899,13545,,,,Trey Smack K GB; Sleeper 13545 verified by name+position+team on 2026-11-01
+00-0041182,13968,,,,Drew Stevens K WAS; Sleeper 13968 verified by name+position+team on 2026-11-01
+00-0041145,13833,,,,Dominic Zvada K NYG; Sleeper 13833 verified by name+position+team on 2026-11-01
+00-0040406,12907,,,,Quentin Skinner WR NYJ (2025); only Quentin Skinner WR in the Sleeper map; ff_playerids has no sleeper_id for him
+00-0040530,13066,,,,Ben Sauls K NYG (2025); only Ben Sauls K in the Sleeper map; ff_playerids has no sleeper_id for him
+00-0040718,12530,,,WR,Travis Hunter JAX; two-way player listed as CB by nflverse and DB/WR by Sleeper; fantasy position WR (45 targets in 2025)
