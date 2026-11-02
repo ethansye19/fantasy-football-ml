@@ -43,18 +43,28 @@ def challenger_models(scorings: tuple[str, ...] = SCORINGS) -> list[Any]:
 
 
 def chain_models() -> list[Any]:
-    """``ChainModel`` in the primary and final-report configurations, if B1's chain is importable."""
+    """``ChainModel`` in the primary and final-report configurations, if B1's chain is importable.
+
+    Any import or construction error (a chain package still being written)
+    leaves the chain out with a warning instead of failing the backtest.
+    """
     try:
         from ffml.models.chain import ChainModel
     except ImportError as exc:
         log.info("ChainModel not importable (%s); chain left out of the backtest", exc)
         return []
+    except Exception as exc:  # noqa: BLE001 - a broken package must not stop the baselines
+        log.warning("ChainModel import failed (%r); chain left out of the backtest", exc)
+        return []
     models = []
     for config in CHAIN_CONFIGS:
         try:
-            models.append(ChainModel(config=config))
-        except TypeError:
-            models.append(ChainModel(config))
+            try:
+                models.append(ChainModel(config=config))
+            except TypeError:
+                models.append(ChainModel(config))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ChainModel(%r) could not be built (%r); left out", config, exc)
     return models
 
 
