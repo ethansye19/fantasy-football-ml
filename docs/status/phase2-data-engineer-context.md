@@ -168,22 +168,23 @@ Not done / blocked:
   week alone.
 
 Decisions proposed:
-- D-032 Consensus-baseline comparability uses `fact_ecr_weekly.valid_for_game`
+- D-036 Consensus-baseline comparability uses `fact_ecr_weekly.valid_for_game`
   (scrape date strictly before the ranked team's game date in ET);
   `valid_for_week` is kept for the record but the archive's Friday scrapes
   make it false for nearly all Thursday-start weeks. The evaluator reports
   both counts.
-- D-033 Depth-chart point-in-time rule: legacy weekly charts carry
+- D-037 Depth-chart point-in-time rule: legacy weekly charts carry
   `snapshot_ts` = first kickoff of the week minus 48 h and `game_type` from
   the schedule; timestamped charts get `(season, week)` from the schedule
   windows with week 0 = offseason; rows without `gsis_id` are dropped (all
   2025+ unsigned rookies) because the key and every join need `player_id`.
-- D-034 `fact_injury_report` and `fact_roster_week` are keyed
+- D-038 `fact_injury_report` and `fact_roster_week` are keyed
   `(season, week, player_id, team)`; `snapshot_ts` is the raw manifest
   `fetched_at` and is lineage, not part of the key. Update DATA_SCHEMA.md.
-- D-035 The warehouse and the data dictionary never expose restricted data:
+- D-039 The warehouse and the data dictionary never expose restricted data:
   no views, no `meta_snapshots` rows, one-line existence note only.
-- D-036 ECR normalisation: `fp_page` stored as the page basename, `FA` team
+- D-040 ECR normalisation (numbers start after the D-035 already in the
+  log): `fp_page` stored as the page basename, `FA` team
   as null, `PK` -> `K`, `DEF` -> `DST`; team defenses keep a null
   `player_id`.
 
