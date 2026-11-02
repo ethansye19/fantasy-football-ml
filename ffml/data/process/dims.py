@@ -296,7 +296,13 @@ def build_dim_game(schedules: pl.DataFrame, now: datetime) -> pl.DataFrame:
         else:
             exprs.append(pl.col(name))
     out = df.select(exprs).with_columns(
-        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
+        pl.col("season").cast(pl.Int32),
+        pl.col("week").cast(pl.Int32),
+        # Source has "grass " and empty strings; normalise both (lower case, trimmed, null).
+        *[
+            pl.col(c).cast(pl.String).str.strip_chars().str.to_lowercase().replace("", None)
+            for c in ("roof", "surface")
+        ],
     )
     out = out.sort(["season", "week", "kickoff_utc", "game_id"])
     assert_unique(out, ["game_id"], "dim_game")

@@ -84,6 +84,12 @@ STATS_COLUMNS: list[str] = [
     "fg_made_40_49",
     "fg_made_50_59",
     "fg_made_60_",
+    "fg_missed_0_19",
+    "fg_missed_20_29",
+    "fg_missed_30_39",
+    "fg_missed_40_49",
+    "fg_missed_50_59",
+    "fg_missed_60_",
     "pat_made",
     "pat_att",
     "fantasy_points",
@@ -233,6 +239,12 @@ COUNT_COLUMNS: list[str] = [
     "fg_made_30_39",
     "fg_made_50_59",
     "fg_made_60p",
+    "fg_missed_0_19",
+    "fg_missed_20_29",
+    "fg_missed_30_39",
+    "fg_missed_40_49",
+    "fg_missed_50_59",
+    "fg_missed_60p",
     "fg_missed",
     "fg_blocked",
     "pat_att",
@@ -336,6 +348,12 @@ OUTPUT_COLUMNS: list[str] = [
     "fg_made_30_39",
     "fg_made_50_59",
     "fg_made_60p",
+    "fg_missed_0_19",
+    "fg_missed_20_29",
+    "fg_missed_30_39",
+    "fg_missed_40_49",
+    "fg_missed_50_59",
+    "fg_missed_60p",
     "fg_missed",
     "fg_blocked",
     "pat_att",
@@ -402,6 +420,13 @@ def base_rows(stats: pl.DataFrame, dim_player: pl.DataFrame) -> pl.DataFrame:
         _int("fg_made_30_39").alias("fg_made_30_39"),
         _int("fg_made_50_59").alias("fg_made_50_59"),
         _int("fg_made_60_").alias("fg_made_60p"),
+        # Misses by distance, so kicker accuracy by distance can be modeled.
+        _int("fg_missed_0_19").alias("fg_missed_0_19"),
+        _int("fg_missed_20_29").alias("fg_missed_20_29"),
+        _int("fg_missed_30_39").alias("fg_missed_30_39"),
+        _int("fg_missed_40_49").alias("fg_missed_40_49"),
+        _int("fg_missed_50_59").alias("fg_missed_50_59"),
+        _int("fg_missed_60_").alias("fg_missed_60p"),
         (
             _int("sack_fumbles_lost")
             + _int("rushing_fumbles_lost")
@@ -419,6 +444,7 @@ def base_rows(stats: pl.DataFrame, dim_player: pl.DataFrame) -> pl.DataFrame:
             c
             for c in (
                 "fg_made_60_",
+                "fg_missed_60_",
                 "sack_fumbles_lost",
                 "rushing_fumbles_lost",
                 "receiving_fumbles_lost",
@@ -621,7 +647,8 @@ def roster_rows(
             pl.col("position").alias("roster_position"),
         )
         .with_columns(canonical_team("team"), fantasy_position("roster_position"))
-        .join(dim_player.select("player_id", "position"), on="player_id", how="left")
+        # Inner join: roster-only rows require a dim_player record (D-062).
+        .join(dim_player.select("player_id", "position"), on="player_id", how="inner")
         .with_columns(
             pl.coalesce([pl.col("position"), pl.col("roster_position")]).alias("position")
         )
@@ -660,9 +687,12 @@ def player_game_season(
     rosters: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Assemble one season of ``fact_player_game`` from prepared inputs (``pbp`` already prepared)."""
-    games = team_game_map(dim_game).drop(["points", "points_allowed"])
+    team_games = team_game_map(dim_game)
+    games = team_games.drop(["points", "points_allowed"])
+    # Roster-only (did not play) rows exist only for games with a final score (D-062).
+    final_games = team_games.filter(pl.col("points").is_not_null())
     base = base_rows(stats, dim_player)
-    extra = roster_rows(rosters, dim_player, games, base)
+    extra = roster_rows(rosters, dim_player, final_games, base)
     if extra.height:
         log.info(
             "fact_player_game %s: added %d rostered rows without a stats row",

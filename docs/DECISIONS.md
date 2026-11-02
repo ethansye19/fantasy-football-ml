@@ -58,6 +58,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-056 | 2026-11-03 | accepted | Game-level simulation draws use total sd 13.2 and margin sd 12.8, fitted on 2016-2024 |
 | D-057 | 2026-11-03 | accepted (modified) | QB passing totals are derived from the same simulation's receiver outcomes |
 | D-058 | 2026-11-03 | accepted | 2025 stays locked until the evaluator's single holdout session; a release marker then unlocks it for refits and 2026 history |
+| D-059 | 2026-11-03 | rejected | Legacy (2016-2024) depth charts keep the documented week w-1 rule in the primary configuration; week w is a labelled sensitivity |
+| D-060 | 2026-11-03 | accepted | Feature window semantics as built (docs/FEATURES.md, As built) |
+| D-061 | 2026-11-03 | accepted | Injury point-in-time audits use `report_modified_at`, or the report week's last kickoff where it is missing |
+| D-062 | 2026-11-03 | accepted | Targets are null for games that are not final; roster-only player rows exist only for final games with a dim_player record |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -377,6 +381,33 @@ then calls `ffml.holdout.release_holdout(model_version, report)`, which writes
 `artifacts/holdout_release.json` and permanently unlocks the season. After
 release, production models are refit through 2025 and 2026 to date, and the
 weekly predictions use 2025 history. Accesses after release are still logged.
+
+## D-059 to D-062 Feature build (proposed by the Feature Engineer, rulings by the orchestrator)
+
+**D-059 (rejected).** Legacy weekly depth charts carry a synthetic timestamp
+48 hours before the week's first kickoff, so as built the week w chart fed
+week w features. Nothing in the source proves those charts were published
+before the games; they may include later edits, including injury moves. The
+documented ground rule (FEATURES.md rule 1: week w-1 where no timestamp
+exists) stays the primary configuration, which is the conservative reading
+of the brief's point-in-time requirement. The week w version is built as a
+labelled sensitivity (`depth_variant = "same_week"`) and the evaluator
+reports both. For 2025 onward the real timestamps apply unchanged.
+
+**D-060.** Window semantics as documented in the As-built section of
+docs/FEATURES.md are accepted.
+
+**D-061.** `fact_injury_report.snapshot_ts` is the ingest time on every row,
+so point-in-time audits of the injury table use `report_modified_at`, or the
+report week's last kickoff where that is missing.
+
+**D-062.** All `y_` targets are null for games that are not final, and the
+player-game table now holds roster-only rows only for final games and only
+for players with a dim_player record. The rebuild removed 68 rows for two
+unfinished week 8 games and 47 rows for practice-squad players missing from
+the nflverse players table (98,530 to 98,415 rows). Field-goal misses by
+distance were added at the same time so kicker accuracy by distance can be
+modeled, and stadium roof and surface values were normalised.
 
 ## Owner answers received 2026-11-01
 

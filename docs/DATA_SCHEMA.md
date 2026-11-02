@@ -88,7 +88,7 @@ One row per player per game for players with a roster slot that week
 | column group | columns |
 | --- | --- |
 | keys | player_id, season, week, game_id, team, opponent, position, game_type, home, kickoff_utc |
-| participation | played, offense_snaps (null when PFR has no row), offense_pct, row_source (stats or roster); the `started` flag is derived later from fact_depth_chart |
+| participation | played, offense_snaps (null when PFR has no row), offense_pct, row_source (player_stats or roster; roster-only rows exist only for final games and only for players with a dim_player record, D-062); the `started` flag is derived later from fact_depth_chart |
 | passing | pass_att, completions, pass_yds, pass_td, interceptions, sacks, sack_yards, pass_air_yards, pass_yac, pass_epa, cpoe, dropbacks |
 | rushing | carries, rush_yds, rush_td, rush_first_downs, rush_epa, designed_rush, scrambles (QB) |
 | receiving | targets, receptions, rec_yds, rec_td, rec_air_yards, rec_yac, rec_epa, adot, target_share, air_yards_share, wopr |
@@ -96,7 +96,7 @@ One row per player per game for players with a roster slot that week
 | team context (same game, used only for computing shares) | team_pass_att, team_rush_att, team_targets, team_rz_targets, team_rz_carries, team_gl_carries, team_pass_td, team_rush_td, team_plays |
 | expected (ffopportunity) | rec_yards_exp, rec_td_exp, receptions_exp, rush_yards_exp, rush_td_exp, pass_yards_exp, pass_td_exp, total_fp_exp |
 | nextgen (nullable) | avg_separation, avg_cushion, yac_above_expectation, avg_intended_air_yards, time_to_throw, aggressiveness, rush_yards_over_expected, efficiency |
-| kicking | fg_att, fg_made, fg_made_0_19, fg_made_20_29, fg_made_30_39, fg_made_40_49, fg_made_50_59, fg_made_60p (plus merged fg_made_0_39 and fg_made_50p), fg_missed, fg_blocked, pat_att, pat_made |
+| kicking | fg_att, fg_made, fg_made_0_19, fg_made_20_29, fg_made_30_39, fg_made_40_49, fg_made_50_59, fg_made_60p (plus merged fg_made_0_39 and fg_made_50p), fg_missed, fg_missed_0_19, fg_missed_20_29, fg_missed_30_39, fg_missed_40_49, fg_missed_50_59, fg_missed_60p, fg_blocked, pat_att, pat_made |
 | misc | fumbles_lost, two_pt_conversions, return_tds, fantasy_points_ppr_ref, fantasy_points_std_ref |
 
 Primary key `(player_id, season, week)`; a player traded mid-week appears once
