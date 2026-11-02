@@ -59,7 +59,10 @@ from ffml.models.protocol import QUANTILE_LEVELS
 
 CAL_SUFFIX = "+cal"
 PARTITION: tuple[str, ...] = ("model", "scoring")
-PROB_PAIRS: tuple[tuple[str, str], ...] = (("boom_prob", "boom_actual"), ("bust_prob", "bust_actual"))
+PROB_PAIRS: tuple[tuple[str, str], ...] = (
+    ("boom_prob", "boom_actual"),
+    ("bust_prob", "bust_actual"),
+)
 CALIBRATION_FORMAT = "ffml.calibration/1"
 
 
@@ -119,7 +122,9 @@ def sort_quantiles(frame: pl.DataFrame, columns: Sequence[str]) -> pl.DataFrame:
     )
 
 
-def _clip_lower(frame: pl.DataFrame, columns: Sequence[str], lower_bound: str | None) -> pl.DataFrame:
+def _clip_lower(
+    frame: pl.DataFrame, columns: Sequence[str], lower_bound: str | None
+) -> pl.DataFrame:
     if lower_bound is None or lower_bound not in frame.columns:
         return frame
     bound = pl.col(lower_bound)
@@ -160,7 +165,9 @@ class OnlineConformal:
         """Offsets per ``by`` group from calibration history: ``off_qXX`` columns and ``cal_n``."""
         rows = _calibration_rows(history)
         aggs = [
-            (pl.col("actual") - pl.col(c)).quantile(q, interpolation="linear").alias(_offset_column(q))
+            (pl.col("actual") - pl.col(c))
+            .quantile(q, interpolation="linear")
+            .alias(_offset_column(q))
             for q, c in zip(self.levels, self.columns, strict=True)
         ]
         aggs.append(pl.len().alias("cal_n"))
@@ -207,7 +214,11 @@ class OnlineConformal:
 
         Adds ``cal_n`` (calibration rows behind the offsets of the row's group).
         """
-        missing = [c for c in ("season", "week", "actual", *self.columns, *self.by) if c not in frame.columns]
+        missing = [
+            c
+            for c in ("season", "week", "actual", *self.columns, *self.by)
+            if c not in frame.columns
+        ]
         if missing:
             raise ValueError(f"frame is missing columns {missing}")
         out = []
@@ -236,7 +247,9 @@ class OnlineConformal:
         keys = [c for c in ("scoring", *self.by) if c in frame.columns]
         rows = _calibration_rows(frame)
         aggs = [
-            (pl.col("actual") - pl.col(c)).quantile(q, interpolation="linear").alias(_offset_column(q))
+            (pl.col("actual") - pl.col(c))
+            .quantile(q, interpolation="linear")
+            .alias(_offset_column(q))
             for q, c in zip(self.levels, self.columns, strict=True)
         ]
         aggs.append(pl.len().alias("cal_n"))
@@ -325,7 +338,9 @@ class OnlineIsotonic:
             out.append(g.with_columns(pl.Series(prob, new, dtype=pl.Float64).fill_nan(None)))
         return pl.concat(out, how="vertical_relaxed") if out else rows
 
-    def transform(self, frame: pl.DataFrame, *, partition: Sequence[str] = PARTITION) -> pl.DataFrame:
+    def transform(
+        self, frame: pl.DataFrame, *, partition: Sequence[str] = PARTITION
+    ) -> pl.DataFrame:
         """Recalibrated probability columns; week ``w`` uses only rows of earlier weeks."""
         pairs = self.present(frame)
         if not pairs:

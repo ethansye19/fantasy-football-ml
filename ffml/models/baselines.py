@@ -91,7 +91,9 @@ RESIDUAL_MIN_GAMES = 4
 MEDIAN_WINDOW = 8
 MIN_FALLBACK_GAMES = 20
 
-QUANTILE_COLUMNS: tuple[str, ...] = tuple(f"pred_q{int(round(q * 100)):02d}" for q in QUANTILE_LEVELS)
+QUANTILE_COLUMNS: tuple[str, ...] = tuple(
+    f"pred_q{int(round(q * 100)):02d}" for q in QUANTILE_LEVELS
+)
 #: (level, residual column suffix) for every quantile other than the median
 TAIL_LEVELS: tuple[tuple[float, str], ...] = tuple(
     (q, f"{int(round(q * 100)):02d}") for q in QUANTILE_LEVELS if q != 0.5
@@ -106,8 +108,10 @@ DIAGNOSTIC_COLUMNS: tuple[str, ...] = ("n_hist", "mean_source", "quantile_source
 
 def week_cutoffs(games: pl.DataFrame) -> pl.DataFrame:
     """First kickoff per ``(season, week)`` from any frame with those columns and ``kickoff_utc``."""
-    return games.group_by(["season", "week"]).agg(pl.col("kickoff_utc").min().alias("cutoff")).select(
-        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32), "cutoff"
+    return (
+        games.group_by(["season", "week"])
+        .agg(pl.col("kickoff_utc").min().alias("cutoff"))
+        .select(pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32), "cutoff")
     )
 
 
@@ -374,7 +378,11 @@ class _Baseline:
         )
         frame = _attach_draft_round(frame, players)
         frame = (
-            frame.join(pos_q.select("season", "position", "pos_mean"), on=["season", "position"], how="left")
+            frame.join(
+                pos_q.select("season", "position", "pos_mean"),
+                on=["season", "position"],
+                how="left",
+            )
             .join(cell, on=["season", "position", "draft_round"], how="left")
             .join(level, on=["season", "position"], how="left")
         )
@@ -384,7 +392,10 @@ class _Baseline:
             .then(pl.col("hist_est"))
             .otherwise(pl.coalesce("fallback_mean", "fallback_pos_mean", "pos_mean"))
             .alias("est"),
-            pl.when(has_hist).then(pl.lit("history")).otherwise(pl.lit("fallback")).alias("mean_source"),
+            pl.when(has_hist)
+            .then(pl.lit("history"))
+            .otherwise(pl.lit("fallback"))
+            .alias("mean_source"),
         ).drop("pos_mean", "fallback_mean", "fallback_pos_mean", "draft_round")
 
     # -- batch prediction -------------------------------------------------- #
@@ -444,8 +455,14 @@ class _Baseline:
         for q, s in TAIL_LEVELS:
             raw = est + pl.when(use_entity).then(pl.col(f"ent_r{s}")).otherwise(pl.col(f"pos_r{s}"))
             bounded = pl.min_horizontal(raw, est) if q < 0.5 else pl.max_horizontal(raw, est)
-            clipped = pl.when(floor.is_not_null()).then(pl.max_horizontal(bounded, floor)).otherwise(bounded)
-            qexprs.append(pl.when(raw.is_not_null()).then(clipped).otherwise(None).alias(f"pred_q{s}"))
+            clipped = (
+                pl.when(floor.is_not_null())
+                .then(pl.max_horizontal(bounded, floor))
+                .otherwise(bounded)
+            )
+            qexprs.append(
+                pl.when(raw.is_not_null()).then(clipped).otherwise(None).alias(f"pred_q{s}")
+            )
         label = scoring_name or scoring.name or scoring.scoring_hash
         out = frame.with_columns(
             est.alias("pred_mean"),
@@ -453,9 +470,10 @@ class _Baseline:
             *qexprs,
             pl.lit(label).alias("scoring"),
             pl.lit(self.name).alias("model"),
-            pl.when(use_entity).then(pl.lit("entity")).otherwise(pl.lit("position")).alias(
-                "quantile_source"
-            ),
+            pl.when(use_entity)
+            .then(pl.lit("entity"))
+            .otherwise(pl.lit("position"))
+            .alias("quantile_source"),
         )
         cols = list(PREDICTION_COLUMNS) + (list(DIAGNOSTIC_COLUMNS) if diagnostics else [])
         out = out.select(cols).with_columns(
@@ -515,13 +533,13 @@ class _Baseline:
         self._cutoff = (int(cutoff[0]), int(cutoff[1]))
         return self
 
-    def predict(
-        self, season: int, week: int, scorings: Mapping[str, ScoringRules]
-    ) -> pl.DataFrame:
+    def predict(self, season: int, week: int, scorings: Mapping[str, ScoringRules]) -> pl.DataFrame:
         """Rows for every entity with a regular-season stat-line row in ``(season, week)``."""
         season, week = int(season), int(week)
         if self._cutoff is not None and (season, week) < self._cutoff:
-            raise ValueError(f"cannot predict {(season, week)} before the fit cutoff {self._cutoff}")
+            raise ValueError(
+                f"cannot predict {(season, week)} before the fit cutoff {self._cutoff}"
+            )
         if self._data is None or int(self._data["max_season"]) < season:
             self._data = self._load(season, self.purpose)
             self._cache.clear()

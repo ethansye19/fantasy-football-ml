@@ -60,7 +60,9 @@ def frame(
                         "week_cutoff": week_start(season, week),
                     }
                     for q in QUANTILE_LEVELS:
-                        row[f"pred_q{int(round(q * 100)):02d}"] = float(mu[i] + bias + Z[q] * sd * width)
+                        row[f"pred_q{int(round(q * 100)):02d}"] = float(
+                            mu[i] + bias + Z[q] * sd * width
+                        )
                     rows.append(row)
     return pl.DataFrame(rows).with_columns(
         pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
@@ -149,7 +151,9 @@ def test_partitions_never_share_offsets():
     both = pl.concat([a, b])
     out = OnlineConformal(min_count=20).transform(both)
     alone = OnlineConformal(min_count=20).transform(a)
-    got = out.filter(pl.col("model") == "a" + CAL_SUFFIX).sort(["season", "week", "position", "entity_id"])
+    got = out.filter(pl.col("model") == "a" + CAL_SUFFIX).sort(
+        ["season", "week", "position", "entity_id"]
+    )
     want = alone.sort(["season", "week", "position", "entity_id"])
     assert got.select(QCOLS).equals(want.select(QCOLS))
 
@@ -262,9 +266,10 @@ def test_isotonic_uses_only_earlier_weeks_and_improves_brier():
     target = (2022, 2)
     later = (pl.col("season") == 2022) & (pl.col("week") >= 2)
     flipped = base.with_columns(
-        pl.when(later).then(1.0 - pl.col("boom_actual")).otherwise(pl.col("boom_actual")).alias(
-            "boom_actual"
-        )
+        pl.when(later)
+        .then(1.0 - pl.col("boom_actual"))
+        .otherwise(pl.col("boom_actual"))
+        .alias("boom_actual")
     )
     out2 = iso.transform(flipped)
     a = week_rows(out, *target).select("entity_id", "boom_prob")

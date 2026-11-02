@@ -344,9 +344,7 @@ def test_rookie_fallback_uses_position_and_draft_round():
 def test_rolling_baseline_falls_back_for_players_without_games():
     data, players = _rookie_world()
     for model in (RollingAverageBaseline(), RollingMedianBaseline()):
-        out = model.predict_from_actuals(
-            data, [2021], REC_ONLY, players=players, diagnostics=True
-        )
+        out = model.predict_from_actuals(data, [2021], REC_ONLY, players=players, diagnostics=True)
         n1 = pred(out, "N1", 2021, 1)
         assert n1["n_hist"] == 0 and n1["mean_source"] == "fallback"
         assert n1["pred_mean"] == pytest.approx(6.0)
