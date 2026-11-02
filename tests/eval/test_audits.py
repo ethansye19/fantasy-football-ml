@@ -273,12 +273,70 @@ def test_probe_flags_target_copies():
         (pl.col("y_rec_yds") * 2 + 1).alias("team__yds__l1"),
     )
     res = la.probe_target_copies(leaky)
-    pairs = {(f, t, e) for f, t, _, e in res["flagged"]}
-    assert ("opp__targets__l1", "y_targets", True) in pairs
-    assert ("team__yds__l1", "y_rec_yds", False) in pairs
+    pairs = {(f, t, s, e) for f, t, s, _, _, e in res["flagged"]}
+    assert ("opp__targets__l1", "y_targets", "ALL", True) in pairs
+    assert ("team__yds__l1", "y_rec_yds", "ALL", False) in pairs
     assert res["shuffled_max_abs_corr"] < 0.5
+    top = res["top_pairs"]
+    assert len(top) == 5 and top[0][3] == pytest.approx(1.0) and top[0][4] == frame.height
+    assert [abs(p[3]) for p in top] == sorted((abs(p[3]) for p in top), reverse=True)
     allowed = la.probe_target_copies(leaky, allowlist={"opp__targets__l1", "team__yds__l1"})
     assert allowed["flagged"] == []
+
+
+def test_probe_skips_low_overlap_pairs():
+    frame = features_frame(n_weeks=10, players=30)  # 600 rows
+    n = frame.height
+    keep = np.zeros(n, dtype=bool)
+    keep[:50] = True
+    # identical to the target, but non-null on only 50 rows: below the 200-row overlap
+    sparse = frame.with_columns(
+        pl.when(pl.Series(keep)).then(pl.col("y_targets")).otherwise(None).alias("opp__sparse__l1")
+    )
+    res = la.probe_target_copies(sparse)
+    assert res["flagged"] == []
+    assert res["skipped_low_overlap"] == 2  # the sparse feature against both targets
+    assert all(f != "opp__sparse__l1" for f, *_ in res["top_pairs"])
+    # with 300 overlapping rows the same copy is caught
+    keep[:300] = True
+    dense = frame.with_columns(
+        pl.when(pl.Series(keep)).then(pl.col("y_targets")).otherwise(None).alias("opp__sparse__l1")
+    )
+    flagged = la.probe_target_copies(dense)["flagged"]
+    assert [(f, t, n_, e) for f, t, _, _, n_, e in flagged] == [("opp__sparse__l1", "y_targets", 300, True)]
+
+
+def test_probe_compares_position_specific_targets_within_position():
+    rng = np.random.default_rng(1)
+    n_k, n_wr = 300, 900
+    fg = rng.poisson(2.0, n_k).astype(float)
+    frame = pl.DataFrame({
+        "position": ["K"] * n_k + ["WR"] * n_wr,
+        "season": [2022] * (n_k + n_wr),
+        "week": [1] * (n_k + n_wr),
+        # kickers sit far from receivers on this feature but it says nothing about kicks
+        "eff__epa_per_target__ew": np.concatenate([50 + rng.normal(0, 1, n_k), rng.normal(0, 1, n_wr)]),
+        "opp__targets__l3": rng.normal(5, 2, n_k + n_wr),
+        "y_fg_made_0_39": np.concatenate([fg, np.zeros(n_wr)]),
+        "y_targets": np.concatenate([np.zeros(n_k), rng.poisson(6, n_wr).astype(float)]),
+    })
+    pooled = np.corrcoef(frame["eff__epa_per_target__ew"], frame["y_fg_made_0_39"])[0, 1]
+    assert pooled > 0.7  # the between-position artifact a pooled probe reports
+    assert la.target_positions(frame, ["y_fg_made_0_39", "y_targets"]) == {
+        "y_fg_made_0_39": ["K"], "y_targets": ["WR"],
+    }
+    res = la.probe_target_copies(frame)
+    assert res["flagged"] == []
+    assert res["scopes"] == {"K": n_k, "WR": n_wr}
+    for _feature, target, scope, corr, _ in res["top_pairs"]:
+        assert scope == {"y_fg_made_0_39": "K", "y_targets": "WR"}[target]
+        assert abs(corr) < 0.3
+    # a genuine within-kicker copy is still flagged, with its scope
+    leak = frame.with_columns(
+        pl.when(pl.col("position") == "K").then(pl.col("y_fg_made_0_39")).otherwise(None).alias("attr__kick_leak")
+    )
+    flagged = la.probe_target_copies(leak)["flagged"]
+    assert [(f, t, s, e) for f, t, s, _, _, e in flagged] == [("attr__kick_leak", "y_fg_made_0_39", "K", True)]
 
 
 @pytest.fixture
@@ -286,7 +344,7 @@ def feature_store(tmp_settings, monkeypatch):
     monkeypatch.delenv(FLAG, raising=False)
     reset_settings_cache()
     settings = get_settings()
-    frame = features_frame()
+    frame = features_frame(players=40)  # 240 rows: enough overlap for the probe
     SnapshotStore(settings.features_dir).write_snapshot(
         "player_week", {s: frame.filter(pl.col("season") == s) for s in (2022, 2023)}
     )
