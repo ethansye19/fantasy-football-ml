@@ -1978,6 +1978,15 @@ def build_backtest_report(
             f"`{abl_manifest.get('feature_version')}`): delta is `{models.focus} - variant` on the keys both "
             "predict; a negative MAE delta means the removed input helps.\n"
         )
+        main_warm = list(manifest.get("warmup_seasons", []))
+        abl_warm = list(abl_manifest.get("warmup_seasons", []))
+        if main_warm != abl_warm:
+            lines.append(
+                f"Calibration caveat: the ablation run's calibration warm-up seasons are {abl_warm or 'none'} "
+                f"against {main_warm or 'none'} in the main run, so its `+cal` rows are calibrated on a shorter "
+                "history (early 2022 weeks have little or no offset). The calibrated deltas mix the removed input "
+                "with that difference; the raw deltas are the clean comparison.\n"
+            )
         raw_v = [v for v in abl_variants if not v.endswith(CAL)]
         cal_v = [v for v in abl_variants if v.endswith(CAL)]
         rows_md, rec = _ablation_section(abl_boot, models.focus, raw_v, positions, "ablation")
