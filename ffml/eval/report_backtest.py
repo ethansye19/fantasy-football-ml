@@ -1456,7 +1456,7 @@ def build_backtest_report(
 
     reports_dir.mkdir(parents=True, exist_ok=True)
     out = reports_dir / f"{out_name}.md"
-    out.write_text(text, encoding="utf-8")
+    out.write_text(text, encoding="utf-8", newline="\n")  # LF on every platform, as committed
     data_dir.mkdir(parents=True, exist_ok=True)
     if per_week is not None:
         per_week.write_csv(data_dir / f"{out_name}_per_week.csv")
