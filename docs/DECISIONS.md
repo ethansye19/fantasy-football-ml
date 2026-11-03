@@ -62,6 +62,20 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-060 | 2026-11-03 | accepted | Feature window semantics as built (docs/FEATURES.md, As built) |
 | D-061 | 2026-11-03 | accepted | Injury point-in-time audits use `report_modified_at`, or the report week's last kickoff where it is missing |
 | D-062 | 2026-11-03 | accepted | Targets are null for games that are not final; roster-only player rows exist only for final games with a dim_player record |
+| D-063 | 2026-11-03 | accepted | Stage-selection metrics: weighted absolute error for shares and rates, Poisson deviance for counts, log loss for availability |
+| D-064 | 2026-11-03 | accepted | "Active" means `y_played`; the engine always fields a passer per team |
+| D-065 | 2026-11-03 | accepted (modified) | Final-report availability caps the primary probability; game-day `INA` is excluded from backtests and applied only in the live layer |
+| D-066 | 2026-11-03 | accepted | Engine volume conventions (scrambles in dropbacks, scrambles and kneels as QB carries, designed-run carry share) |
+| D-067 | 2026-11-03 | accepted | Boom and bust are conditional on active; rarely active entities use a forced-active simulation |
+| D-068 | 2026-11-03 | deferred | Lagged player fumble-rate and return-TD features go to the improvements list |
+| D-069 | 2026-11-03 | accepted | Team-TD structural heuristic uses a divisor fitted inside each training window (about 9.4), not 7 |
+| D-070 | 2026-11-03 | accepted | Baseline residual and universe details under D-053 |
+| D-071 | 2026-11-03 | accepted | Harness outcome, PIT, and refit conventions |
+| D-072 | 2026-11-03 | accepted | Online conformal calibration with 2021 warm-up; frozen offsets fitted on 2022-2024; custom scorings use the nearest preset's offsets |
+| D-073 | 2026-11-03 | accepted | Direct challenger specification (pooled LightGBM quantile model plus a DST model; not shipped) |
+| D-074 | 2026-11-03 | accepted (modified) | Start/sit and Spearman are compared on one model-agnostic pair set; each model's own top-N is secondary |
+| D-075 | 2026-11-03 | accepted | Backtest run ids resume; `ffml backtest --run-id --n-jobs` |
+| D-076 | 2026-11-03 | accepted | Registry transitions require an evaluator report with `Verdict: APPROVED` |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -408,6 +422,34 @@ unfinished week 8 games and 47 rows for practice-squad players missing from
 the nflverse players table (98,530 to 98,415 rows). Field-goal misses by
 distance were added at the same time so kicker accuracy by distance can be
 modeled, and stadium roof and surface values were normalised.
+
+## D-063 to D-076 Chain, harness, and calibration (proposed by ML Engineers B1 and B2, rulings by the orchestrator)
+
+Details are in docs/status/phase3-ml-engineer-b1.md and -b2.md; only the
+rulings that differ from the proposals are explained here.
+
+**D-065 (modified).** The same-week roster status `INA` is the game-day
+inactive list, published about 90 minutes before kickoff. In history it
+identifies non-participation almost perfectly (6,593 rows in 2016-2024, none
+played), so using it in any backtest configuration would measure the outcome,
+not a forecast. It is excluded from both backtest configurations. The live
+availability layer applies it when present, because at that moment it is
+genuine pre-kickoff information.
+
+**D-068 (deferred).** Adding lagged fumble and return-TD windows needs a
+feature-version bump and a rerun of every backtest; their fantasy-point
+impact is small. They go to the prioritised improvements list.
+
+**D-069.** The divisor `k` in the team-TD heuristic is computed from each
+training window's own rows, so it is not tuned on validation data; 9.4 is its
+typical value on 2016-2024.
+
+**D-074 (modified).** Each model's startable set being its own top-N lets
+models be scored on different pairs. The evaluator defines one pair set per
+season-week and position from the average `pred_q50` over all compared models
+(a model-agnostic reference that never looks at actuals) and scores every
+model on exactly those pairs; each model's own top-N result is reported as a
+secondary column.
 
 ## Owner answers received 2026-11-01
 
