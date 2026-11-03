@@ -68,6 +68,21 @@ def chain_models() -> list[Any]:
     return models
 
 
+#: Chain ablations (docs/MODELING.md section 11; D-059 depth sensitivity).
+CHAIN_ABLATIONS: tuple[dict[str, Any], ...] = (
+    {"config": "primary", "ablation": "no_vegas"},
+    {"config": "primary", "ablation": "no_ngs"},
+    {"config": "primary", "player_features_dataset": "player_week_depth_same_week"},
+)
+
+
+def ablation_models() -> list[Any]:
+    """Chain variants for the ablation run; compare raw rows against ``chain_v1-primary``."""
+    from ffml.models.chain import ChainModel
+
+    return [ChainModel(**kwargs) for kwargs in CHAIN_ABLATIONS]
+
+
 @dataclass(frozen=True)
 class BacktestConfig:
     name: str
@@ -124,6 +139,20 @@ CONFIGS: dict[str, BacktestConfig] = {
         include_challenger=False,
         include_chain=False,
         description="baselines only on the default schedule",
+    ),
+    "ablations": BacktestConfig(
+        name="ablations",
+        seasons=(2022, 2023, 2024),
+        weeks=tuple(range(1, 19)),
+        report_seasons=(2022, 2023, 2024),
+        refit_every=1,
+        include_baselines=False,
+        include_challenger=False,
+        include_chain=False,
+        n_jobs=3,
+        description="chain ablations (no_vegas, no_ngs, depth_same_week); compare raw rows "
+        "with chain_v1-primary from the default run",
+        extra_models=ablation_models,
     ),
 }
 
