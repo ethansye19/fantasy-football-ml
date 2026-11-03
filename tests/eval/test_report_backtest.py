@@ -212,24 +212,56 @@ def test_verdict_lists_every_non_beat_cell_and_coverage():
     })
     acc = R.acceptance(cells, main, models, positions=("QB", "K"))
     text = R.render_verdict(cells, acc, models, positions=("QB", "K"))
-    non_beat = [c for c in cells if c.status != R.STATUS_BETTER]
-    sentences = R.verdict_sentences(cells, "chain_v1")
-    # complete: every non-beat cell appears exactly once (one metric phrase per cell)
-    phrases = sum(s.count(" [") for s in sentences)
-    assert phrases == len(non_beat)
+    others = [c for c in cells if c.comparator != R.CONSENSUS]
+    cons = [c for c in cells if c.comparator == R.CONSENSUS]
+    # complete for the other comparators: one plain sentence per cell not beaten
+    sentences = R.verdict_sentences(others, "The chain")
+    assert len(sentences) == sum(1 for c in others if c.status != R.STATUS_BETTER)
     for s in sentences:
         assert s in text
-    assert "is worse on" in text and "does not beat it on" in text
-    assert "| QB | 0.700 | 0.800 | PASS |" in text
-    assert "| K | 0.860 | 0.870 | FAIL |" in text
+    # complete for the consensus: every calibrated cell (beaten or not), then raw cells that differ
+    cons_lines = [x for x in R.consensus_sentences(cells, "The chain") if x.startswith("- ")]
+    cal = {(c.position, c.metric): c.status for c in cons if c.form == "calibrated"}
+    differ = [c for c in cons if c.form == "raw" and cal[(c.position, c.metric)] != c.status]
+    assert len(cons_lines) == len(cal) + len(differ)
+    for s in cons_lines:
+        assert s in text
+    assert "The chain beats the FantasyPros consensus on" in text
+    assert "The chain does not beat the FantasyPros consensus on" in text
+    assert ": it is worse (" in text
+    assert "| QB | 0.700 | FAIL | 0.800 | PASS |" in text
+    assert "| K | 0.860 | FAIL | 0.870 | FAIL |" in text
+    assert "- K: **FAIL**. The chain's calibrated 80% interval covers 0.870" in text
     assert "outside it: K (0.870)" in text
     assert "MAE and pinball vs `rolling_avg_4`, QB: **FAIL**" in text
     assert "### Verdict grid, calibrated" in text and "### Verdict grid, raw" in text
-    # all-beats grid renders the explicit empty list
+    # all-beats grid renders the explicit empty list for the other comparators
     all_beat = [R.VerdictCell(c.form, c.position, c.metric, c.comparator, _delta(c.metric, "beats")) for c in cells]
     text2 = R.render_verdict(all_beat, R.acceptance(all_beat, main, models, ("QB", "K")), models, ("QB", "K"))
     assert "none: every cell of both grids is `beats`" in text2
     assert "MAE and pinball vs `rolling_avg_4`, QB: **PASS**" in text2
+    assert "every one of these cells has the same result" in text2
+
+
+def test_d082_sentence_wording():
+    d = R.Delta("mae", "chain_v1+cal", R.CONSENSUS, 4.2, 4.08, 0.12, -0.05, 0.29, R.STATUS_NONE)
+    cell = R.VerdictCell("calibrated", "RB", "mae", R.CONSENSUS, d)
+    assert R.cell_sentence(cell, "The chain") == (
+        "The chain does not beat the FantasyPros consensus on RB MAE "
+        "(difference +0.12, 95% interval -0.05 to +0.29; calibrated)."
+    )
+    worse = R.VerdictCell("raw", "QB", "pinball_q10", "prior_season",
+                          R.Delta("pinball_q10", "chain_v1", "prior_season", 1.2, 1.1, 0.06, 0.02, 0.10, R.STATUS_WORSE))
+    assert R.cell_sentence(worse, "The chain") == (
+        "The chain does not beat the prior-season average (`prior_season`) on QB pinball loss at q10: "
+        "it is worse (difference +0.06, 95% interval +0.02 to +0.10; raw forms)."
+    )
+    ss = R.VerdictCell("calibrated", "WR", "start_sit_common", R.CONSENSUS,
+                       R.Delta("start_sit_common", "a", "b", 0.6, 0.59, 0.012, 0.004, 0.02, R.STATUS_BETTER))
+    assert R.cell_sentence(ss, "The chain") == (
+        "The chain beats the FantasyPros consensus on WR start/sit accuracy "
+        "(difference +0.012, 95% interval +0.004 to +0.020; calibrated)."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -272,9 +304,26 @@ def _synthetic_reference(seasons):
     )
 
 
+def _synthetic_exclusions(keys, seasons):
+    # entities ending in 1 have no consensus row: week 1 no scrape, weeks 2-3 early games, later weeks no match
+    reason = (
+        pl.when(pl.col("week") == 1).then(pl.lit("no_scrape_week"))
+        .when(pl.col("week").is_in([2, 3])).then(pl.lit("early_game"))
+        .otherwise(pl.lit("no_ecr_match"))
+    )
+    return keys.select(list(M.KEY_COLUMNS)).with_columns(reason.alias("reason"))
+
+
+def _synthetic_bounds(seasons):
+    return pl.DataFrame({"position": list(POS_COUNTS), "pos_min": [-4.0] * 6, "pos_max": [60.0] * 6,
+                         "season": [2022] * 6}, schema_overrides={"season": pl.Int32})
+
+
 def test_build_report_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_cons_frame", _synthetic_consensus)
     monkeypatch.setattr(R, "_reference", _synthetic_reference)
+    monkeypatch.setattr(R, "_cons_exclusions", _synthetic_exclusions)
+    monkeypatch.setattr(R, "_bounds", _synthetic_bounds)
     run = write_run(tmp_path)
     reports, data = tmp_path / "reports", tmp_path / "data"
     reports.mkdir()
@@ -295,10 +344,19 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     assert "DRAFT" not in text
     assert "identical for every model" in text
     assert "Injury-information sensitivity" in text and "`chain_v1_final_report`" in text
-    assert "## 8. Consensus baseline" in text and "Deltas `focus - consensus_ecr`" in text
+    assert "## 8. Against the FantasyPros consensus on identical player-weeks" in text
+    assert "Differences `chain_v1 - consensus_ecr` on these identical player-weeks" in text
     assert "vs consensus_ecr" in text  # the verdict grid has the consensus column
     assert "difference(s) equal the row's own kicking points" in text  # cross-check classified RB00
     assert "No unexplained differences." in text
+    assert text.index("Holdout session pending") < text.index("## 1. Setup")
+    assert "Row keys identical for every model in this table: **yes**" in text
+    assert "### 8.1 The Thursday effect" in text and "MISMATCH" not in text
+    assert "on early-game player-weeks and" in text
+    assert "Against the FantasyPros consensus: every position and metric" in text
+    assert "### 5.1 Interval coverage detail" in text and "tie-aware (diagnostic)" in text
+    assert "calibrated result (acceptance)" in text
+    assert (data / "backtest_test_coverage.csv").exists()
     assert "Reliability of `boom_prob`" in text
     assert "- Holdout audit: **PASS** (PASS 4, WARN 1)." in text
     assert "  - WARN: literal: docstrings only" in text
@@ -360,3 +418,162 @@ def test_reference_excludes_final_report_variant():
     ref = R.reference_models(models, {"chain_v1", "chain_v1_final_report", "direct_lgbm", "rolling_avg_4"})
     assert ref == ["chain_v1", "direct_lgbm", "rolling_avg_4"]
     assert "chain_v1_final_report" in models.comparators()
+    # a stand-in focus has no final-report sensitivity
+    assert R.resolve_models({"chain_v1", "chain_v1_final_report", "direct_lgbm"}, focus="direct_lgbm").final_report is None
+
+
+# --------------------------------------------------------------------------- #
+# D-081: matched population and the Thursday split
+# --------------------------------------------------------------------------- #
+
+
+def test_matched_population_has_identical_keys_for_every_model():
+    base = truth()
+    frames = {
+        "chain_v1": model_rows(base, "chain_v1", 1.0, 5, probs=True),
+        "chain_v1+cal": model_rows(base, "chain_v1+cal", 1.0, 5, probs=True),
+        "direct_lgbm": model_rows(base, "direct_lgbm", 2.0, 4),
+        "rolling_median_8+cal": model_rows(base, "rolling_median_8+cal", 3.5, 3),
+    }
+    aligned = M.with_reference_rank(frames)
+    cons = _synthetic_consensus((2022,))  # no entity ending in 1
+    no_curve = (pl.col("entity_id") == "WR02") & (pl.col("week") == 2)  # a consensus row without a projection
+    cons = cons.with_columns([pl.when(no_curve).then(None).otherwise(pl.col(c)).alias(c)
+                              for c in ("pred_q10", "pred_q50", "pred_q90", "pred_mean")])
+    joint = R.consensus_population(cons, aligned, ["chain_v1", "direct_lgbm"])
+    assert set(joint) == {*frames, R.CONSENSUS}
+    assert R.population_keys_identical(joint)
+    keys = [R.population_keys(f) for f in joint.values()]
+    assert all(k.equals(keys[0]) for k in keys)
+    k0 = keys[0]
+    assert k0.filter(pl.col("entity_id").str.ends_with("1")).is_empty()
+    assert k0.filter((pl.col("entity_id") == "WR02") & (pl.col("week") == 2)).is_empty()
+    expected = base.filter(pl.col("active") & ~pl.col("entity_id").str.ends_with("1")
+                           & ~((pl.col("entity_id") == "WR02") & (pl.col("week") == 2))).height
+    assert k0.height == expected
+    # every model is scored against the same actuals (the consensus file's own are replaced)
+    acts = [M.population(M.validate_frame(R._slim(f))).sort(list(M.KEY_COLUMNS))["actual"] for f in joint.values()]
+    assert all(a.equals(acts[0]) for a in acts)
+    broken = {**joint, "x": joint["chain_v1"].head(10)}
+    assert not R.population_keys_identical(broken)
+
+
+ECR_SCHEMA = {
+    "season": pl.Int32, "week": pl.Int32, "game_type": pl.String, "scrape_date": pl.Date, "fantasypros_id": pl.String,
+    "player_id": pl.String, "team": pl.String, "ecr": pl.Float64, "sd": pl.Float64, "valid_for_game": pl.Boolean,
+    "fp_page": pl.String,
+}
+
+
+def _ecr(week, page, fpid, player_id, team, ecr, scrape, game):
+    return {"season": 2023, "week": week, "game_type": "REG", "scrape_date": scrape, "fantasypros_id": fpid,
+            "player_id": player_id, "team": team, "ecr": float(ecr), "sd": 1.0,
+            "valid_for_game": scrape < game, "fp_page": page}
+
+
+def test_thursday_split_counts():
+    from datetime import date
+
+    from ffml.eval import ecr_baseline as eb
+
+    fri, sun, thu = date(2023, 10, 6), date(2023, 10, 8), date(2023, 10, 5)
+    ecr = pl.DataFrame([
+        _ecr(5, "ppr-wr", "1", "A", "AAA", 1, fri, sun),            # valid
+        _ecr(5, "ppr-wr", "2", "B", "BBB", 2, fri, thu),            # Thursday game: early
+        _ecr(5, "ppr-wr", "5", "E", "CCC", 3, fri, sun),            # an RB listed on the WR page only
+        _ecr(5, "ppr-rb", "6", "F", "CCC", 1, fri, sun),            # valid, but no projection later
+        _ecr(5, "dst", "7", None, "GGG", 1, fri, thu),              # DST keyed by team, early
+        _ecr(5, "qb", "8", "H", "HHH", 1, date(2023, 10, 4), thu),  # an earlier scrape is valid
+        _ecr(5, "qb", "8", "H", "HHH", 1, fri, thu),
+    ], schema=ECR_SCHEMA)
+    keys = pl.DataFrame({
+        "entity_id": ["A", "B", "C", "D", "E", "F", "GGG", "H"],
+        "position": ["WR", "WR", "WR", "WR", "RB", "RB", "DST", "QB"],
+        "season": [2023] * 8, "week": [5, 5, 5, 6, 5, 5, 5, 5],
+    }, schema_overrides={"season": pl.Int32, "week": pl.Int32})
+    reasons = dict(eb.exclusion_reasons(ecr, keys).select("entity_id", "reason").iter_rows())
+    assert reasons == {"A": "valid", "B": "early_game", "C": "no_ecr_match", "D": "no_scrape_week",
+                       "E": "no_ecr_match", "F": "valid", "GGG": "early_game", "H": "valid"}
+    matched = keys.filter(pl.col("entity_id").is_in(["A", "H"]))
+    status = R.consensus_status(keys, matched, eb.exclusion_reasons(ecr, keys))
+    by_key = dict(status.select("entity_id", "status").iter_rows())
+    assert by_key == {"A": "matched", "B": "early_game", "C": "no_ecr_match", "D": "no_scrape_week",
+                      "E": "no_ecr_match", "F": "valid_no_projection", "GGG": "early_game", "H": "matched"}
+    counts = {r["position"]: r for r in R.status_counts(status).iter_rows(named=True)}
+    assert counts["ALL"] == {"position": "ALL", "matched": 2, "early_game": 2, "no_ecr_match": 2,
+                             "no_scrape_week": 1, "valid_no_projection": 1, "all": 8}
+    assert counts["WR"]["matched"] == counts["WR"]["early_game"] == counts["WR"]["no_scrape_week"] == 1
+    assert sum(counts["RB"][s] for s in R.STATUS_ORDER) == counts["RB"]["all"] == 2
+    # the populations hold exactly those keys
+    frame = keys.with_columns(pl.lit("m").alias("model"), pl.lit(1.0).alias("pred_q50"))
+    pops = R.split_populations({"m": frame}, status)
+    assert sorted(pops[R.POP_EARLY]["m"]["entity_id"].to_list()) == ["B", "GGG"]
+    assert sorted(pops[R.POP_MATCHED]["m"]["entity_id"].to_list()) == ["A", "H"]
+    assert pops[R.POP_ALL]["m"].height == 8
+
+
+def test_split_mae_deltas_and_sentence():
+    base = truth(weeks=tuple(range(1, 9)))
+    frames = M.with_reference_rank({"chain_v1+cal": model_rows(base, "chain_v1+cal", 1.0, 5),
+                                    "rolling_median_8+cal": model_rows(base, "rolling_median_8+cal", 4.0, 3)})
+    keys = R.population_keys(frames["chain_v1+cal"])
+    status = keys.with_columns(
+        pl.when(pl.col("entity_id").str.ends_with("0")).then(pl.lit(R.STATUS_EARLY))
+        .otherwise(pl.lit(R.STATUS_MATCHED)).alias("status"))
+    pops = R.split_populations(frames, status)
+    split = R.split_mae_deltas(pops, "chain_v1+cal", "rolling_median_8+cal", ("WR",), n_boot=30)
+    groups = {s.group: s for s in split}
+    assert set(groups) == {"WR", "ALL"}
+    for pop in (R.POP_MATCHED, R.POP_EARLY, R.POP_ALL):
+        d, lo, hi = groups["ALL"].deltas[pop]
+        assert d < 0 and lo <= d <= hi
+    text = R.thursday_sentence(groups["ALL"], "The chain", "rolling_median_8+cal")
+    assert "on early-game player-weeks" in text and "The difference between the two is" in text
+
+
+# --------------------------------------------------------------------------- #
+# Coverage detail: tails, ties, randomized PIT
+# --------------------------------------------------------------------------- #
+
+
+def test_tail_decomposition_and_tie_aware_coverage():
+    # a point mass at 0: q05 = q10 = 0 for every row; half the actuals are exactly 0
+    n = 400
+    rng = np.random.default_rng(1)
+    y = np.where(np.arange(n) % 2 == 0, 0.0, rng.uniform(0.5, 9.5, n))
+    frame = pl.DataFrame({
+        "entity_id": [f"RB{i:03d}" for i in range(n)], "position": ["RB"] * n, "season": [2022] * n,
+        "week": [1 + i % 4 for i in range(n)], "model": ["m"] * n, "actual": y, "active": [True] * n,
+        "pred_mean": [4.0] * n, "pred_q05": [0.0] * n, "pred_q10": [0.0] * n, "pred_q25": [2.0] * n,
+        "pred_q50": [4.0] * n, "pred_q75": [6.0] * n, "pred_q90": [8.0] * n, "pred_q95": [9.0] * n,
+    })
+    tails = M.tail_decomposition(M.validate_frame(frame))
+    assert tails["tied_q10"] == pytest.approx(0.5) and tails["below_q10"] == 0.0
+    assert sum(tails[k] for k in ("below_q10", "tied_q10", "inside", "tied_q90", "above_q90")) == pytest.approx(1.0)
+    closed = M.interval_coverage(M.validate_frame(frame))
+    assert closed == pytest.approx(tails["tied_q10"] + tails["inside"] + tails["tied_q90"])
+    # F(0-) = 0.05 (lower bound below 0) and F(0) = 0.10, so a tied row's randomized PIT is never in (0.1, 0.9)
+    left, right = M.cdf_limits(np.array([0.0]), np.array([[0, 0, 2, 4, 6, 8, 9]], dtype=float),
+                               np.array([-2.0]), np.array([30.0]))
+    assert left[0] == pytest.approx(0.05) and right[0] == pytest.approx(0.10)
+    bounds = pl.DataFrame({"position": ["RB"], "pos_min": [-2.0], "pos_max": [30.0], "season": [2022]},
+                          schema_overrides={"season": pl.Int32})
+    tie_aware = R.tie_aware_coverage(frame, bounds, seed=0)
+    assert tie_aware < closed - 0.4  # the ties no longer count as covered
+    assert tie_aware == R.tie_aware_coverage(frame, bounds, seed=0)  # seeded
+    # without ties the diagnostic is close to the closed coverage
+    smooth = frame.with_columns(pl.Series("actual", rng.uniform(0.5, 9.5, n)))
+    assert abs(R.tie_aware_coverage(smooth, bounds) - M.interval_coverage(M.validate_frame(smooth))) < 0.06
+
+
+def test_coverage_paragraph_is_neutral_and_names_failing_positions():
+    models = R.ModelSet("chain_v1", None, "direct_lgbm", ["rolling_median_8"])
+    detail = pl.DataFrame([{"model": "chain_v1+cal", "position": "RB", "n": 100, "coverage_closed": 0.863,
+                            "below_q10": 0.053, "tied_q10": 0.156, "inside": 0.70, "tied_q90": 0.007,
+                            "above_q90": 0.084, "coverage_tie_aware": 0.79}])
+    text = R.coverage_paragraph(detail, [("RB", 0.88, 0.863, False), ("QB", 0.8, 0.8, True)], models)
+    assert "15.6% tie exactly at q10" in text and "0.790" in text
+    assert "(1) keep the rule as written" in text and "the chain fails coverage acceptance at RB" in text
+    assert "(2) adopt a tie-aware coverage definition" in text and "(3) change the calibrator" in text
+    assert "does not recommend" in text
+    assert R.coverage_paragraph(detail, [("RB", 0.8, 0.8, True)], models) == ""

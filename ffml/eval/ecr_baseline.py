@@ -543,6 +543,76 @@ def _read_actuals(seasons: Sequence[int], purpose: str) -> pl.DataFrame:
     return actual_points(pg, dst)
 
 
+#: why a player-week has or lacks a valid consensus row (D-081); see :func:`exclusion_reasons`
+REASON_VALID = "valid"
+REASON_EARLY = "early_game"
+REASON_NO_MATCH = "no_ecr_match"
+REASON_NO_SCRAPE = "no_scrape_week"
+EXCLUSION_REASONS: tuple[str, ...] = (REASON_VALID, REASON_EARLY, REASON_NO_MATCH, REASON_NO_SCRAPE)
+
+
+def exclusion_reasons(ecr: pl.DataFrame, keys: pl.DataFrame) -> pl.DataFrame:
+    """Classify each key (``entity_id, position, season, week``) by its consensus status (D-081).
+
+    ``reason`` is, checked in this order:
+
+    * ``valid``: the entity is ranked on its own position's page that week in
+      at least one scrape that is ``valid_for_game`` (scraped before the date
+      of its own game);
+    * ``early_game``: it is ranked on that page that week, but no scrape is
+      valid for its game, because the game was played on or before the
+      scrape date (Thursday and other early games);
+    * ``no_ecr_match``: the page was scraped that week, but the entity is not
+      on it (not ranked, no id in the archive, or listed only on another
+      position's page);
+    * ``no_scrape_week``: the position's page has no scrape for that season-week.
+
+    A ``valid`` key can still lack a consensus projection (no prior-season
+    curve, or dropped as a duplicate), which the caller counts separately.
+    Pure function on in-memory frames; the result stays in memory (D-007).
+    """
+    ranked = page_ranks(ecr)
+    is_dst = pl.col("page_position") == "DST"
+    entities = ranked.select(
+        pl.when(is_dst).then(pl.col("team")).otherwise(pl.col("player_id")).cast(pl.String).alias("entity_id"),
+        pl.col("page_position").alias("position"),
+        pl.col("season").cast(pl.Int32),
+        pl.col("week").cast(pl.Int32),
+        pl.col("valid_for_game").fill_null(False).alias("_valid"),
+    ).filter(pl.col("entity_id").is_not_null())
+    on = ["entity_id", "position", "season", "week"]
+    per_key = entities.group_by(on).agg(pl.col("_valid").any().alias("_any_valid"))
+    weeks = (
+        ranked.select(pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32),
+                      pl.col("page_position").alias("position"))
+        .unique()
+        .with_columns(pl.lit(True).alias("_scraped"))
+    )
+    base = keys.select(
+        pl.col("entity_id").cast(pl.String), pl.col("position").cast(pl.String),
+        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32),
+    ).unique()
+    out = base.join(per_key, on=on, how="left").join(weeks, on=["season", "week", "position"], how="left")
+    reason = (
+        pl.when(pl.col("_any_valid").eq(True))
+        .then(pl.lit(REASON_VALID))
+        .when(pl.col("_any_valid").eq(False))
+        .then(pl.lit(REASON_EARLY))
+        .when(pl.col("_scraped").fill_null(False))
+        .then(pl.lit(REASON_NO_MATCH))
+        .otherwise(pl.lit(REASON_NO_SCRAPE))
+    )
+    return out.with_columns(reason.alias("reason")).select(*on, "reason")
+
+
+def consensus_exclusions(keys: pl.DataFrame, seasons: Sequence[int], purpose: str = "backtest") -> pl.DataFrame:
+    """:func:`exclusion_reasons` for ``keys`` from the restricted archive (guard first; held in memory)."""
+    seasons = sorted({int(s) for s in seasons})
+    assert_seasons_allowed(seasons, purpose)
+    ecr = _restricted_store().read(RESTRICTED_DATASET, seasons=seasons)
+    return exclusion_reasons(ecr, keys)
+
+
 def reference_actuals(seasons: Sequence[int], purpose: str = "backtest") -> pl.DataFrame:
     """Evaluator reference PPR points for ``seasons`` (D-052 cross-check against ``ffml/scoring``).
 
@@ -699,6 +769,13 @@ def write_restricted_frame(frame: pl.DataFrame, path: Path | str, root: Path = P
 
 __all__ = [
     "COVERAGE_POSITIONS",
+    "EXCLUSION_REASONS",
+    "REASON_EARLY",
+    "REASON_NO_MATCH",
+    "REASON_NO_SCRAPE",
+    "REASON_VALID",
+    "consensus_exclusions",
+    "exclusion_reasons",
     "MODEL_NAME",
     "PAGE_POSITION",
     "ConsensusResult",

@@ -117,3 +117,42 @@ Decisions proposed:
 
 Next:
 - When the orchestrator confirms the chain parts are combined, run `python -m ffml.eval.report_backtest --run-id default_20261102 --out backtest_2026-11-03` (with `--ablation-run-id ablations_20261103` once that run has a manifest). Then confirm the pair counts are identical, review the chain verdict and its calibration tables, file any findings, and rerun the audit if model code has changed.
+
+## Addendum (2026-11-03): owner requirements D-081 to D-084 and the coverage observation
+
+Done (code only; the final report is not built yet):
+- D-081, matched comparison. `consensus_population` now restricts every model to the player-weeks that have a valid consensus row with q10, q50 and q90 (`matched_frames`). `population_keys_identical` checks the restriction, and section 8 prints the result.
+  - The table shows the focus model and the challenger, raw and calibrated, the section 8 baselines and the best baseline (calibrated), and the consensus.
+  - Its CIs are focus minus consensus, under the D-078 rule.
+- D-081, the Thursday effect.
+  - `ecr_baseline.exclusion_reasons` classifies every active player-week as valid, early game (game on or before the scrape date), no ECR match, or no scrape that week. `consensus_status` adds a fifth class: valid but no projection.
+  - Section 8.1 gives the counts with a sum check. It reports the metrics of the calibrated focus model and of the best baseline on three populations: (a) matched, (b) early game, (c) all active.
+  - It also reports paired CIs for focus-minus-best MAE in each population and for the early-minus-matched difference, then one plain sentence on the result.
+- D-082: each verdict cell is one plain sentence, for example "The chain does not beat the FantasyPros consensus on RB MAE (difference ..., 95% interval ... to ...; calibrated)". Every calibrated consensus cell has a sentence. Raw consensus cells get a sentence where they differ from the calibrated result. Every other comparator's non-beaten cells are listed. The coverage gap is added to the verdict metrics.
+- D-084: a "Holdout session pending" note at the top of the report. The season is taken from settings, so no literal year appears in the code.
+- Coverage (orchestrator request):
+  - The acceptance table shows PASS/FAIL for raw and calibrated, with one plain line per position; the rule itself is unchanged.
+  - Section 5.1 adds a tail decomposition (below q10, tied at q10, inside, tied at q90, above q90) and a labelled tie-aware diagnostic (randomized PIT in (0.1, 0.9), seed 0, using the q05..q95 knots and prior-season position bounds from the reference actuals). It also adds q10 and q90 pinball for the calibrated focus model against every comparator.
+  - A neutral paragraph lists the three options whenever a position fails and has material ties.
+- Tests: `tests/eval/test_report_backtest.py` now has 17 tests, covering matched keys, Thursday counts, split deltas, the D-082 wording, tails and the randomized PIT, and the coverage paragraph.
+
+Evidence:
+- `pytest tests/eval -q`: `86 passed in 52.78s`. `ruff check .`: `All checks passed!`
+- Stand-in run on the combined file (focus `direct_lgbm`, 200 draws, written to the scratchpad, not to `reports/`):
+  - The matched table's row keys are identical for every model.
+  - Active player-weeks by status: matched 17,144; early game 1,429; no ECR match 943; no scrape that week 3,625; valid without projection 0; all 23,141. The sum check is ok at every position.
+  - Pooled `direct_lgbm+cal` minus `rolling_median_8+cal` MAE: -0.27 [-0.40, -0.15] on early-game player-weeks and -0.29 [-0.33, -0.24] on the matched population. The difference, +0.02 [-0.12, +0.15], includes zero.
+- Independent check of the coverage observation (my own `tail_decomposition`, PPR 2022-2024, active rows). `chain_v1+cal` closed coverage:
+
+  | position | coverage | below q10 | tied at q10 | above q90 |
+  | --- | --- | --- | --- | --- |
+  | QB | 0.803 | 9.3% | 0.2% | 10.4% |
+  | RB | 0.863 | 5.3% | 15.6% | 8.4% |
+  | WR | 0.852 | 4.7% | 24.6% | 10.1% |
+  | TE | 0.872 | 2.3% | 40.1% | 10.5% |
+  | K | 0.820 | — | — | — |
+  | DST | 0.826 | — | — | — |
+
+  - These match the orchestrator's numbers.
+  - The RB, WR and TE tie shares are identical in the raw and calibrated forms, so calibration does not move those q10 values.
+  - `direct_lgbm+cal` (0.79-0.81) and `rolling_ew_035+cal` (0.79-0.81) have almost no ties.

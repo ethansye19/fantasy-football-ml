@@ -17,10 +17,14 @@ Conventions
   sensitivity. When the run has no chain yet, the challenger stands in so the
   pipeline runs end to end, and the report says so at the top.
 * **Populations.** Headline: rows every headline model predicts (D-050
-  alignment), then active rows with an actual and a projection. Consensus:
-  PPR only, additionally restricted to rows with a valid consensus rank
-  (Thursday players drop out, D-036); consensus rows are scored against the
-  harness actuals after the D-052 cross-check. Secondary: every rostered row
+  alignment), then active rows with an actual and a projection. Consensus
+  (D-081): PPR only; every model is restricted to exactly the player-weeks
+  with a valid consensus row and projection, so populations match row for
+  row (checked); consensus rows are scored against the harness actuals
+  (D-079). Players whose game is on or before the scrape date drop out of
+  that comparison (D-036), so the Thursday effect is shown separately: the
+  focus model and the best baseline on the matched, early-game and all-active
+  populations, with the count of every other exclusion reason. Secondary: every rostered row
   including inactive ones (actual 0), with ``pred_*_uncond`` for models that
   have an availability layer.
 * **Pair set (D-074).** ``ref_rank`` comes from the mean ``pred_q50`` over the
@@ -61,7 +65,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from ffml.config import PROJECT_ROOT, ensure_utf8
+from ffml.config import PROJECT_ROOT, ensure_utf8, get_settings
 from ffml.eval import metrics as M
 from ffml.eval.harness import PREDICTIONS, load_backtest, read_manifest, resolve_run_dir
 
@@ -81,7 +85,7 @@ COVERAGE_BAND: tuple[float, float] = (0.75, 0.85)
 LINEUP_SLOTS: tuple[str, ...] = M.DEFAULT_SLOTS
 SCORINGS: tuple[str, ...] = ("ppr", "half", "std")
 VERDICT_METRICS: tuple[str, ...] = (
-    "mae", "pinball_q10", "pinball_q50", "pinball_q90", "spearman_common", "start_sit_common",
+    "mae", "pinball_q10", "pinball_q50", "pinball_q90", "coverage_gap", "spearman_common", "start_sit_common",
 )
 DELTA_METRICS: tuple[str, ...] = (
     "mae", "mae_mean", "pinball_q10", "pinball_q50", "pinball_q90", "coverage_gap",
@@ -105,7 +109,8 @@ METRIC_LABEL: dict[str, str] = {
 STATUS_BETTER, STATUS_WORSE, STATUS_NONE, STATUS_NA = "beats", "worse", "no difference", "n/a"
 KEEP_COLUMNS: tuple[str, ...] = (
     "entity_id", "position", "season", "week", "model", "team", "game_id",
-    "pred_mean", "pred_q10", "pred_q50", "pred_q90", "actual", "active",
+    "pred_mean", "pred_q05", "pred_q10", "pred_q25", "pred_q50", "pred_q75", "pred_q90", "pred_q95",
+    "actual", "active",
     "boom_prob", "bust_prob", "boom_actual", "bust_actual", "pred_cdf_at_actual", "rank_pred",
     "active_prob", "pred_mean_uncond", "pred_q50_uncond", M.REF_RANK,
 )
@@ -335,7 +340,8 @@ def resolve_models(present: Iterable[str], focus: str | None = None) -> ModelSet
                 "the verdict format run end to end on real rows. Nothing in this draft is a "
                 "statement about the chain."
             )
-    final = next((m for m in FINAL_REPORT_CANDIDATES if m in present), None)
+    # the final-report variant is the chain's sensitivity; a stand-in focus has none
+    final = next((m for m in FINAL_REPORT_CANDIDATES if m in present), None) if chosen in FOCUS_CANDIDATES else None
     challenger = CHALLENGER if CHALLENGER in present else None
     baselines = [b for b in BASELINES if b in present]
     return ModelSet(chosen, final, challenger, baselines, draft_note)
@@ -480,11 +486,16 @@ def consensus_population(
     raw: Sequence[str],
     reference: Sequence[str] | None = None,
 ) -> dict[str, pl.DataFrame]:
-    """Headline frames plus the consensus frame on the keys they all share, with a joint ``ref_rank``.
+    """Matched population (D-081): every frame restricted to the same player-weeks as the consensus.
 
     The consensus frame's own reference actuals are replaced by the harness
     outcomes of the focus frame (the first raw label) so every model is
-    scored against the same numbers.
+    scored against the same numbers (D-079). Frames are then restricted to
+    the keys they all share and, among those, to keys where every frame has
+    a ``pred_q50``, ``pred_q10`` and ``pred_q90`` (a consensus row without a
+    rank-to-points curve has none), so the evaluation populations match row
+    for row (:func:`population_keys_identical`). The joint ``ref_rank``
+    includes the consensus (D-077).
     """
     focus = raw[0]
     outcome_cols = [c for c in ("actual", "active", "boom_actual", "bust_actual") if c in aligned[focus].columns]
@@ -497,9 +508,308 @@ def consensus_population(
             cons = cons.with_columns(pl.lit(None, dtype=dtype).alias(col))
     frames = {name: f.drop([c for c in (M.REF_RANK, "ref_q50") if c in f.columns]) for name, f in aligned.items()}
     frames[CONSENSUS] = cons.with_columns(pl.lit(CONSENSUS).alias("model"))
-    joint, _ = M.align_frames(frames)
+    joint = matched_frames(frames)
     ref = [m for m in (reference if reference is not None else raw) if m in joint] + [CONSENSUS]
     return M.with_reference_rank(joint, reference=ref)
+
+
+_PRED_REQUIRED: tuple[str, ...] = ("pred_q50", "pred_q10", "pred_q90")
+
+
+def matched_frames(frames: Mapping[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+    """Restrict every frame to the keys all share where every frame has q10, q50 and q90 (D-081)."""
+    joint, _ = M.align_frames(frames)
+    keys: pl.DataFrame | None = None
+    for f in joint.values():
+        k = f.filter(pl.all_horizontal([pl.col(c).is_not_null() & ~pl.col(c).cast(pl.Float64).is_nan()
+                                        for c in _PRED_REQUIRED if c in f.columns])).select(M.KEY_COLUMNS)
+        keys = k if keys is None else keys.join(k, on=list(M.KEY_COLUMNS), how="inner")
+    assert keys is not None
+    return {name: f.join(keys, on=list(M.KEY_COLUMNS), how="semi") for name, f in joint.items()}
+
+
+def population_keys(frame: pl.DataFrame) -> pl.DataFrame:
+    """Sorted key columns of the evaluation population (active, with an actual and a projection)."""
+    return M.population(M.validate_frame(_slim(frame))).select(M.KEY_COLUMNS).sort(list(M.KEY_COLUMNS))
+
+
+def population_keys_identical(frames: Mapping[str, pl.DataFrame]) -> bool:
+    """True when every frame's evaluation population has exactly the same row keys."""
+    keys = [population_keys(f) for f in frames.values()]
+    return all(k.equals(keys[0]) for k in keys[1:]) if keys else True
+
+
+# --------------------------------------------------------------------------- #
+# Thursday effect (D-081): matched, early-game and all player-weeks
+# --------------------------------------------------------------------------- #
+
+STATUS_MATCHED = "matched"
+STATUS_EARLY = "early_game"
+STATUS_NO_MATCH = "no_ecr_match"
+STATUS_NO_SCRAPE = "no_scrape_week"
+STATUS_NO_PROJECTION = "valid_no_projection"
+STATUS_ORDER: tuple[str, ...] = (STATUS_MATCHED, STATUS_EARLY, STATUS_NO_MATCH, STATUS_NO_SCRAPE, STATUS_NO_PROJECTION)
+STATUS_LABEL: dict[str, str] = {
+    STATUS_MATCHED: "(a) matched consensus population",
+    STATUS_EARLY: "(b) game on or before the scrape date",
+    STATUS_NO_MATCH: "no ECR match (not ranked, no id, or another page)",
+    STATUS_NO_SCRAPE: "no scrape that week",
+    STATUS_NO_PROJECTION: "valid ECR row without a consensus projection",
+}
+POP_MATCHED, POP_EARLY, POP_ALL = "matched", "early_game", "all"
+POP_LABEL: dict[str, str] = {
+    POP_MATCHED: "(a) matched",
+    POP_EARLY: "(b) early game",
+    POP_ALL: "(c) all active",
+}
+
+
+def consensus_status(active_keys: pl.DataFrame, matched_keys: pl.DataFrame, reasons: pl.DataFrame) -> pl.DataFrame:
+    """One status per active headline key: matched, or why it has no matched consensus row.
+
+    ``active_keys`` and ``matched_keys`` hold :data:`ffml.eval.metrics.KEY_COLUMNS`
+    (the evaluation populations of the headline and the matched consensus
+    tables); ``reasons`` is :func:`ffml.eval.ecr_baseline.exclusion_reasons`
+    output. A key whose ECR row is valid but which is not matched lacks a
+    consensus projection (no prior-season curve, or a dropped duplicate).
+    """
+    keys = list(M.KEY_COLUMNS)
+    flagged = active_keys.select(keys).unique().join(
+        matched_keys.select(keys).unique().with_columns(pl.lit(True).alias("_m")), on=keys, how="left"
+    ).join(reasons.select(*keys, "reason"), on=keys, how="left")
+    status = (
+        pl.when(pl.col("_m").fill_null(False)).then(pl.lit(STATUS_MATCHED))
+        .when(pl.col("reason") == "valid").then(pl.lit(STATUS_NO_PROJECTION))
+        .when(pl.col("reason").is_not_null()).then(pl.col("reason"))
+        .otherwise(pl.lit(STATUS_NO_SCRAPE))
+    )
+    return flagged.with_columns(status.alias("status")).select(*keys, "status")
+
+
+def status_counts(status: pl.DataFrame, positions: Sequence[str] = POSITIONS) -> pl.DataFrame:
+    """Rows per position (and ``ALL``) and status, plus the total of active rows."""
+    rows = []
+    for pos in [*positions, "ALL"]:
+        sub = status if pos == "ALL" else status.filter(pl.col("position") == pos)
+        if sub.is_empty():
+            continue
+        counts = dict(sub.group_by("status").len().iter_rows())
+        rows.append({"position": pos, **{s: int(counts.get(s, 0)) for s in STATUS_ORDER}, "all": sub.height})
+    schema = {"position": pl.String, **dict.fromkeys(STATUS_ORDER, pl.Int64), "all": pl.Int64}
+    return pl.DataFrame(rows, schema=schema)
+
+
+def split_populations(
+    frames: Mapping[str, pl.DataFrame], status: pl.DataFrame
+) -> dict[str, dict[str, pl.DataFrame]]:
+    """``{population: {label: frame}}`` for the matched, early-game and all-active populations.
+
+    The frames keep the headline ``ref_rank``, so start/sit and Spearman in
+    every population use the same model-agnostic startable set (D-077).
+    """
+    keys = list(M.KEY_COLUMNS)
+    matched = status.filter(pl.col("status") == STATUS_MATCHED).select(keys)
+    early = status.filter(pl.col("status") == STATUS_EARLY).select(keys)
+    out: dict[str, dict[str, pl.DataFrame]] = {POP_MATCHED: {}, POP_EARLY: {}, POP_ALL: {}}
+    for name, f in frames.items():
+        cast = {c: f.schema[c] for c in keys}
+        out[POP_MATCHED][name] = f.join(matched.cast(cast), on=keys, how="semi")
+        out[POP_EARLY][name] = f.join(early.cast(cast), on=keys, how="semi")
+        out[POP_ALL][name] = f
+    return out
+
+
+def _mae_bundle(frame: pl.DataFrame) -> dict[str, float]:
+    return {"mae": M.mae(frame)}
+
+
+@dataclass(frozen=True)
+class SplitDelta:
+    """``focus - best`` MAE per population and the early-minus-matched difference, with intervals."""
+
+    group: str
+    deltas: dict[str, tuple[float, float, float]]  # population -> (delta, lo, hi)
+    did: tuple[float, float, float]  # (early - matched) of the deltas
+    mae: dict[str, tuple[float, float]]  # population -> (focus MAE, best MAE)
+
+
+def split_mae_deltas(
+    pops: Mapping[str, Mapping[str, pl.DataFrame]], focus: str, best: str, positions: Sequence[str] = POSITIONS,
+    n_boot: int = 500, seed: int = 0, alpha: float = 0.05,
+) -> list[SplitDelta]:
+    """Paired week-clustered intervals for ``focus - best`` MAE in each population (and pooled ``ALL``).
+
+    All six frames of a group are bootstrapped in one call, so the
+    early-minus-matched difference of the deltas is paired too.
+    """
+    out = []
+    for group in [*positions, "ALL"]:
+        frames = {}
+        for pop in (POP_MATCHED, POP_EARLY, POP_ALL):
+            for label in (focus, best):
+                f = pops[pop][label]
+                if group != "ALL":
+                    f = f.filter(pl.col("position") == group)
+                frames[f"{pop}|{label}"] = M.validate_frame(_slim(f)).sort(list(SORT_KEYS))
+        if all(M.population(f).is_empty() for f in frames.values()):
+            continue
+        points = {k: M.mae(f) for k, f in frames.items()}
+        boots = M.paired_bundle_bootstrap(frames, _mae_bundle, n_boot, seed=seed) if n_boot > 0 else {}
+        deltas = {}
+        arrays: dict[str, np.ndarray | None] = {}
+        for pop in (POP_MATCHED, POP_EARLY, POP_ALL):
+            d = points[f"{pop}|{focus}"] - points[f"{pop}|{best}"]
+            arr = boots[f"{pop}|{focus}"]["mae"] - boots[f"{pop}|{best}"]["mae"] if boots else None
+            lo, hi = M.percentile_interval(arr, alpha) if arr is not None else (math.nan, math.nan)
+            deltas[pop] = (d, lo, hi)
+            arrays[pop] = arr
+        did_point = deltas[POP_EARLY][0] - deltas[POP_MATCHED][0]
+        if arrays[POP_EARLY] is not None and arrays[POP_MATCHED] is not None:
+            dlo, dhi = M.percentile_interval(arrays[POP_EARLY] - arrays[POP_MATCHED], alpha)
+        else:
+            dlo = dhi = math.nan
+        mae = {pop: (points[f"{pop}|{focus}"], points[f"{pop}|{best}"]) for pop in (POP_MATCHED, POP_EARLY, POP_ALL)}
+        out.append(SplitDelta(group, deltas, (did_point, dlo, dhi), mae))
+    return out
+
+
+def thursday_sentence(pooled: SplitDelta, subject: str, best: str) -> str:
+    """One or two plain sentences: does the focus model do better or worse on early-game player-weeks?"""
+    f_m, _ = pooled.mae[POP_MATCHED]
+    f_e, _ = pooled.mae[POP_EARLY]
+    d_m = pooled.deltas[POP_MATCHED]
+    d_e = pooled.deltas[POP_EARLY]
+    did, lo, hi = pooled.did
+    if math.isnan(lo) or math.isnan(hi):
+        verdict = "no interval is available, so no direction can be stated"
+    elif hi < 0:
+        verdict = "it does relatively better on early-game player-weeks than on the matched population"
+    elif lo > 0:
+        verdict = "it does relatively worse on early-game player-weeks than on the matched population"
+    else:
+        verdict = ("it does neither clearly better nor worse on early-game player-weeks than on the matched "
+                   "population (the interval includes zero)")
+    return (
+        f"{subject}'s MAE (all positions pooled, calibrated) is {_num(f_e, 2)} on early-game player-weeks and "
+        f"{_num(f_m, 2)} on the matched population; its MAE minus that of `{best}` is {_num(d_e[0], 2, True)} "
+        f"(95% interval {_num(d_e[1], 2, True)} to {_num(d_e[2], 2, True)}) on early-game player-weeks and "
+        f"{_num(d_m[0], 2, True)} ({_num(d_m[1], 2, True)} to {_num(d_m[2], 2, True)}) on the matched population. "
+        f"The difference between the two is {_num(did, 2, True)} (95% interval {_num(lo, 2, True)} to "
+        f"{_num(hi, 2, True)}): {verdict}."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Interval coverage detail: tails, ties, tie-aware diagnostic
+# --------------------------------------------------------------------------- #
+
+#: a tie share at q10 or q90 at or above this is called material in the coverage paragraph
+MATERIAL_TIE_SHARE = 0.05
+
+
+def position_bounds(reference: pl.DataFrame, seasons: Sequence[int]) -> pl.DataFrame:
+    """``season, position, pos_min, pos_max``: played-row extremes in seasons before each season (D-071 knots)."""
+    played = reference.filter(pl.col("active"))
+    rows = []
+    for season in sorted({int(s) for s in seasons}):
+        past = played.filter(pl.col("season") < season)
+        if past.is_empty():
+            continue
+        rows.append(past.group_by("position").agg(
+            pl.col("actual").min().alias("pos_min"), pl.col("actual").max().alias("pos_max")
+        ).with_columns(pl.lit(season, dtype=pl.Int32).alias("season")))
+    if not rows:
+        return pl.DataFrame(schema={"position": pl.String, "pos_min": pl.Float64, "pos_max": pl.Float64,
+                                    "season": pl.Int32})
+    return pl.concat(rows, how="vertical_relaxed")
+
+
+def tie_aware_coverage(frame: pl.DataFrame, bounds: pl.DataFrame | None, seed: int = 0) -> float:
+    """Share of the population with a randomized PIT in (0.1, 0.9) (diagnostic, not the acceptance rule)."""
+    f = M.population(M.validate_frame(_slim(frame))).sort(list(SORT_KEYS))
+    if any(c not in f.columns for c in M.KNOT_COLUMNS) or f.is_empty():
+        return math.nan
+    f = f.filter(pl.all_horizontal([pl.col(c).is_not_null() for c in M.KNOT_COLUMNS]))
+    if f.is_empty():
+        return math.nan
+    if bounds is not None and not bounds.is_empty():
+        f = f.join(bounds.with_columns(pl.col("season").cast(pl.Int32)), on=["season", "position"], how="left")
+    else:
+        f = f.with_columns(pl.lit(None, dtype=pl.Float64).alias("pos_min"),
+                           pl.lit(None, dtype=pl.Float64).alias("pos_max"))
+    u = M.randomized_pit(
+        f["actual"].to_numpy(), f.select(M.KNOT_COLUMNS).cast(pl.Float64).to_numpy(),
+        f["pos_min"].cast(pl.Float64).to_numpy(), f["pos_max"].cast(pl.Float64).to_numpy(), seed=seed,
+    )
+    return float(((u > 0.1) & (u < 0.9)).mean())
+
+
+def coverage_detail(
+    frames: Mapping[str, pl.DataFrame], labels: Sequence[str], bounds: pl.DataFrame | None,
+    positions: Sequence[str] = POSITIONS, seed: int = 0,
+) -> pl.DataFrame:
+    """Per model and position: closed coverage, the exclusive tail shares, and the tie-aware diagnostic."""
+    rows = []
+    for name in labels:
+        if name not in frames:
+            continue
+        for pos in positions:
+            sub = frames[name].filter(pl.col("position") == pos)
+            if sub.is_empty():
+                continue
+            v = M.validate_frame(_slim(sub))
+            tails = M.tail_decomposition(v)
+            rows.append({
+                "model": name, "position": pos, "n": tails["n"],
+                "coverage_closed": M.interval_coverage(v),
+                "below_q10": tails["below_q10"], "tied_q10": tails["tied_q10"], "inside": tails["inside"],
+                "tied_q90": tails["tied_q90"], "above_q90": tails["above_q90"],
+                "coverage_tie_aware": tie_aware_coverage(sub, bounds, seed),
+            })
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def coverage_paragraph(detail: pl.DataFrame, acc_coverage: Sequence[tuple[str, float, float, bool]],
+                       models: ModelSet, band: tuple[float, float] = COVERAGE_BAND) -> str:
+    """Neutral description of the tie issue and the options (the owner decides; no recommendation)."""
+    focus_cal = models.focus + CAL
+    failing = [pos for pos, _, cal, ok in acc_coverage if not ok and not math.isnan(cal)]
+    if detail.is_empty() or not failing:
+        return ""
+    sub = detail.filter(pl.col("model") == focus_cal)
+    tied = []
+    for pos in failing:
+        r = sub.filter(pl.col("position") == pos)
+        if r.is_empty():
+            continue
+        r0 = r.row(0, named=True)
+        if max(r0["tied_q10"], r0["tied_q90"]) >= MATERIAL_TIE_SHARE:
+            tied.append(
+                f"{pos} {_num(r0['coverage_closed'])} closed, of which {r0['tied_q10']:.1%} tie exactly at q10 "
+                f"and {r0['tied_q90']:.1%} at q90 ({r0['below_q10']:.1%} below q10, {r0['above_q90']:.1%} above "
+                f"q90); the tie-aware diagnostic gives {_num(r0['coverage_tie_aware'])}"
+            )
+    subject = subject_name(models)
+    if not tied:
+        return (
+            f"{subject} fails the coverage band at {', '.join(failing)}, and ties at the interval ends are not "
+            f"material there (below {MATERIAL_TIE_SHARE:.0%} of rows)."
+        )
+    return (
+        "**Interval coverage and point masses.** The acceptance rule counts an actual inside the closed interval "
+        f"[q10, q90] and asks for {band[0]:.0%}-{band[1]:.0%} per position after calibration. "
+        f"{subject}'s simulated distribution puts a point mass at 0 points for many players, so its q10 is "
+        "exactly 0 for them, and every scoreless active game then counts as covered. "
+        f"Calibrated ({focus_cal}): " + "; ".join(tied) + ". The online conformal calibrator counts an actual "
+        "equal to q10 as at or below q10, so these ties register as no under-coverage there and produce no "
+        "offset. The tie-aware coverage (randomized PIT in (0.1, 0.9)) is a labelled diagnostic and is not used "
+        "for acceptance. The options are: (1) keep the rule as written, in which case "
+        f"{subject[0].lower()}{subject[1:]} fails coverage acceptance at {', '.join(failing)}; (2) adopt a "
+        "tie-aware coverage definition before the holdout session; (3) change the calibrator's tie convention, "
+        "which would raise q10 above 0 for those players and, if 0 is the correct 10th percentile for them, "
+        "worsen q10 pinball loss (that variant was not run). The owner decides; this report does not recommend "
+        "one."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -694,37 +1004,84 @@ def acceptance(
     return Acceptance(lines, coverage)
 
 
-def _metric_phrase(c: VerdictCell) -> str:
-    return f"{METRIC_LABEL.get(c.metric, c.metric)} ({c.delta.cell()})"
+COMPARATOR_NAME: dict[str, str] = {
+    CONSENSUS: "the FantasyPros consensus",
+    "rolling_avg_4": "the 4-game rolling average (`rolling_avg_4`)",
+    "rolling_avg_3": "the 3-game rolling average (`rolling_avg_3`)",
+    "rolling_ew_035": "the exponentially weighted average (`rolling_ew_035`)",
+    "prior_season": "the prior-season average (`prior_season`)",
+    "rolling_median_8": "the 8-game rolling median (`rolling_median_8`)",
+    CHALLENGER: "the direct challenger (`direct_lgbm`)",
+}
+METRIC_PHRASE: dict[str, str] = {
+    "mae": "MAE",
+    "pinball_q10": "pinball loss at q10",
+    "pinball_q50": "pinball loss at q50",
+    "pinball_q90": "pinball loss at q90",
+    "coverage_gap": "80% coverage gap (distance from 0.80)",
+    "spearman_common": "Spearman rank correlation",
+    "start_sit_common": "start/sit accuracy",
+}
+#: metrics measured in points get 2 decimals in sentences, rates and correlations 3
+_POINT_METRICS = frozenset({"mae", "mae_mean", "pinball_q10", "pinball_q50", "pinball_q90"})
 
 
-def verdict_sentences(cells: Sequence[VerdictCell], focus_label: str) -> list[str]:
-    """One sentence per form, position and comparator listing every metric the focus model does not beat.
+def subject_name(models: ModelSet) -> str:
+    """How sentences name the focus model."""
+    if models.focus in FOCUS_CANDIDATES:
+        return "The chain"
+    return f"The stand-in model `{models.focus}`"
 
-    The list is complete: every cell whose status is not ``beats`` appears in
-    exactly one sentence.
+
+def cell_sentence(c: VerdictCell, subject: str) -> str:
+    """One plain sentence for one verdict cell (D-082): beats, does not beat, or does not beat and is worse."""
+    comp = COMPARATOR_NAME.get(c.comparator, f"`{c.comparator}`")
+    metric = f"{c.position} {METRIC_PHRASE.get(c.metric, c.metric)}"
+    digits = 2 if c.metric in _POINT_METRICS else 3
+    d = c.delta
+    numbers = (
+        f"difference {_num(d.delta, digits, True)}, 95% interval {_num(d.lo, digits, True)} to "
+        f"{_num(d.hi, digits, True)}"
+    )
+    form = "calibrated forms" if c.form == "calibrated" else "raw forms"
+    if c.comparator == CONSENSUS:
+        form = "calibrated" if c.form == "calibrated" else "raw"
+    if c.status == STATUS_BETTER:
+        return f"{subject} beats {comp} on {metric} ({numbers}; {form})."
+    if c.status == STATUS_WORSE:
+        return f"{subject} does not beat {comp} on {metric}: it is worse ({numbers}; {form})."
+    if c.status == STATUS_NONE:
+        return f"{subject} does not beat {comp} on {metric} ({numbers}; {form})."
+    return f"{subject} cannot be compared with {comp} on {metric}: no interval ({numbers}; {form})."
+
+
+def verdict_sentences(cells: Sequence[VerdictCell], subject: str) -> list[str]:
+    """One sentence per cell the focus model does not beat, every form and comparator (complete)."""
+    return [f"- {cell_sentence(c, subject)}" for c in cells if c.status != STATUS_BETTER]
+
+
+def consensus_sentences(cells: Sequence[VerdictCell], subject: str) -> list[str]:
+    """Every position and metric against the consensus (D-082).
+
+    One sentence per calibrated cell (the headline form, D-078), beaten or
+    not, then one per raw cell whose result differs from the calibrated one,
+    so every consensus cell of both forms is accounted for.
     """
-    groups: dict[tuple[str, str, str], list[VerdictCell]] = {}
-    for c in cells:
-        if c.status == STATUS_BETTER:
-            continue
-        groups.setdefault((c.form, c.position, c.comparator), []).append(c)
-    out = []
-    for (form, pos, comp), group in groups.items():
-        parts = []
-        worse = [c for c in group if c.status == STATUS_WORSE]
-        same = [c for c in group if c.status == STATUS_NONE]
-        na = [c for c in group if c.status == STATUS_NA]
-        if worse:
-            parts.append("is worse on " + "; ".join(_metric_phrase(c) for c in worse))
-        if same:
-            parts.append(
-                "does not beat it on " + "; ".join(_metric_phrase(c) for c in same)
-                + " (interval includes zero)"
-            )
-        if na:
-            parts.append("has no interval for " + "; ".join(_metric_phrase(c) for c in na))
-        out.append(f"- {pos}, {form}, vs `{comp}`: `{focus_label}` " + ", and ".join(parts) + ".")
+    cons = [c for c in cells if c.comparator == CONSENSUS]
+    calibrated = {(c.position, c.metric): c for c in cons if c.form == "calibrated"}
+    out = [f"- {cell_sentence(c, subject)}" for c in cons if c.form == "calibrated"]
+    differing = [
+        c for c in cons
+        if c.form == "raw" and (c.position, c.metric) in calibrated
+        and calibrated[(c.position, c.metric)].status != c.status
+    ]
+    raw_only = [c for c in cons if c.form == "raw" and (c.position, c.metric) not in calibrated]
+    extra = differing + raw_only
+    if extra:
+        out.append("\nRaw forms, where the result differs from the calibrated one:\n")
+        out.extend(f"- {cell_sentence(c, subject)}" for c in extra)
+    elif any(c.form == "raw" for c in cons):
+        out.append("\nIn the raw forms every one of these cells has the same result as in the calibrated forms.")
     return out
 
 
@@ -734,6 +1091,7 @@ def render_verdict(
     models: ModelSet,
     positions: Sequence[str] = POSITIONS,
     band: tuple[float, float] = COVERAGE_BAND,
+    coverage_text: str = "",
 ) -> str:
     """Markdown for the verdict section: grids, acceptance rules, coverage and the complete list."""
     focus = models.focus
@@ -763,11 +1121,28 @@ def render_verdict(
         lines.append(_md_table(header, rows))
     lines.append("\n### Acceptance rules (MODELING.md section 8, calibrated forms)\n")
     lines.extend(acc.lines or ["- no comparator available"])
-    lines.append(f"\n### Coverage acceptance ({band[0]:.0%}-{band[1]:.0%} per position after calibration)\n")
+    lines.append(
+        f"\n### Coverage acceptance ({band[0]:.0%}-{band[1]:.0%} per position after calibration, closed interval "
+        "[q10, q90], rule as written)\n"
+    )
+
+    def within(v: float) -> bool:
+        return (not math.isnan(v)) and band[0] <= v <= band[1]
+
     cov_rows = [
-        [pos, _num(raw), _num(cal), "PASS" if ok else "FAIL"] for pos, raw, cal, ok in acc.coverage
+        [pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), "PASS" if ok else "FAIL"]
+        for pos, raw, cal, ok in acc.coverage
     ]
-    lines.append(_md_table(["position", "raw coverage", "calibrated coverage", "result"], cov_rows))
+    lines.append(_md_table(["position", "raw coverage", "raw result", "calibrated coverage",
+                            "calibrated result (acceptance)"], cov_rows))
+    subject = subject_name(models)
+    lines.append("")
+    for pos, raw, cal, ok in acc.coverage:
+        lines.append(
+            f"- {pos}: **{'PASS' if ok else 'FAIL'}**. {subject}'s calibrated 80% interval covers {_num(cal)} of "
+            f"active player-weeks, {'inside' if ok else 'outside'} {band[0]:.2f}-{band[1]:.2f} (raw {_num(raw)}, "
+            f"{'inside' if within(raw) else 'outside'} the band)."
+        )
     n_pass = sum(1 for *_, ok in acc.coverage if ok)
     lines.append(
         f"\nCoverage after calibration is within the band for {n_pass} of {len(acc.coverage)} positions"
@@ -777,8 +1152,19 @@ def render_verdict(
             else "; outside it: " + ", ".join(f"{p} ({_num(c)})" for p, _, c, ok in acc.coverage if not ok) + "."
         )
     )
-    lines.append("\n### Where the focus model does not beat a comparator (complete list)\n")
-    sentences = verdict_sentences(cells, focus)
+    if coverage_text:
+        lines.append("\n" + coverage_text)
+    subject = subject_name(models)
+    if any(c.comparator == CONSENSUS for c in cells):
+        lines.append(
+            "\n### Against the FantasyPros consensus: every position and metric (D-081, D-082)\n\n"
+            "On identical player-weeks (section 8). The rule (D-078) is fixed in advance and is not changed "
+            "after seeing results.\n"
+        )
+        lines.extend(consensus_sentences(cells, subject))
+    others = [c for c in cells if c.comparator != CONSENSUS]
+    lines.append("\n### Against the other comparators: every cell not beaten (complete list)\n")
+    sentences = verdict_sentences(others, subject)
     lines.extend(sentences or ["- none: every cell of both grids is `beats`."])
     return "\n".join(lines)
 
@@ -988,6 +1374,48 @@ def _calibration_section(frames: Mapping[str, pl.DataFrame], main: BootResult, m
     return "\n".join(out)
 
 
+def _coverage_section(detail: pl.DataFrame, main: BootResult, models: ModelSet, positions: Sequence[str]) -> str:
+    out = []
+    if detail.is_empty():
+        return "(no rows)"
+    out.append(
+        "Exclusive shares of active rows relative to [q10, q90] (ties within 1e-9 points): below q10, tied at q10, "
+        "strictly inside, tied at q90 (and not at q10), above q90. Closed coverage, the acceptance definition, is "
+        "tied q10 + inside + tied q90. The last column is a **diagnostic, not used for acceptance**: the share of "
+        "rows whose randomized PIT lies in (0.1, 0.9), with the PIT drawn uniformly in [F(y-), F(y)] from the "
+        "quantile knots q05..q95 and the prior-season position bounds (seed 0), so a point mass is spread over "
+        "its probability instead of counting as inside.\n"
+    )
+    order = {p: i for i, p in enumerate(POSITIONS)}
+    t = detail.with_columns(pl.col("position").replace_strict(order, default=99).alias("_o")).sort(["_o", "model"])
+    rows = []
+    for r in t.iter_rows(named=True):
+        rows.append([r["position"], f"`{r['model']}`", _num(int(r["n"])), _num(r["below_q10"]), _num(r["tied_q10"]),
+                     _num(r["inside"]), _num(r["tied_q90"]), _num(r["above_q90"]), _num(r["coverage_closed"]),
+                     _num(r["coverage_tie_aware"])])
+    out.append(_md_table(["position", "model", "n", "below q10", "tied q10", "inside", "tied q90", "above q90",
+                          "closed coverage", "tie-aware (diagnostic)"], rows))
+    focus_cal = models.focus + CAL
+    comps = [m + CAL for m in models.comparators()]
+    header = ["position", "comparator", f"pinball q10 `{focus_cal}`", "comparator", "difference [95% CI]",
+              f"pinball q90 `{focus_cal}`", "comparator", "difference [95% CI]"]
+    prow = []
+    for pos in positions:
+        for comp in comps:
+            if not (main.has(pos, focus_cal) and main.has(pos, comp)):
+                continue
+            d10 = main.delta(pos, focus_cal, comp, "pinball_q10")
+            d90 = main.delta(pos, focus_cal, comp, "pinball_q90")
+            prow.append([pos, f"`{comp}`", _num(d10.focus_value), _num(d10.other_value), d10.cell(),
+                         _num(d90.focus_value), _num(d90.other_value), d90.cell()])
+    out.append(
+        "\nPinball loss at q10 and q90 (the proper scoring rule for each quantile), calibrated forms; difference is "
+        f"`{focus_cal} - comparator`, negative favours the focus model, B/W by the D-078 rule.\n"
+    )
+    out.append(_md_table(header, prow))
+    return "\n".join(out)
+
+
 def _secondary_section(table: pl.DataFrame) -> str:
     if table.is_empty():
         return "(no rows)"
@@ -1011,8 +1439,23 @@ def _scoring_section(points: Mapping[str, Mapping[str, Mapping[str, float]]], ra
     return "\n\n".join(out)
 
 
+def matched_table_labels(models: ModelSet, best: str, present: Iterable[str]) -> list[str]:
+    """Models shown in the matched consensus table (D-081): focus and challenger raw and calibrated,
+    the section 8 baselines and the best baseline calibrated, and the consensus."""
+    present = set(present)
+    wanted = [models.focus, models.focus + CAL]
+    if models.challenger and models.challenger != models.focus:
+        wanted += [models.challenger, models.challenger + CAL]
+    for b in [*VERDICT_BASELINES, best]:
+        if b and b != models.focus:
+            wanted.append(b + CAL)
+    wanted.append(CONSENSUS)
+    return [m for m in dict.fromkeys(wanted) if m in present]
+
+
 def _consensus_section(cons: BootResult, cons_points: Mapping[str, Mapping[str, Mapping[str, float]]],
-                       models: ModelSet, positions: Sequence[str]) -> tuple[str, list[dict[str, Any]]]:
+                       models: ModelSet, positions: Sequence[str], labels: Sequence[str],
+                       identical: bool) -> tuple[str, list[dict[str, Any]]]:
     out = []
     records: list[dict[str, Any]] = []
     metrics = ("mae", "pinball_q10", "pinball_q50", "pinball_q90", "coverage_80", "spearman_common",
@@ -1020,15 +1463,22 @@ def _consensus_section(cons: BootResult, cons_points: Mapping[str, Mapping[str, 
     header = ["position", "model", "n", *[METRIC_LABEL[m] for m in metrics]]
     rows = []
     for pos in positions:
-        for m in [*models.raw, CONSENSUS]:
+        for m in labels:
             if m not in cons_points.get(pos, {}):
                 continue
             v = cons_points[pos][m]
             n = v.get("_n")
             rows.append([pos, f"`{m}`", _num(int(n)) if n is not None else "",
                          *[_num(v.get(x)) for x in metrics]])
+    out.append(
+        "Row keys identical for every model in this table: "
+        + ("**yes** (same player-weeks, same actuals)." if identical
+           else "**NO: FINDING**, the populations differ; the comparison below is not valid.")
+        + "\n"
+    )
     out.append(_md_table(header, rows))
-    dheader = ["position", "focus form", *[METRIC_LABEL[m] for m in metrics if m != "coverage_80"], "coverage gap"]
+    delta_metrics = [*[m for m in metrics if m != "coverage_80"], "coverage_80", "coverage_gap"]
+    dheader = ["position", "focus form", *[METRIC_LABEL[m] for m in delta_metrics]]
     drows = []
     for pos in positions:
         for suffix, form in (("", "raw"), (CAL, "calibrated")):
@@ -1036,7 +1486,7 @@ def _consensus_section(cons: BootResult, cons_points: Mapping[str, Mapping[str, 
             if not (cons.has(pos, f) and cons.has(pos, CONSENSUS)):
                 continue
             cells = []
-            for metric in [*[m for m in metrics if m != "coverage_80"], "coverage_gap"]:
+            for metric in delta_metrics:
                 if metric.startswith("start_sit") and pos not in M.STARTABLE:
                     cells.append("n/a")
                     continue
@@ -1047,9 +1497,62 @@ def _consensus_section(cons: BootResult, cons_points: Mapping[str, Mapping[str, 
                                 "other_value": d.other_value, "delta": d.delta, "lo": d.lo, "hi": d.hi,
                                 "status": d.status})
             drows.append([pos, form, *cells])
-    out.append("\nDeltas `focus - consensus_ecr` [95% paired interval] on the consensus population:\n")
+    out.append(
+        f"\nDifferences `{models.focus} - consensus_ecr` on these identical player-weeks [95% paired "
+        "week-clustered interval, D-078]; B: the focus model beats the consensus, W: it is worse. The 80% "
+        "coverage difference has no direction (no tag); its verdict uses the coverage gap.\n"
+    )
     out.append(_md_table(dheader, drows))
     return "\n".join(out), records
+
+
+def _thursday_section(counts: pl.DataFrame, pop_points: Mapping[str, Mapping[str, Mapping[str, Mapping[str, float]]]],
+                      split: Sequence[SplitDelta], models: ModelSet, best: str,
+                      positions: Sequence[str]) -> str:
+    focus_cal, best_cal = models.focus + CAL, best + CAL
+    out = []
+    header = ["position", *[STATUS_LABEL[s] for s in STATUS_ORDER], "(c) all active", "sum check"]
+    rows = []
+    for r in counts.iter_rows(named=True):
+        total = sum(int(r[s]) for s in STATUS_ORDER)
+        rows.append([r["position"], *[_num(int(r[s])) for s in STATUS_ORDER], _num(int(r["all"])),
+                     "ok" if total == r["all"] else f"MISMATCH ({total})"])
+    out.append("Active player-weeks by consensus status (PPR, 2022-2024). Columns (a) and (b) are the populations "
+               "compared below; the other exclusion reasons are counted separately and are not part of (b).\n")
+    out.append(_md_table(header, rows))
+    metrics = ("mae", "pinball_q10", "pinball_q50", "pinball_q90", "coverage_80", "spearman_common",
+               "start_sit_common")
+    mheader = ["position", "population", "model", "n", *[METRIC_LABEL[m] for m in metrics]]
+    mrows = []
+    for pos in positions:
+        for pop in (POP_MATCHED, POP_EARLY, POP_ALL):
+            for label in (focus_cal, best_cal):
+                v = pop_points.get(pop, {}).get(pos, {}).get(label)
+                if v is None:
+                    continue
+                mrows.append([pos, POP_LABEL[pop], f"`{label}`", _num(int(v.get("_n", 0))),
+                              *[_num(v.get(m)) for m in metrics]])
+    out.append(
+        f"\nCalibrated forms of `{models.focus}` and the best baseline `{best}` on the three populations. "
+        "Spearman and start/sit use the headline startable set (D-077) restricted to each population; with only "
+        "a few early-game players per position-week, they are often undefined there (n/a).\n"
+    )
+    out.append(_md_table(mheader, mrows))
+    dheader = ["position", "(a) matched", "(b) early game", "(c) all active", "(b) - (a)"]
+    drows = []
+    for s in split:
+        def cell(t: tuple[float, float, float]) -> str:
+            d, lo, hi = t
+            return f"{_num(d, 3, True)} [{_num(lo, 3, True)}, {_num(hi, 3, True)}]"
+        drows.append([s.group, *[cell(s.deltas[p]) for p in (POP_MATCHED, POP_EARLY, POP_ALL)], cell(s.did)])
+    out.append(f"\nMAE of `{focus_cal}` minus MAE of `{best_cal}` [95% paired week-clustered interval]; the last "
+               "column is the early-game difference minus the matched difference (negative: the focus model's "
+               "advantage is larger on early-game player-weeks).\n")
+    out.append(_md_table(dheader, drows))
+    pooled = next((s for s in split if s.group == "ALL"), None)
+    if pooled is not None:
+        out.append("\n" + thursday_sentence(pooled, subject_name(models), best_cal))
+    return "\n".join(out)
 
 
 def _ablation_section(boot: BootResult | None, focus: str, variants: Sequence[str], positions: Sequence[str],
@@ -1126,6 +1629,21 @@ def _cons_frame(seasons: Sequence[int]) -> pl.DataFrame:  # pragma: no cover - r
     return consensus_predictions(seasons, "ppr", purpose="backtest")
 
 
+def _cons_exclusions(keys: pl.DataFrame, seasons: Sequence[int]) -> pl.DataFrame:  # pragma: no cover
+    """Consensus status reasons for ``keys`` (reads restricted data; result stays in memory, D-007)."""
+    from ffml.eval.ecr_baseline import consensus_exclusions
+
+    return consensus_exclusions(keys, seasons, purpose="backtest")
+
+
+def _bounds(seasons: Sequence[int]) -> pl.DataFrame:  # pragma: no cover - reads processed data
+    """Prior-season position bounds from the evaluator's reference PPR points (all seasons before each)."""
+    from ffml.eval.ecr_baseline import reference_actuals
+
+    history = list(range(int(get_settings().first_season), max(int(s) for s in seasons)))
+    return position_bounds(reference_actuals(history, purpose="backtest"), seasons)
+
+
 def _reference(seasons: Sequence[int]) -> pl.DataFrame:  # pragma: no cover - reads processed data
     from ffml.eval.ecr_baseline import reference_actuals
 
@@ -1173,20 +1691,44 @@ def build_backtest_report(
     main = run_bootstrap(aligned, positions, n_boot=n_boot, seed=seed, n_jobs=n_jobs)
     pairs = pair_counts(aligned)
 
-    # consensus (PPR only)
+    # best baseline by pooled raw MAE on the headline population
+    pooled_mae = {}
+    for b in models.baselines:
+        if b in aligned:
+            pop = M.population(M.validate_frame(_slim(aligned[b])))
+            pooled_mae[b] = float((pop["pred_q50"] - pop["actual"]).abs().mean())
+    best = min(pooled_mae, key=pooled_mae.get) if pooled_mae else models.focus
+
+    # consensus on identical player-weeks, and the Thursday effect (PPR only, D-081)
     cons_boot: BootResult | None = None
     cons_points: dict[str, dict[str, dict[str, float]]] = {}
     cons_rows = 0
     cons_frames: dict[str, pl.DataFrame] = {}
+    table_labels: list[str] = []
+    identical = False
+    counts = pl.DataFrame()
+    pop_points: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    split: list[SplitDelta] = []
     if include_consensus:
         consensus = _cons_frame(report_seasons)
         cons_rows = consensus.height
         cons_frames = consensus_population(consensus, aligned, raw, ref_models)
+        table_labels = matched_table_labels(models, best, cons_frames)
+        identical = population_keys_identical({m: cons_frames[m] for m in table_labels})
         boot_labels = [models.focus, models.focus + CAL, CONSENSUS]
         cons_boot = run_bootstrap({m: cons_frames[m] for m in boot_labels if m in cons_frames}, positions,
                                   lineup=False, n_boot=n_boot, seed=seed, n_jobs=n_jobs)
-        cons_points = points_by_position({m: cons_frames[m] for m in [*raw, CONSENSUS] if m in cons_frames},
-                                         positions)
+        cons_points = points_by_position({m: cons_frames[m] for m in table_labels}, positions)
+        active_keys = population_keys(aligned[models.focus])
+        matched_keys = population_keys(cons_frames[models.focus])
+        unmatched = active_keys.join(matched_keys, on=list(M.KEY_COLUMNS), how="anti")
+        status = consensus_status(active_keys, matched_keys, _cons_exclusions(unmatched, report_seasons))
+        counts = status_counts(status, positions)
+        split_labels = [m for m in (models.focus + CAL, best + CAL) if m in aligned]
+        if len(split_labels) == 2:
+            pops = split_populations({m: aligned[m] for m in split_labels}, status)
+            pop_points = {p: points_by_position(fr, positions) for p, fr in pops.items()}
+            split = split_mae_deltas(pops, models.focus + CAL, best + CAL, positions, n_boot=n_boot, seed=seed)
 
     # scoring cross-check (D-052)
     xcheck: CrossCheck | None = None
@@ -1230,13 +1772,7 @@ def build_backtest_report(
     if sens_variants:
         sens_boot = main
 
-    # by week, best baseline
-    pooled_mae = {}
-    for b in models.baselines:
-        if b in aligned:
-            pop = M.population(M.validate_frame(_slim(aligned[b])))
-            pooled_mae[b] = float((pop["pred_q50"] - pop["actual"]).abs().mean())
-    best = min(pooled_mae, key=pooled_mae.get) if pooled_mae else models.focus
+    # by week
     week_table = by_week_table(aligned, [models.focus, models.focus + CAL, best, best + CAL])
     secondary = secondary_table(aligned, raw)
 
@@ -1254,6 +1790,12 @@ def build_backtest_report(
     cells = verdict_cells(main, cons_boot, models, positions)
     acc = acceptance(cells, main, models, positions)
 
+    # interval coverage detail (PPR): tails, ties, tie-aware diagnostic
+    bounds = _bounds(report_seasons) if cross_check else None
+    detail_labels = [models.focus, *[m + CAL for m in models.raw]]
+    detail = coverage_detail(aligned, detail_labels, bounds, positions, seed=seed)
+    coverage_text = coverage_paragraph(detail, acc.coverage, models)
+
     # ---------------------------------------------------------------- render
     file_sha = _sha256(run_dir / PREDICTIONS)
     manifest_sha = manifest.get("files", {}).get(PREDICTIONS)
@@ -1266,7 +1808,13 @@ def build_backtest_report(
                  "(D-007). Generated by `ffml/eval/report_backtest.py` "
                  f"(`build_backtest_report({str(run_id)!r}, {out_name!r}"
                  + (f", ablation_run_id={str(ablation_run_id)!r}" if ablation_run_id else "")
+                 + (f", focus={focus!r}" if focus else "")
                  + f")`, {n_boot} bootstrap draws, seed {seed}).\n")
+    lines.append(
+        f"> **Holdout session pending.** The {get_settings().holdout_season} holdout season has not been "
+        "evaluated. It will be evaluated once, in a single evaluator session (EV-3.4, D-049), after the owner "
+        "has reviewed this report (D-084). Every number below comes from the 2022-2024 validation seasons.\n"
+    )
     if models.draft_note:
         lines.append(f"> **{models.draft_note}**\n")
 
@@ -1359,6 +1907,10 @@ def build_backtest_report(
 
     lines.append("\n## 5. Calibration (PPR)\n")
     lines.append(_calibration_section(aligned, main, models, positions))
+    lines.append("\n### 5.1 Interval coverage detail: tails, ties and a tie-aware diagnostic\n")
+    lines.append(_coverage_section(detail, main, models, positions))
+    if coverage_text:
+        lines.append("\n" + coverage_text)
 
     lines.append("\n## 6. Secondary population: inactive players included (availability layer)\n")
     lines.append(
@@ -1378,16 +1930,25 @@ def build_backtest_report(
     lineup_md, lineup_records = _lineup_section(main, models)
     lines.append(lineup_md)
 
-    lines.append("\n## 8. Consensus baseline (baseline 3, PPR only, private evaluation)\n")
+    lines.append("\n## 8. Against the FantasyPros consensus on identical player-weeks (D-081; PPR, private)\n")
     cons_records: list[dict[str, Any]] = []
     if cons_boot is not None:
         lines.append(
             "FantasyPros weekly ECR from the DynastyProcess archive, latest valid scrape per player-week "
-            "(`valid_for_game`, D-036), points from a rank-to-points curve fitted on prior seasons only (D-052). "
-            "Thursday players are excluded. Aggregates only (D-007).\n"
+            "(`valid_for_game`, D-036), points from a rank-to-points curve fitted on prior seasons only (D-052), "
+            "scored against the harness actuals (D-079). Every model in the table is restricted to exactly the "
+            "player-weeks that have a valid consensus row with a projection, so the populations match row for "
+            "row; players whose game was on or before the scrape date are therefore absent (section 8.1). "
+            "Spearman and start/sit use a startable set from the mean projection of the raw primary-configuration "
+            "models and the consensus (D-077). Aggregates only (D-007).\n"
         )
-        cons_md, cons_records = _consensus_section(cons_boot, cons_points, models, positions)
+        cons_md, cons_records = _consensus_section(cons_boot, cons_points, models, positions, table_labels, identical)
         lines.append(cons_md)
+        lines.append("\n### 8.1 The Thursday effect: matched, early-game and all player-weeks (D-081)\n")
+        if split:
+            lines.append(_thursday_section(counts, pop_points, split, models, best, positions))
+        else:
+            lines.append("Not available: the focus model or the best baseline has no calibrated rows.")
     else:
         lines.append("Not built in this run of the report.")
 
@@ -1443,7 +2004,7 @@ def build_backtest_report(
     lines.append("\n## 12. Verdict (MODELING.md section 8)\n")
     if models.draft_note:
         lines.append(f"> Format check only: the focus model is `{models.focus}`, not the chain.\n")
-    lines.append(render_verdict(cells, acc, models, positions))
+    lines.append(render_verdict(cells, acc, models, positions, coverage_text=coverage_text))
 
     lines.append("\n## 13. Files\n")
     lines.append(
@@ -1460,6 +2021,8 @@ def build_backtest_report(
     data_dir.mkdir(parents=True, exist_ok=True)
     if per_week is not None:
         per_week.write_csv(data_dir / f"{out_name}_per_week.csv")
+    if not detail.is_empty():
+        detail.write_csv(data_dir / f"{out_name}_coverage.csv")
     records = [*delta_records, *lineup_records, *cons_records, *abl_records]
     records += [{"population": "verdict", "position": c.position, "form": c.form, "focus": c.delta.focus,
                  "other": c.delta.other, "metric": c.metric, "focus_value": c.delta.focus_value,
@@ -1514,18 +2077,34 @@ __all__ = [
     "Delta",
     "ModelSet",
     "VerdictCell",
+    "SplitDelta",
     "acceptance",
     "audit_summary",
     "build_backtest_report",
+    "cell_sentence",
     "ci_status",
     "consensus_population",
+    "consensus_sentences",
+    "consensus_status",
+    "coverage_detail",
+    "coverage_paragraph",
     "headline_frames",
+    "matched_frames",
+    "matched_table_labels",
     "pair_counts",
+    "population_keys",
+    "population_keys_identical",
+    "position_bounds",
     "render_verdict",
     "resolve_models",
     "run_bootstrap",
     "scoring_cross_check",
     "secondary_table",
+    "split_mae_deltas",
+    "split_populations",
+    "status_counts",
+    "thursday_sentence",
+    "tie_aware_coverage",
     "verdict_cells",
     "verdict_sentences",
 ]

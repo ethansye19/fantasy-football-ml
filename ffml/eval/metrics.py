@@ -437,6 +437,89 @@ def interval_coverage(frame: pl.DataFrame) -> float:
     return _mean_or_nan(inside.cast(pl.Float64).to_numpy())
 
 
+#: tie tolerance for the coverage tail decomposition (points)
+TIE_TOL = 1e-9
+#: protocol quantile levels and their columns (the harness writes all seven)
+KNOT_LEVELS: tuple[float, ...] = (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95)
+KNOT_COLUMNS: tuple[str, ...] = tuple(f"pred_q{int(round(q * 100)):02d}" for q in KNOT_LEVELS)
+
+
+def tail_decomposition(frame: pl.DataFrame, tol: float = TIE_TOL) -> dict[str, float]:
+    """Exclusive shares of the population relative to ``[pred_q10, pred_q90]``.
+
+    ``below_q10`` (y < q10), ``tied_q10`` (y = q10), ``inside`` (q10 < y < q90),
+    ``tied_q90`` (y = q90 and not tied at q10), ``above_q90`` (y > q90); they
+    sum to 1, and the closed-interval coverage of :func:`interval_coverage`
+    is ``tied_q10 + inside + tied_q90``. Equality uses ``tol``. ``n`` is the
+    number of rows.
+    """
+    f = _interval_rows(frame)
+    y, lo, hi = f["actual"].to_numpy(), f["pred_q10"].to_numpy(), f["pred_q90"].to_numpy()
+    n = y.size
+    if n == 0:
+        return {k: math.nan for k in ("below_q10", "tied_q10", "inside", "tied_q90", "above_q90")} | {"n": 0}
+    t10 = np.abs(y - lo) <= tol
+    t90 = (np.abs(y - hi) <= tol) & ~t10
+    below = (y < lo) & ~t10
+    above = (y > hi) & ~t90 & ~t10
+    inside = ~(t10 | t90 | below | above)
+    return {
+        "below_q10": float(below.mean()),
+        "tied_q10": float(t10.mean()),
+        "inside": float(inside.mean()),
+        "tied_q90": float(t90.mean()),
+        "above_q90": float(above.mean()),
+        "n": int(n),
+    }
+
+
+def cdf_limits(
+    y: np.ndarray, quantiles: np.ndarray, lower: np.ndarray, upper: np.ndarray,
+    levels: Sequence[float] = KNOT_LEVELS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Left and right limits ``F(y-)`` and ``F(y)`` of the piecewise-linear predictive CDF.
+
+    The knots are ``(lower, 0), (q_1, l_1), ..., (q_k, l_k), (upper, 1)`` with
+    ``lower = min(lower, q_1)`` and ``upper = max(upper, q_k)``, the harness
+    PIT convention (D-071); a NaN bound drops that tail. Where several knots
+    share a value (a point mass) the CDF jumps there, and the two limits
+    differ: ``F(y-)`` is the level of the first tied knot reached from below,
+    ``F(y)`` that of the last.
+    """
+    yy = np.asarray(y, dtype=float)
+    q = np.asarray(quantiles, dtype=float)
+    lo = np.asarray(lower, dtype=float)
+    hi = np.asarray(upper, dtype=float)
+    lo = np.where(np.isnan(lo), q[:, 0], np.minimum(lo, q[:, 0]))
+    hi = np.where(np.isnan(hi), q[:, -1], np.maximum(hi, q[:, -1]))
+    x = np.column_stack([lo, q, hi])
+    lev = np.array([0.0, *levels, 1.0])
+    last = x.shape[1] - 1
+    rows = np.arange(x.shape[0])
+
+    def at(count: np.ndarray) -> np.ndarray:
+        # count = number of knots on the chosen side of y; interpolate on the segment that follows
+        j = np.clip(count - 1, 0, last - 1)
+        x0, x1 = x[rows, j], x[rows, j + 1]
+        width = np.where(x1 > x0, x1 - x0, 1.0)
+        val = lev[j] + (lev[j + 1] - lev[j]) * np.clip((yy - x0) / width, 0.0, 1.0)
+        return np.where(count <= 0, 0.0, np.where(count > last, 1.0, val))
+
+    right = at((x <= yy[:, None]).sum(axis=1))
+    left = at((x < yy[:, None]).sum(axis=1))
+    return np.minimum(left, right), right
+
+
+def randomized_pit(
+    y: np.ndarray, quantiles: np.ndarray, lower: np.ndarray, upper: np.ndarray, seed: int = 0,
+    levels: Sequence[float] = KNOT_LEVELS,
+) -> np.ndarray:
+    """Randomized PIT: ``U`` uniform on ``[F(y-), F(y)]`` (seeded), uniform under calibration even with ties."""
+    left, right = cdf_limits(y, quantiles, lower, upper, levels)
+    rng = np.random.default_rng(seed)
+    return left + (right - left) * rng.random(left.size)
+
+
 def interval_width(frame: pl.DataFrame) -> float:
     """Mean width ``pred_q90 - pred_q10`` over the population."""
     f = _interval_rows(frame)
@@ -1614,7 +1697,11 @@ __all__ = [
     "bootstrap_bundle",
     "bootstrap_ci",
     "brier",
+    "KNOT_COLUMNS",
+    "KNOT_LEVELS",
+    "TIE_TOL",
     "calibration_slope",
+    "cdf_limits",
     "cluster_universe",
     "compare",
     "evaluate",
@@ -1636,6 +1723,7 @@ __all__ = [
     "pit_histogram",
     "pit_max_deviation",
     "population",
+    "randomized_pit",
     "rank_within",
     "reference_ranks",
     "reliability_table",
@@ -1647,6 +1735,7 @@ __all__ = [
     "start_sit_pairs",
     "start_sit_weighted",
     "startable_population",
+    "tail_decomposition",
     "to_markdown",
     "validate_frame",
     "with_reference_rank",
