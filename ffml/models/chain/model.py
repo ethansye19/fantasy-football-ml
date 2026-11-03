@@ -28,6 +28,13 @@ Configurations (MODELING.md section 9): ``primary`` never reads ``avail__``
 columns; ``final_report`` caps availability with the same-week report rules
 (:func:`ffml.models.chain.availability.final_report_availability`) and adds
 the teammates-out inputs to LightGBM share and touchdown-share stages.
+
+Ablations (MODELING.md section 11, :mod:`ffml.models.chain.ablation`):
+``ablation="no_vegas" | "no_ngs" | "none"`` and ``exclude_features`` (column
+prefixes) remove feature columns from every frame before any stage sees them;
+``player_features_dataset="player_week_depth_same_week"`` reads the D-059
+depth-timing sensitivity dataset. A variant's ``name`` encodes it, for example
+``chain_v1-primary-no_vegas``. The defaults leave the model unchanged.
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from ffml.models.chain import ablation as abl
 from ffml.models.chain import drivers as drv
 from ffml.models.chain import params_builder as pb
 from ffml.models.chain.availability import (
@@ -117,6 +125,9 @@ class ChainModel:
         n_sims: int = 2000,
         seed: int = DEFAULT_SEED,
         data: ChainData | None = None,
+        exclude_features: tuple[str, ...] = (),
+        ablation: str = "none",
+        player_features_dataset: str = abl.DEFAULT_PLAYER_DATASET,
     ) -> None:
         if config not in CONFIGS:
             raise ValueError(f"config must be one of {CONFIGS}")
@@ -124,8 +135,20 @@ class ChainModel:
         self.choices = resolve_choices(stage_choice)
         self.n_sims = int(n_sims)
         self.seed = int(seed)
-        self.name = MODEL_NAME if config == "primary" else f"{MODEL_NAME}_final_report"
-        self.data = data or ChainData.shared()
+        self.ablation = ablation
+        self.exclude_features = tuple(exclude_features)
+        self.player_features_dataset = player_features_dataset
+        self.exclusions = abl.resolve_exclusions(ablation, self.exclude_features)
+        tokens = abl.variant_tokens(ablation, self.exclude_features, player_features_dataset)
+        if tokens:
+            self.name = f"{MODEL_NAME}-{config}-{'-'.join(tokens)}"
+        else:
+            self.name = MODEL_NAME if config == "primary" else f"{MODEL_NAME}_final_report"
+        if data is not None and data.player_dataset != player_features_dataset:
+            raise ValueError(
+                f"data reads {data.player_dataset!r}, model wants {player_features_dataset!r}"
+            )
+        self.data = data or ChainData.shared(player_features_dataset)
         self.cutoff: tuple[int, int] | None = None
         self.structural: dict[str, Any] = {}
         self.lgbm: dict[str, LGBMStage] = {}
@@ -160,7 +183,8 @@ class ChainModel:
         cutoff = (int(cutoff[0]), int(cutoff[1]))
         self.data.ensure(cutoff[0])
         frames = {
-            ds: self.data.train_rows(ds, cutoff) for ds in ("team_week", "player_week", "dst_week")
+            ds: abl.drop_excluded(self.data.train_rows(ds, cutoff), self.exclusions)
+            for ds in ("team_week", "player_week", "dst_week")
         }
         self.timings["load"] = time.perf_counter() - t0
         self.structural, self.lgbm = {}, {}
@@ -186,6 +210,15 @@ class ChainModel:
         self.timings["stages"] = time.perf_counter() - t1
         self.dispersion = estimate_dispersion(residuals)
         self.consts = self._constants(frames)
+        if abl.lines_excluded(self.exclusions):
+            tw = frames["team_week"]
+            mean_pts = float(tw["y_points"].mean() or 22.6) if tw.height else 22.6
+            total_sd, margin_sd = abl.strength_residual_sds(tw, mean_pts)
+            self.consts["strength"] = {
+                "points_mean": mean_pts,
+                "total_sd": total_sd,
+                "margin_sd": margin_sd,
+            }
         if self.config == "final_report":
             self.q_rates = questionable_rates(frames["player_week"])
         pw = frames["player_week"]
@@ -228,7 +261,8 @@ class ChainModel:
             kneels = (j["y_rush_att"] + j["y_dropbacks"] - j["y_plays"] - j["scr"]).mean()
             out["kneels"] = float(np.clip(kneels or 0.0, 0.0, 2.0))
             out["touches_per_play"] = float(j["touches"].sum() / max(float(j["y_plays"].sum()), 1))
-        out["total_line"] = float(tw["ctx__total_line"].mean() or 45.0) if tw.height else 45.0
+        has_line = tw.height and "ctx__total_line" in tw.columns
+        out["total_line"] = float(tw["ctx__total_line"].mean() or 45.0) if has_line else 45.0
         if dw.height and "y_forced_fumbles" in dw.columns:
             d = dw.drop_nulls(["y_forced_fumbles", "y_fumble_recoveries"])
             x = d["y_fumble_recoveries"].to_numpy().astype(float)
@@ -285,9 +319,10 @@ class ChainModel:
         """Week rows with ``p_<stage>`` columns (``neutral``: defense features at training means)."""
         if self.cutoff is None:
             raise RuntimeError("ChainModel.fit must be called before predict")
-        team = self.data.week_rows("team_week", season, week)
-        players = self.data.week_rows("player_week", season, week)
-        dst = self.data.week_rows("dst_week", season, week)
+        ex = self.exclusions
+        team = abl.drop_excluded(self.data.week_rows("team_week", season, week), ex)
+        players = abl.drop_excluded(self.data.week_rows("player_week", season, week), ex)
+        dst = abl.drop_excluded(self.data.week_rows("dst_week", season, week), ex)
         if neutral:
             players = players.with_columns(
                 [
@@ -312,7 +347,17 @@ class ChainModel:
         self, season: int, week: int, neutral: bool = False
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         team, players, dst = self.stage_predictions(season, week, neutral=neutral)
+        strength = self.consts.get("strength")
+        if strength is not None and abl.lines_excluded(self.exclusions):
+            # no Vegas lines: the game draw is centred on lagged team strength; stage
+            # predictions above never saw any line column
+            team = abl.strength_lines(team, strength["points_mean"])
         tp = pb.build_team_params(team, self.dispersion, self.consts)
+        if strength is not None and abl.lines_excluded(self.exclusions):
+            tp = tp.with_columns(
+                pl.lit(strength["total_sd"]).alias("total_sd"),
+                pl.lit(strength["margin_sd"]).alias("margin_sd"),
+            )
         pp = pb.build_player_params(players, tp, self.dispersion, self.consts, self.choices)
         dp = pb.build_dst_params(dst, tp, pp, self.consts, self.choices)
         return tp, pp, dp
@@ -465,6 +510,16 @@ class ChainModel:
             "consts": self.consts,
             "q_rates": self.q_rates,
             "neutral_means": self.neutral_means,
+            # variant keys only for ablations, so default artifacts are unchanged
+            **(
+                {
+                    "ablation": self.ablation,
+                    "exclude_features": list(self.exclude_features),
+                    "player_features_dataset": self.player_features_dataset,
+                }
+                if self.name not in (MODEL_NAME, f"{MODEL_NAME}_final_report")
+                else {}
+            ),
         }
 
     def save(self, directory: Path | str) -> Path:
@@ -487,6 +542,9 @@ class ChainModel:
             n_sims=st["n_sims"],
             seed=st["seed"],
             data=data,
+            exclude_features=tuple(st.get("exclude_features", ())),
+            ablation=st.get("ablation", "none"),
+            player_features_dataset=st.get("player_features_dataset", abl.DEFAULT_PLAYER_DATASET),
         )
         model.cutoff = tuple(st["cutoff"]) if st["cutoff"] else None
         for name, payload in st["structural"].items():

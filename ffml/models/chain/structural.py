@@ -30,6 +30,12 @@ method                 prediction
 
 Predictions are clipped to the stage's range (shares and rates inside (0, 1),
 counts at least 1e-3).
+
+Ablations (:mod:`ffml.models.chain.ablation`): when the line columns are
+removed from the frames, ``implied_ratio`` uses the team's L5 points (then
+prior-season points) as its base, fixed at fit time in ``params["source"]``,
+and ``ew_spread`` fits ``b = 0`` (no spread input), i.e. the plain EW rate.
+With the columns present nothing changes.
 """
 
 from __future__ import annotations
@@ -43,6 +49,14 @@ from ffml.models.chain.stages import StageSpec
 
 DEPTH_BUCKETS = (1, 2, 3, 4)
 MIN_PRIOR_ROWS = 30
+IMPLIED = "ctx__implied_team_total"
+IMPLIED_FALLBACK = ("team__points__l5", "team__points__ps")
+
+
+def _implied_base(df: pl.DataFrame, source: str) -> np.ndarray:
+    if source == IMPLIED:
+        return _num(df, IMPLIED)
+    return _coalesce(df, IMPLIED_FALLBACK)
 
 
 def _num(df: pl.DataFrame, name: str) -> np.ndarray:
@@ -121,7 +135,9 @@ class StructuralStage:
                 float(np.sum((y[good] - x[good]) * s[good]) / denom) if denom else 0.0
             )
         elif m == "implied_ratio":
-            imp = _num(df, "ctx__implied_team_total")
+            if IMPLIED not in df.columns:  # lines removed (no_vegas ablation)
+                self.params["source"] = "|".join(IMPLIED_FALLBACK)
+            imp = _implied_base(df, self.params.get("source", IMPLIED))
             good = ok & ~np.isnan(imp)
             self.params["a"] = float(np.sum(y[good]) / np.sum(imp[good])) if good.any() else 0.0
         elif m == "ew_blend":
@@ -203,7 +219,7 @@ class StructuralStage:
             s = np.nan_to_num(-_num(df, "ctx__spread"), nan=0.0)
             pred = x + self.params["b"] * s
         elif m == "implied_ratio":
-            imp = _num(df, "ctx__implied_team_total")
+            imp = _implied_base(df, self.params.get("source", IMPLIED))
             pred = np.where(np.isnan(imp), mu, self.params["a"] * imp)
         elif m == "ew_blend":
             x = _coalesce(df, cols)
