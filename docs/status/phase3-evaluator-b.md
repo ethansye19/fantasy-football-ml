@@ -234,3 +234,71 @@ Evidence:
 
 Next:
 - When resumed: `python -m ffml.eval.report_backtest --run-id default_20261102 --ablation-run-id ablations_20261103 --out backtest_2026-11-03_v2 --calibration-before predictions_cal_v1_pooled_isotonic.parquet --previous-report backtest_2026-11-03 --audit evaluator_audit_2026-11-03_gate3`, then review.
+
+## Report v2 and audit gate3b (2026-11-03)
+
+Done:
+- The inputs audit gains a registry check: no entry approved or live before the holdout release; every candidate's artifact and frozen calibrator exist; the calibrator SHA-256 matches the recorded value and is listed in the evidence. The report's Setup also lists the registry entry and the calibrator hash, recomputed.
+- Flaky `test_build_report_end_to_end`: the cause is time-dependent, not order-dependent.
+  - The test builds twice and compares bytes, and the report embeds git HEAD and whether `ffml/eval` is dirty.
+  - B2 committed `ffml/eval/harness.py` (3455c29) around the time of their full-suite run, so a commit or edit between the two builds changed that line.
+  - The test now pins the git lookups. A new test shows the git line is the only text that depends on repository state.
+  - No order dependence: a reordered `tests/eval` run gives `92 passed`; the full suite gives `409 passed, 1 warning in 131.69s`.
+- Committed in 4d79b05.
+- Audit `evaluator_audit_2026-11-03_gate3b` at 4d79b05: **PASS**.
+  - Holdout PASS 4, WARN 1; leakage PASS 7; inputs PASS 4.
+  - The registry has 1 candidate and none approved. Calibrator `calibration.json` (v2-per-position-isotonic), sha256 `860af8926e75b93e781eb94a0c6055206b8fdf78b9e539f072eb80293a21da19`, matches the file.
+- Report `reports/backtest_2026-11-03_v2.md`:
+  - 500 draws, seed 0, 632 s; predictions sha256 `571c6df4...`.
+  - The calibrated quantiles of `chain_v1+cal` are unchanged from the before file on all 29,192 rows.
+  - v1 stays unchanged.
+  - Checks pass: identical pair sets and matched keys, consensus sentences 43 of 43, others 84 of 84, no restricted rows.
+
+Evidence (PPR 2022-2024):
+- **Tie-aware acceptance, `chain_v1+cal` (D-085):**
+
+  | position | coverage | result |
+  | --- | --- | --- |
+  | QB | 0.801 | PASS |
+  | RB | 0.811 | PASS |
+  | WR | 0.778 | PASS |
+  | TE | 0.791 | PASS |
+  | K | 0.740 | **FAIL** (raw 0.819) |
+  | DST | 0.762 | PASS |
+
+  - `chain_v1_final_report+cal` also fails K (0.749).
+  - The challenger and all five baselines pass at every position (0.785-0.813).
+- Closed coverage and tails, `chain_v1+cal`:
+
+  | position | closed coverage | below q10 | tied at q10 | tied at q90 | above q90 |
+  | --- | --- | --- | --- | --- | --- |
+  | QB | 0.803 | 9.3% | 0.2% | 0.0% | 10.4% |
+  | RB | 0.863 | 5.3% | 15.7% | 0.2% | 8.4% |
+  | WR | 0.852 | 4.7% | 24.6% | 0.1% | 10.1% |
+  | TE | 0.872 | 2.3% | 40.1% | 0.2% | 10.5% |
+  | K | 0.820 | 8.0% | 4.2% | 3.8% | 10.0% |
+  | DST | 0.826 | 8.8% | 5.3% | 1.1% | 8.6% |
+
+- Boom/bust calibration slope, before → after, with the after flag under the pre-set rule:
+
+  | position | boom | bust |
+  | --- | --- | --- |
+  | QB | 1.185 → 0.923 (ok) | 1.199 → 0.961 (ok) |
+  | RB | 1.108 → 0.966 (ok) | 1.105 → 1.016 (ok) |
+  | WR | 0.913 → 0.946 (ok) | 1.012 → 1.006 (ok) |
+  | TE | 0.956 → 0.930 (ok) | 1.005 → 0.949 (ok) |
+  | K | 0.142 → 0.118 (**low confidence**) | 0.153 → 0.456 (**low confidence**) |
+  | DST | 1.295 → 0.774 (**low confidence**) | 1.102 → 0.289 (**low confidence**) |
+
+- Verdict changes from v1: 27 of 400 cells, all coverage-gap cells, because the definition changed. No MAE, pinball, Spearman or start/sit cell changed.
+
+Findings:
+- F-8 (B2, calibrator): calibration lowers the chain's K tie-aware coverage from 0.819 raw to 0.740. The conformal step targets the closed-interval convention (ties counted at or below), which narrows K intervals on discrete scores. That is why K fails D-085.
+- F-9 (B2, D-086): per-position isotonic makes DST worse. The bust slope falls from 1.10, within the rule, to 0.29, and the boom slope from 1.30 to 0.77; both are now low confidence.
+- Under D-082 and D-085 I do not change the rule or the flag thresholds after seeing these results.
+
+Recommendation:
+- Keep `chain_v1+cal` frozen for the owner's review (D-087).
+- It passes tie-aware coverage at QB, RB, WR, TE and DST and fails at K. Disclose that in the model card and the UI.
+- Hide or mark K and DST boom/bust as low confidence, as the pre-set rule requires.
+- Any fix to the K or DST calibration would be chosen after seeing these results, so it needs the owner's explicit decision before the holdout session. It must not be tuned on 2025.
