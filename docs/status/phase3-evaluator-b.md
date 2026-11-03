@@ -156,3 +156,57 @@ Evidence:
   - These match the orchestrator's numbers.
   - The RB, WR and TE tie shares are identical in the raw and calibrated forms, so calibration does not move those q10 values.
   - `direct_lgbm+cal` (0.79-0.81) and `rolling_ew_035+cal` (0.79-0.81) have almost no ties.
+
+## Final validation report (2026-11-03, EV-3.2 and EV-3.3 complete)
+
+Done:
+- `python -m ffml.eval.audits --write evaluator_audit_2026-11-03_gate3` at HEAD `7a651a2` (exit 0): overall **PASS**.
+  - Holdout: PASS 4, WARN 1 (six docstring mentions); no holdout access recorded.
+  - Leakage: PASS 7 (suite `14 passed`; timestamps and shuffle probes on player_week, team_week and dst_week).
+  - Inputs: PASS 3 (no restricted references, 4 backtest runs clean, chain artifact has no `y_` or `avail__` inputs).
+- `python -m ffml.eval.report_backtest --run-id default_20261102 --ablation-run-id ablations_20261103 --out backtest_2026-11-03 --n-boot 500 --seed 0 --n-jobs 6 --audit evaluator_audit_2026-11-03_gate3`.
+  - 572 s, code at `0f144d6`.
+  - The predictions sha256 `d4a420c0...` matches the manifest.
+  - Commit 0f144d6 adds a caveat to the report: the ablation run has no calibration warm-up, unlike the main run's 2021, so its calibrated deltas are confounded and the raw deltas are the clean comparison.
+- Review checklist:
+  - Common pair sets are identical for every model (QB 3,186, RB 12,970, WR 29,448, TE 3,151).
+  - Matched consensus table: keys identical. Thursday split sum checks are ok at every position.
+  - Verdict list is complete: 44 consensus sentences (40 calibrated cells plus 4 raw cells that differ); 86 of 86 non-beaten cells for the other comparators.
+  - Coverage acceptance is shown as written, with the tail table, the labelled tie-aware diagnostic and the neutral options paragraph.
+  - No player ids, names, ranks or scrape dates appear anywhere.
+- Reproducibility check: the chain parts were written by processes started at `80104f7` while `ffml/models/chain` and `ffml/sim` had uncommitted edits (later 1d40771 and b982b13). I refit `chain_v1` at HEAD for 2023 week 10 and predicted: all 504 PPR rows matched the stored part exactly (max difference 0 for mean, q10, q50, q90, active_prob and boom_prob).
+
+Evidence (PPR 2022-2024; `chain_v1+cal` minus the comparator, 95% paired week-clustered interval, D-078):
+- Against `rolling_avg_4`, `prior_season` and `rolling_median_8`, the chain beats every baseline on MAE and pinball q50 at all six positions, and on start/sit at QB, RB, WR and TE. Every section 8 MAE/pinball line PASSes.
+- Against `direct_lgbm+cal`:
+  - MAE: beats at WR (-0.023 [-0.043, -0.004]) and TE (-0.027 [-0.050, -0.002]); no difference at QB, RB, K and DST.
+  - Pinball q50: the same pattern.
+  - Start/sit: no difference at any position.
+- Against the consensus, on 17,144 matched player-weeks:
+  - MAE, pinball q50 and start/sit: no difference at any position.
+  - Worse on pinball q10 at QB (+0.045 [+0.009, +0.085]) and RB (+0.010 [+0.002, +0.019]), and on the RB coverage gap.
+  - Better on WR pinball q90, on the WR and TE coverage gaps, and on K pinball q10.
+  - The start/sit rule PASSes at all four positions.
+- Coverage acceptance, calibrated:
+  - PASS: QB 0.803, K 0.820, DST 0.826.
+  - **FAIL: RB 0.863, WR 0.852, TE 0.872.**
+  - The tie-aware diagnostic gives RB 0.805, WR 0.775 and TE 0.796; it is not used for acceptance.
+- Thursday effect: 1,429 early-game player-weeks. The chain's pooled MAE minus that of `rolling_median_8+cal` is -0.33 [-0.48, -0.20] on early games and -0.29 [-0.34, -0.25] on the matched population. The difference, -0.04 [-0.21, +0.10], shows no detectable change.
+- Ablations (raw deltas, chain minus variant):
+  - no_vegas: Vegas lines help. QB MAE -0.150 [-0.221, -0.087], RB -0.021, K -0.047, DST -0.093 (all beats); start/sit QB +0.045 and TE +0.019.
+  - no_ngs: no detectable effect except K MAE -0.014 [-0.028, -0.002].
+  - depth_same_week: no detectable effect anywhere, so the conservative week w-1 rule (D-059) costs nothing measurable.
+- Final-report sensitivity: no gain over the primary configuration; K is worse with it (+0.042 [+0.015, +0.071] calibrated).
+- `pytest tests/eval -q`: `86 passed in 44.84s`; `ruff check .`: `All checks passed!`
+
+Findings:
+- F-6 (ML Engineer B1, model card): the kicker's boom and bust probabilities are poorly calibrated, with logistic slopes 0.14-0.26 raw and calibrated against 0.9-1.3 elsewhere. They should not be shown as calibrated without a fix or a caveat.
+- F-7 (owner decision, blocking the holdout): coverage at RB, WR and TE fails the rule as written because of point-mass ties at q10 = 0. The options paragraph is in the report. Whichever coverage definition or calibrator is chosen must be frozen before the holdout session, or the holdout would be used for tuning.
+
+Release-candidate recommendation (input for the orchestrator and the owner):
+- Freeze `chain_v1` (primary, calibrated) as the candidate. On 2022-2024 it meets the section 8 accuracy rules against baselines 1, 2 and the median baseline, and the start/sit rule against the consensus. It matches or beats the direct challenger, so the structural chain costs no measurable accuracy.
+- It does not meet the coverage rule at RB, WR and TE as written.
+- Do not open the holdout session until the owner has reviewed this report and decided the coverage question (D-084). The final-report variant is not preferred.
+
+Next:
+- EV-3.4 after the owner's go-ahead: one `holdout_eval` session with the frozen candidate and frozen calibration, then the release note and registry.
