@@ -1122,6 +1122,9 @@ def metric_bundle(
     st_level = _level_expr(startable)
 
     def arr(frame: pl.DataFrame, col: str) -> np.ndarray:
+        # ``columns`` may be a union over several frames; an absent optional column is all null
+        if col not in frame.columns:
+            return np.full(frame.height, np.nan)
         return frame[col].cast(pl.Float64).to_numpy()
 
     def masked_mean(values: np.ndarray) -> float:
