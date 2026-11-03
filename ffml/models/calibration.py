@@ -23,8 +23,13 @@ post-processing step, and each can be frozen for the holdout and live use.
 
 :class:`OnlineIsotonic`
     Isotonic regression of the 0/1 outcome on ``boom_prob`` and ``bust_prob``
-    when those columns exist, fitted on earlier weeks only in the same way
-    (pooled over positions by default, at least ``min_count`` rows).
+    when those columns exist, fitted on earlier weeks only in the same way.
+    Calibration version ``v2-per-position-isotonic`` (D-086) fits one map per
+    position; a position with fewer than ``min_count`` calibration rows uses
+    the map pooled over positions, then the identity, and every row records
+    which in ``cal_boom_source`` / ``cal_bust_source``. Version
+    ``v1-pooled-isotonic`` (``by=()``) pooled all positions, which left kicker
+    boom/bust slopes at 0.14-0.26.
 
 Calibrated copies keep every column and rename ``model`` to
 ``<model>+cal``. Partitions are ``(model, scoring)``: offsets are never shared
@@ -36,9 +41,14 @@ Frozen calibration
 :class:`OnlineIsotonic`, the isotonic maps) on every row of a backtest frame
 for one model, returning a :class:`FrozenCalibration` that applies the same
 transformation to the holdout and to live predictions. It is saved as JSON
-next to the model artifact (:func:`calibration_path_for`). Offsets are keyed by
-``scoring`` when the frame has that column; a scoring that is not in the
-frozen table gets no offset (``apply`` reports the unmatched rows).
+next to the model artifact (:func:`calibration_path_for`). Offsets and
+isotonic maps are keyed by ``scoring`` when the frame has that column; a
+scoring that is not in the frozen table gets no offset and identity
+probabilities unless ``apply(use_scoring=...)`` maps it to a fitted one.
+Frozen isotonic maps follow the online rule: a ``(scoring, position)`` map
+when that group had ``min_count`` rows, else the scoring's pooled map, else
+identity. ``apply`` writes the ``cal_*_source`` columns and
+``calibration_version``.
 """
 
 from __future__ import annotations
@@ -63,7 +73,11 @@ PROB_PAIRS: tuple[tuple[str, str], ...] = (
     ("boom_prob", "boom_actual"),
     ("bust_prob", "bust_actual"),
 )
-CALIBRATION_FORMAT = "ffml.calibration/1"
+CALIBRATION_FORMAT = "ffml.calibration/2"
+#: older frozen files that still load (v1 isotonic maps were pooled, without fallbacks)
+READABLE_FORMATS: tuple[str, ...] = ("ffml.calibration/1",)
+#: written to the backtest manifest, the calibrated rows and every frozen file (D-086)
+CALIBRATION_VERSION = "v2-per-position-isotonic"
 
 
 def quantile_column(level: float) -> str:
@@ -256,6 +270,9 @@ class OnlineConformal:
         table = rows.group_by(keys).agg(aggs).sort(keys) if keys else rows.select(aggs)
         iso = isotonic.fit_final(frame) if isotonic is not None else {}
         info = {
+            "calibration_version": CALIBRATION_VERSION,
+            "conformal": repr(self),
+            "isotonic": repr(isotonic) if isotonic is not None else None,
             "fitted_at": datetime.now(UTC).isoformat(),
             "rows": rows.height,
             "seasons": sorted({int(s) for s in frame["season"].unique().to_list()})
@@ -286,13 +303,62 @@ def _fit_isotonic(p: np.ndarray, y: np.ndarray) -> IsotonicRegression:
     return model
 
 
+def source_column(prob: str) -> str:
+    """``"boom_prob" -> "cal_boom_source"``: which isotonic map calibrated each row."""
+    return f"cal_{prob.removesuffix('_prob')}_source"
+
+
+def _isotonic_entry(
+    train: pl.DataFrame, prob: str, outcome: str, group: dict[str, str]
+) -> dict[str, Any]:
+    iso = _fit_isotonic(
+        train[prob].cast(pl.Float64).to_numpy(), train[outcome].cast(pl.Float64).to_numpy()
+    )
+    return {
+        "group": group,
+        "x": [float(v) for v in iso.X_thresholds_],
+        "y": [float(v) for v in iso.y_thresholds_],
+        "n": train.height,
+    }
+
+
+def _interp(p: np.ndarray, entry: dict[str, Any]) -> np.ndarray:
+    """Evaluate a stored isotonic map (step-wise linear between thresholds, clipped at the ends)."""
+    return np.interp(p, entry["x"], entry["y"])
+
+
+def _with_probs(
+    rows: pl.DataFrame, prob: str, entry: dict[str, Any] | None, source: str
+) -> pl.DataFrame:
+    p = rows[prob].cast(pl.Float64).to_numpy()
+    new = p.copy()
+    ok = ~np.isnan(p)
+    if entry is not None and ok.any():
+        new[ok] = _interp(p[ok], entry)
+    return rows.with_columns(
+        pl.Series(prob, new, dtype=pl.Float64).fill_nan(None),
+        pl.lit(source).alias(source_column(prob)),
+    )
+
+
 class OnlineIsotonic:
-    """Walk-forward isotonic recalibration of probability columns (see module docstring)."""
+    """Walk-forward isotonic recalibration of probability columns, per position by default.
+
+    For each predicted week and probability column, a group (``by``, default
+    position) with at least ``min_count`` calibration rows in earlier weeks
+    gets its own isotonic map (source ``"position"``, or the ``by`` names
+    joined with ``+``). A smaller group uses the map fitted on all positions
+    of the partition (source ``"pooled"``) when that has ``min_count`` rows,
+    and otherwise keeps its probabilities (source ``"identity"``). The source
+    of every row is written to ``cal_<kind>_source`` (``cal_boom_source``,
+    ``cal_bust_source``). ``by=()`` gives the pooled calibrator of
+    calibration v1.
+    """
 
     def __init__(
         self,
         pairs: Iterable[tuple[str, str]] = PROB_PAIRS,
-        by: Iterable[str] = (),
+        by: Iterable[str] = ("position",),
         min_count: int = 200,
     ) -> None:
         self.pairs = tuple((str(p), str(o)) for p, o in pairs)
@@ -301,6 +367,10 @@ class OnlineIsotonic:
 
     def __repr__(self) -> str:
         return f"OnlineIsotonic(pairs={self.pairs}, by={self.by}, min_count={self.min_count})"
+
+    @property
+    def group_source(self) -> str:
+        return "+".join(self.by) if self.by else "pooled"
 
     def present(self, frame: pl.DataFrame) -> list[tuple[str, str]]:
         return [(p, o) for p, o in self.pairs if p in frame.columns and o in frame.columns]
@@ -313,29 +383,30 @@ class OnlineIsotonic:
     def _calibrate_rows(
         self, rows: pl.DataFrame, history: pl.DataFrame, prob: str, outcome: str
     ) -> pl.DataFrame:
-        groups = (
-            [part for _, part in rows.group_by(list(self.by), maintain_order=True)]
-            if self.by
-            else [rows]
+        train_all = self._training(history, prob, outcome)
+        pooled = (
+            _isotonic_entry(train_all, prob, outcome, {})
+            if train_all.height >= self.min_count
+            else None
         )
+        if not self.by:
+            return _with_probs(rows, prob, pooled, "pooled" if pooled else "identity")
         out = []
-        for g in groups:
-            hist = history
-            for c in self.by:
-                hist = hist.filter(pl.col(c) == g[c][0])
-            train = self._training(hist, prob, outcome)
-            if train.height < self.min_count:
-                out.append(g)
-                continue
-            iso = _fit_isotonic(
-                train[prob].cast(pl.Float64).to_numpy(), train[outcome].cast(pl.Float64).to_numpy()
-            )
-            p = g[prob].cast(pl.Float64).to_numpy()
-            ok = ~np.isnan(p)
-            new = p.copy()
-            if ok.any():
-                new[ok] = iso.predict(p[ok])
-            out.append(g.with_columns(pl.Series(prob, new, dtype=pl.Float64).fill_nan(None)))
+        for key, g in rows.group_by(list(self.by), maintain_order=True):
+            train = train_all
+            for c, v in zip(self.by, key, strict=True):
+                train = train.filter(pl.col(c) == v)
+            if train.height >= self.min_count:
+                group = dict(zip(self.by, [str(v) for v in key], strict=True))
+                out.append(
+                    _with_probs(
+                        g, prob, _isotonic_entry(train, prob, outcome, group), self.group_source
+                    )
+                )
+            elif pooled is not None:
+                out.append(_with_probs(g, prob, pooled, "pooled"))
+            else:
+                out.append(_with_probs(g, prob, None, "identity"))
         return pl.concat(out, how="vertical_relaxed") if out else rows
 
     def transform(
@@ -353,36 +424,40 @@ class OnlineIsotonic:
                 for prob, outcome in pairs:
                     rows = self._calibrate_rows(rows, history, prob, outcome)
                 out.append(rows)
-        return pl.concat(out, how="vertical_relaxed") if out else frame
+        return pl.concat(out, how="diagonal_relaxed") if out else frame
 
     def fit_final(self, frame: pl.DataFrame) -> dict[str, Any]:
-        """Isotonic maps per probability column (and ``by`` group) from every row of ``frame``."""
+        """Frozen maps per probability column: one per ``(scoring, by)`` group plus pooled per scoring.
+
+        Groups and the pooled fit need ``min_count`` calibration rows, as online.
+        """
         maps: dict[str, Any] = {}
+        part_keys = [c for c in ("scoring",) if c in frame.columns]
         for prob, outcome in self.present(frame):
-            groups = (
-                [(k, part) for k, part in frame.group_by(list(self.by), maintain_order=True)]
-                if self.by
-                else [((), frame)]
-            )
-            entries = []
-            for key, part in groups:
-                train = self._training(part, prob, outcome)
-                if train.height < self.min_count:
+            groups, pooled = [], []
+            parts = frame.group_by(part_keys, maintain_order=True) if part_keys else [((), frame)]
+            for pkey, part in parts:
+                pgroup = dict(zip(part_keys, [str(v) for v in pkey], strict=True))
+                train_all = self._training(part, prob, outcome)
+                if train_all.height >= self.min_count:
+                    pooled.append(_isotonic_entry(train_all, prob, outcome, pgroup))
+                if not self.by:
                     continue
-                iso = _fit_isotonic(
-                    train[prob].cast(pl.Float64).to_numpy(),
-                    train[outcome].cast(pl.Float64).to_numpy(),
-                )
-                entries.append(
-                    {
-                        "group": dict(zip(self.by, [str(v) for v in key], strict=True)),
-                        "x": [float(v) for v in iso.X_thresholds_],
-                        "y": [float(v) for v in iso.y_thresholds_],
-                        "n": train.height,
-                    }
-                )
-            if entries:
-                maps[prob] = {"outcome": outcome, "by": list(self.by), "maps": entries}
+                for key, sub in train_all.group_by(list(self.by), maintain_order=True):
+                    if sub.height < self.min_count:
+                        continue
+                    group = {**pgroup, **dict(zip(self.by, [str(v) for v in key], strict=True))}
+                    groups.append(_isotonic_entry(sub, prob, outcome, group))
+            if groups or pooled:
+                maps[prob] = {
+                    "outcome": outcome,
+                    "keys": [*part_keys, *self.by],
+                    "pooled_keys": part_keys,
+                    "by": list(self.by),
+                    "min_count": self.min_count,
+                    "maps": groups,
+                    "pooled": pooled,
+                }
         return maps
 
 
@@ -464,23 +539,66 @@ class FrozenCalibration:
         for prob, spec in self.isotonic.items():
             if prob not in out.columns:
                 continue
-            out = self._apply_isotonic(out, prob, spec)
+            out = self._apply_isotonic(out, prob, spec, use_scoring=use_scoring)
+        out = out.with_columns(
+            pl.lit(self.meta.get("calibration_version", CALIBRATION_VERSION)).alias(
+                "calibration_version"
+            )
+        )
         if rename and "model" in out.columns:
             out = out.with_columns((pl.col("model") + suffix).alias("model"))
         return out
 
     @staticmethod
-    def _apply_isotonic(frame: pl.DataFrame, prob: str, spec: dict[str, Any]) -> pl.DataFrame:
-        by = list(spec.get("by", []))
+    def _apply_isotonic(
+        frame: pl.DataFrame,
+        prob: str,
+        spec: dict[str, Any],
+        use_scoring: str | None = None,
+    ) -> pl.DataFrame:
+        """Group map where one exists, else the pooled map of the row's scoring, else identity."""
+        keys = list(spec.get("keys", spec.get("by", [])))
+        pooled_keys = list(spec.get("pooled_keys", []))
+        group_source = "+".join(spec.get("by", [])) or "pooled"
+        n = frame.height
+
+        def key_values(cols: list[str]) -> list[tuple[str, ...]]:
+            values = []
+            for c in cols:
+                if c == "scoring" and use_scoring is not None:
+                    values.append([use_scoring] * n)
+                elif c in frame.columns:
+                    values.append(frame[c].cast(pl.String).to_list())
+                else:
+                    values.append([None] * n)
+            return list(zip(*values, strict=True)) if values else [()] * n
+
         p = frame[prob].cast(pl.Float64).to_numpy().copy()
         result = p.copy()
-        for entry in spec["maps"]:
-            mask = ~np.isnan(p)
-            for c in by:
-                mask &= (frame[c].cast(pl.String) == entry["group"][c]).to_numpy()
-            if mask.any():
-                result[mask] = np.interp(p[mask], entry["x"], entry["y"])
-        return frame.with_columns(pl.Series(prob, result, dtype=pl.Float64).fill_nan(None))
+        source = np.full(n, "identity", dtype=object)
+        done = np.zeros(n, dtype=bool)
+        ok = ~np.isnan(p)
+        for entries, cols, label in (
+            (spec.get("maps", []), keys, group_source),
+            (spec.get("pooled", []), pooled_keys, "pooled"),
+        ):
+            if not entries:
+                continue
+            row_keys = key_values(cols)
+            lookup = {tuple(e["group"].get(c) for c in cols): e for e in entries}
+            for i_key, entry in lookup.items():
+                mask = ~done & np.array([k == i_key for k in row_keys], dtype=bool)
+                if not mask.any():
+                    continue
+                apply = mask & ok
+                if apply.any():
+                    result[apply] = _interp(p[apply], entry)
+                source[mask] = label
+                done |= mask
+        return frame.with_columns(
+            pl.Series(prob, result, dtype=pl.Float64).fill_nan(None),
+            pl.Series(source_column(prob), source.tolist(), dtype=pl.String),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         def clean(v: Any) -> Any:
@@ -501,7 +619,7 @@ class FrozenCalibration:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> FrozenCalibration:
-        if payload.get("format") != CALIBRATION_FORMAT:
+        if payload.get("format") not in (CALIBRATION_FORMAT, *READABLE_FORMATS):
             raise ValueError(f"not a calibration file (format={payload.get('format')!r})")
         return cls(
             levels=tuple(float(q) for q in payload["levels"]),
@@ -540,6 +658,7 @@ def save_next_to(frozen: FrozenCalibration, artifact: Path | str) -> Path:
 
 
 __all__ = [
+    "CALIBRATION_VERSION",
     "CAL_SUFFIX",
     "FrozenCalibration",
     "OnlineConformal",
@@ -548,4 +667,5 @@ __all__ = [
     "quantile_column",
     "save_next_to",
     "sort_quantiles",
+    "source_column",
 ]

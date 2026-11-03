@@ -21,6 +21,7 @@ Writes go through a temporary file and an atomic rename.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -124,9 +125,14 @@ def register_candidate(
     backtest_run_id: str | None = None,
     *,
     git: str | None = None,
+    calibration: Path | str | None = None,
     registry: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Add ``version`` of model ``name`` as a candidate."""
+    """Add ``version`` of model ``name`` as a candidate.
+
+    ``calibration`` is the frozen calibration file saved next to the artifact;
+    its path, SHA-256 and calibration version are recorded with the entry.
+    """
     if not name or not version:
         raise RegistryError("name and version are required")
     payload = load_registry(registry)
@@ -143,6 +149,16 @@ def register_candidate(
         "evaluator_report": None,
         "history": [],
     }
+    if calibration is not None:
+        cal = Path(calibration)
+        if not cal.is_file():
+            raise RegistryError(f"calibration file {cal} does not exist")
+        meta = json.loads(cal.read_text(encoding="utf-8")).get("meta", {})
+        entry["calibration"] = {
+            "path": _relative(cal),
+            "sha256": hashlib.sha256(cal.read_bytes()).hexdigest(),
+            "calibration_version": meta.get("calibration_version"),
+        }
     _transition(entry, "candidate")
     payload["models"].append(entry)
     _save(payload, registry)

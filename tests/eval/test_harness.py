@@ -22,7 +22,7 @@ from ffml.eval.harness import (
 )
 from ffml.eval.metrics import evaluate
 from ffml.holdout import HoldoutLockedError
-from ffml.models.calibration import CAL_SUFFIX
+from ffml.models.calibration import CAL_SUFFIX, CALIBRATION_VERSION
 from ffml.models.protocol import PREDICTION_COLUMNS
 from ffml.scoring.rules import ScoringRules
 from ffml.scoring.statline import ensure_stat_columns
@@ -410,3 +410,35 @@ def test_manifest_params_survive_a_combine_only_session(tmp_settings, tmp_path):
     assert idle.fits == []
     params = read_manifest(run_dir)["models"][0]["params"]
     assert params["kind"] == "fake" and len(params["fitted_at"]) == 8
+
+
+class BoomModel(FakeModel):
+    """Adds boom and bust probabilities so the isotonic step runs."""
+
+    def predict(self, season, week, scorings):
+        out = super().predict(season, week, scorings)
+        h = (pl.col("entity_id").hash(seed=week) % 1000).cast(pl.Float64) / 1000.0
+        return out.with_columns(h.alias("boom_prob"), (1.0 - h).alias("bust_prob"))
+
+
+def test_calibration_version_and_sources_on_recombine(tmp_settings, tmp_path):
+    actuals = synthetic_actuals()
+    run_dir = run(tmp_path, [BoomModel(actuals)], run_id="v2")
+    first = pl.read_parquet(run_dir / "predictions.parquet")
+    manifest = read_manifest(run_dir)
+    assert manifest["calibration_version"] == CALIBRATION_VERSION
+    assert manifest["calibration"]["version"] == CALIBRATION_VERSION
+    raw = first.filter(pl.col("model") == "fake")
+    cal = first.filter(pl.col("model") == "fake" + CAL_SUFFIX)
+    for col in ("calibration_version", "cal_boom_source", "cal_bust_source"):
+        assert raw[col].null_count() == raw.height
+    assert set(cal["calibration_version"]) == {CALIBRATION_VERSION}
+    assert set(cal["cal_boom_source"]) <= {"identity", "pooled", "position"}
+    assert set(
+        cal.filter((pl.col("season") == 2021) & (pl.col("week") == 1))["cal_boom_source"]
+    ) == {"identity"}
+    # recombining a finished run refits nothing and reproduces the file
+    idle = BoomModel(actuals)
+    run(tmp_path, [idle], run_id="v2")
+    assert idle.fits == [] and idle.predicts == []
+    assert pl.read_parquet(run_dir / "predictions.parquet").equals(first)

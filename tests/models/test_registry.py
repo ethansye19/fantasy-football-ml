@@ -106,3 +106,21 @@ def test_invalid_transitions(env, tmp_path):
         reg.retire("c1")
     with pytest.raises(RegistryError, match="unknown status"):
         reg.list_models("deleted")
+
+
+def test_candidate_records_its_frozen_calibration(env, tmp_path):
+    import hashlib
+
+    artifact = tmp_path / "chain_v1"
+    artifact.mkdir()
+    cal = artifact / "calibration.json"
+    cal.write_text(
+        json.dumps({"format": "ffml.calibration/2", "meta": {"calibration_version": "v2-x"}}),
+        encoding="utf-8",
+    )
+    entry = reg.register_candidate("chain", "c-cal", artifact, "run_1", calibration=cal)
+    assert entry["calibration"]["sha256"] == hashlib.sha256(cal.read_bytes()).hexdigest()
+    assert entry["calibration"]["calibration_version"] == "v2-x"
+    assert entry["status"] == "candidate" and entry["evaluator_report"] is None
+    with pytest.raises(RegistryError, match="does not exist"):
+        reg.register_candidate("chain", "c-missing", artifact, calibration=artifact / "nope.json")

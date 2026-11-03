@@ -10,12 +10,14 @@ import pytest
 
 from ffml.models.calibration import (
     CAL_SUFFIX,
+    CALIBRATION_VERSION,
     FrozenCalibration,
     OnlineConformal,
     OnlineIsotonic,
     calibration_path_for,
     save_next_to,
     sort_quantiles,
+    source_column,
 )
 from ffml.models.protocol import QUANTILE_LEVELS
 
@@ -291,3 +293,188 @@ def test_isotonic_uses_only_earlier_weeks_and_improves_brier():
     applied = frozen.apply(base.with_columns(*[pl.lit(1.0).alias(c) for c in QCOLS]))
     assert applied["boom_prob"].max() <= 1.0 and applied["boom_prob"].min() >= 0.0
     assert iso.transform(base.drop("boom_prob")).equals(base.drop("boom_prob"))
+
+
+# --------------------------------------------------------------------------- #
+# Per-position isotonic (calibration v2, D-086)
+# --------------------------------------------------------------------------- #
+
+#: true event rate as a function of the stated probability, per position
+TRUTH = {"WR": lambda p: p**2, "K": lambda p: 0.15 + 0.1 * p, "TE": lambda p: p}
+
+
+def position_prob_frame(seed: int = 0, sizes=None, weeks=range(1, 7), seasons=(2021, 2022)):
+    """Boom and bust probabilities miscalibrated differently by position (K nearly flat)."""
+    sizes = sizes or {"WR": 120, "K": 60, "TE": 15}
+    rng = np.random.default_rng(seed)
+    rows = []
+    for season in seasons:
+        for week in weeks:
+            for pos, n in sizes.items():
+                p = rng.uniform(0, 1, size=n)
+                boom = (rng.uniform(size=n) < TRUTH[pos](p)).astype(float)
+                bust = (rng.uniform(size=n) < TRUTH[pos](1 - p)).astype(float)
+                for i in range(n):
+                    rows.append(
+                        {
+                            "entity_id": f"{pos}{i}",
+                            "position": pos,
+                            "season": season,
+                            "week": week,
+                            "model": "m",
+                            "scoring": "ppr",
+                            "boom_prob": float(p[i]),
+                            "boom_actual": float(boom[i]),
+                            "bust_prob": float(1 - p[i]),
+                            "bust_actual": float(bust[i]),
+                            "actual": 1.0,
+                            "active": True,
+                            "kickoff_utc": week_start(season, week),
+                            "week_cutoff": week_start(season, week),
+                        }
+                    )
+    return pl.DataFrame(rows).with_columns(
+        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
+    )
+
+
+def by_pos(f: pl.DataFrame, pos: str, season: int, week: int) -> pl.DataFrame:
+    return week_rows(f, season, week).filter(pl.col("position") == pos)
+
+
+@pytest.mark.parametrize("target", [(2021, 4), (2022, 2)])
+def test_per_position_maps_use_only_earlier_weeks(target):
+    base = position_prob_frame()
+    season, week = target
+    later = (pl.col("season") > season) | ((pl.col("season") == season) & (pl.col("week") >= week))
+    flipped = base.with_columns(
+        pl.when(later & (pl.col("position") == "K"))
+        .then(1.0 - pl.col("boom_actual"))
+        .otherwise(pl.col("boom_actual"))
+        .alias("boom_actual")
+    )
+    iso = OnlineIsotonic(min_count=100)
+    a, b = iso.transform(base), iso.transform(flipped)
+    for pos in ("WR", "K", "TE"):
+        cols = ["entity_id", "boom_prob", "bust_prob", "cal_boom_source", "cal_bust_source"]
+        assert (
+            by_pos(a, pos, season, week)
+            .select(cols)
+            .equals(by_pos(b, pos, season, week).select(cols))
+        )
+    # the next week's kicker map sees the flipped outcomes
+    nxt = (season, week + 1)
+    assert not by_pos(a, "K", *nxt)["boom_prob"].equals(by_pos(b, "K", *nxt)["boom_prob"])
+    # and a kicker-only change never moves the WR map (WR has its own rows)
+    assert by_pos(a, "WR", *nxt)["boom_prob"].equals(by_pos(b, "WR", *nxt)["boom_prob"])
+
+
+def test_per_position_fixes_what_pooling_cannot():
+    base = position_prob_frame(sizes={"WR": 200, "K": 200, "TE": 15}, weeks=range(1, 9))
+    late = (pl.col("season") == 2022) & (pl.col("position") == "K")
+    per_pos = OnlineIsotonic(min_count=200).transform(base)
+    pooled = OnlineIsotonic(by=(), min_count=200).transform(base)
+
+    def brier(f):
+        g = f.filter(late)
+        return float(((g["boom_prob"] - g["boom_actual"]) ** 2).mean())
+
+    truth = TRUTH["K"](base.filter(late)["boom_prob"])
+
+    def error(f):
+        """Mean distance of the calibrated kicker probability from the true rate."""
+        return float((f.filter(late)["boom_prob"] - truth).abs().mean())
+
+    assert brier(per_pos) < brier(pooled) - 0.005
+    # the kicker truth is nearly flat (0.15-0.25): per-position maps track it, pooling cannot
+    assert error(per_pos) < 0.5 * error(pooled)
+    assert set(pooled.filter(late)["cal_boom_source"]) == {"pooled"}
+
+
+def test_fallback_to_pooled_then_identity_with_sources():
+    base = position_prob_frame(sizes={"WR": 120, "K": 60, "TE": 15})
+    out = OnlineIsotonic(min_count=100).transform(base)
+    src = source_column("boom_prob")
+    assert src == "cal_boom_source"
+    # week 1 has no history at all: identity, probabilities untouched
+    w1 = week_rows(out, 2021, 1)
+    assert set(w1[src]) == {"identity"} and set(w1["cal_bust_source"]) == {"identity"}
+    assert w1["boom_prob"].equals(week_rows(base, 2021, 1)["boom_prob"])
+    # week 2: WR (120 earlier rows) has its own map; K (60) and TE (15) use the pooled map (195)
+    w2 = week_rows(out, 2021, 2)
+    got = dict(w2.group_by("position").agg(pl.col(src).unique().first()).iter_rows())
+    assert got == {"WR": "position", "K": "pooled", "TE": "pooled"}
+    # the pooled map is the fit on all positions' earlier rows
+    hist = base.filter((pl.col("season") == 2021) & (pl.col("week") == 1))
+    pooled_only = OnlineIsotonic(by=(), min_count=100).transform(
+        pl.concat([hist, week_rows(base, 2021, 2)])
+    )
+    te_pooled = by_pos(pooled_only, "TE", 2021, 2)["boom_prob"]
+    assert by_pos(out, "TE", 2021, 2)["boom_prob"].to_list() == pytest.approx(te_pooled.to_list())
+    # K reaches min_count at week 3 (two earlier weeks of 60) and switches to its own map
+    w3 = dict(week_rows(out, 2021, 3).group_by("position").agg(pl.col(src).first()).iter_rows())
+    assert w3 == {"WR": "position", "K": "position", "TE": "pooled"}
+    # TE never reaches 100 rows in 2021 (5 x 15 = 75 before week 6)
+    assert set(by_pos(out, "TE", 2021, 6)[src]) == {"pooled"}
+
+
+def test_frozen_per_position_round_trip(tmp_path):
+    base = position_prob_frame(sizes={"WR": 120, "K": 60, "TE": 5})
+    qcols = {c: pl.lit(1.0) for c in QCOLS}
+    frame = base.with_columns(**qcols)
+    iso = OnlineIsotonic(min_count=100)
+    frozen = OnlineConformal().fit_final(frame, isotonic=iso, meta={"run": "unit"})
+    assert frozen.meta["calibration_version"] == CALIBRATION_VERSION
+    spec = frozen.isotonic["boom_prob"]
+    assert spec["keys"] == ["scoring", "position"] and spec["pooled_keys"] == ["scoring"]
+    assert {e["group"]["position"] for e in spec["maps"]} == {"WR", "K"}  # TE has 60 rows
+    assert [e["group"] for e in spec["pooled"]] == [{"scoring": "ppr"}]
+    path = save_next_to(frozen, tmp_path / "artifact")
+    loaded = FrozenCalibration.load(path)
+    assert loaded.to_dict() == frozen.to_dict()
+
+    new = position_prob_frame(
+        seed=9,
+        sizes={
+            "WR": 20,
+            "K": 20,
+            "TE": 20,
+        },
+        seasons=(2023,),
+        weeks=(1,),
+    )
+    new = new.with_columns(**qcols)
+    out = loaded.apply(new)
+    assert set(out["calibration_version"]) == {CALIBRATION_VERSION}
+    sources = dict(out.group_by("position").agg(pl.col("cal_boom_source").first()).iter_rows())
+    assert sources == {"WR": "position", "K": "position", "TE": "pooled"}
+    # each position matches a direct isotonic fit on that position's rows
+    from sklearn.isotonic import IsotonicRegression
+
+    for pos in ("WR", "K"):
+        train = frame.filter(pl.col("position") == pos)
+        ref = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip").fit(
+            train["boom_prob"].to_numpy(), train["boom_actual"].to_numpy()
+        )
+        rows = new.filter(pl.col("position") == pos)
+        got = out.filter(pl.col("position") == pos)["boom_prob"].to_numpy()
+        assert got == pytest.approx(ref.predict(rows["boom_prob"].to_numpy()))
+    # an unknown scoring is identity unless mapped
+    other = new.with_columns(pl.lit("league_x").alias("scoring"))
+    unmapped = loaded.apply(other)
+    assert set(unmapped["cal_boom_source"]) == {"identity"}
+    assert unmapped["boom_prob"].equals(other["boom_prob"])
+    mapped = loaded.apply(other, use_scoring="ppr")
+    assert mapped["boom_prob"].equals(out["boom_prob"])
+    # v1 files (pooled maps without fallbacks) still load and apply
+    legacy = frozen.to_dict()
+    legacy["format"] = "ffml.calibration/1"
+    legacy["isotonic"] = {
+        "boom_prob": {
+            "outcome": "boom_actual",
+            "by": [],
+            "maps": [dict(spec["pooled"][0], group={})],
+        }
+    }
+    v1 = FrozenCalibration.from_dict(legacy).apply(new)
+    assert set(v1["cal_boom_source"]) == {"pooled"}

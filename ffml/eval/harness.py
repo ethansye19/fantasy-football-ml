@@ -59,7 +59,12 @@ After the walk-forward, :class:`~ffml.models.calibration.OnlineConformal`
 named ``<model>+cal``, each week using only earlier weeks of the run. The
 first run season warms the calibration up; ``report_seasons`` (recorded in the
 manifest) are the seasons whose metrics are reported. Calibrated quantiles
-are clipped below at the position minimum used for the PIT.
+are clipped below at the position minimum used for the PIT. The isotonic maps
+are per position with a pooled fallback (``cal_boom_source`` /
+``cal_bust_source`` record which), and ``calibration_version`` is written to
+the calibrated rows and the manifest. Every combine recomputes the
+calibrated rows from the raw part files, so rerunning a finished run id
+recalibrates it without refitting any model.
 
 Output
 ======
@@ -95,7 +100,14 @@ import polars as pl
 from ffml.config import PROJECT_ROOT, get_settings
 from ffml.data.store import SnapshotStore
 from ffml.holdout import assert_seasons_allowed
-from ffml.models.calibration import CAL_SUFFIX, OnlineConformal, OnlineIsotonic
+from ffml.models.calibration import (
+    CAL_SUFFIX,
+    CALIBRATION_VERSION,
+    PROB_PAIRS,
+    OnlineConformal,
+    OnlineIsotonic,
+    source_column,
+)
 from ffml.models.protocol import (
     OPTIONAL_COLUMNS,
     PREDICTION_COLUMNS,
@@ -600,18 +612,30 @@ def calibrated_rows(
     isotonic = isotonic or OnlineIsotonic()
     cal = conformal.transform(joined, lower_bound="pos_min")
     cal = isotonic.transform(cal)
+    cal = cal.with_columns(pl.lit(CALIBRATION_VERSION).alias("calibration_version"))
     return with_pit(cal)
+
+
+#: calibration bookkeeping columns (null on raw rows)
+CAL_COLUMNS: tuple[str, ...] = (
+    "cal_n",
+    *(source_column(p) for p, _ in PROB_PAIRS),
+    "calibration_version",
+)
 
 
 def _finish_frame(frame: pl.DataFrame) -> pl.DataFrame:
     optional = [c for c in OPTIONAL_COLUMNS if c in frame.columns]
-    cols = [*PREDICTION_COLUMNS, *optional, *OUTCOME_COLUMNS, "cal_n"]
+    cols = [*PREDICTION_COLUMNS, *optional, *OUTCOME_COLUMNS, *CAL_COLUMNS]
     for c in cols:
         if c not in frame.columns:
             frame = frame.with_columns(pl.lit(None).alias(c))
     return (
         frame.select(cols)
-        .with_columns(pl.col("cal_n").cast(pl.Int64))
+        .with_columns(
+            pl.col("cal_n").cast(pl.Int64),
+            *[pl.col(c).cast(pl.String) for c in CAL_COLUMNS if c != "cal_n"],
+        )
         .sort(["model", "scoring", "season", "week", "position", "entity_id"])
     )
 
@@ -742,8 +766,10 @@ def run_walk_forward(
         "scorings": {name: r.scoring_hash for name, r in rules.items()},
         "feature_version": _feature_version(seasons, purpose),
         "input_snapshots": _snapshot_ids(store),
+        "calibration_version": CALIBRATION_VERSION if calibrate else None,
         "calibration": {
             "applied": bool(calibrate),
+            "version": CALIBRATION_VERSION,
             "suffix": CAL_SUFFIX,
             "conformal": repr(OnlineConformal()),
             "isotonic": repr(OnlineIsotonic()),
