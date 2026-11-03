@@ -139,11 +139,18 @@ def train(config: str = typer.Option("default", help="Training configuration nam
 
 
 @app.command()
-def backtest(config: str = typer.Option("default")) -> None:
-    """Run walk-forward backtests and write the report."""
+def backtest(
+    config: str = typer.Option("default", help="Config name in ffml/eval/backtest_configs.py"),
+    run_id: str = typer.Option(
+        None, "--run-id", help="Resume or name a run (default $FFML_BACKTEST_RUN_ID or <config>_<date>)"
+    ),
+    n_jobs: int = typer.Option(None, "--n-jobs", help="Worker processes, one model per worker"),
+) -> None:
+    """Run walk-forward backtests (resumable) and write data/backtests/<run_id>/."""
     from ffml.eval.harness import run_backtest
 
-    run_backtest(config_name=config)
+    path = run_backtest(config_name=config, run_id=run_id, n_jobs=n_jobs)
+    console.print(f"backtest written to {path}")
 
 
 @app.command()
