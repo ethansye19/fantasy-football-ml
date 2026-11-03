@@ -62,6 +62,20 @@ included, because the projection list is what a user sees before kickoff);
 the population filter is applied after ranking. Lineup pools are every row
 with a projection; a chosen entity that did not play scores zero.
 
+Common pair set (D-074)
+=======================
+
+Each model's own top-N startable set lets two models be scored on different
+pairs. :func:`with_reference_rank` adds ``ref_rank``, one model-agnostic
+positional rank per ``(position, season, week)`` from the mean ``pred_q50``
+over a set of compared models (ties by ``entity_id``; it never looks at
+actuals). When a frame carries ``ref_rank``, the bundles add
+``start_sit_common`` (pairs among rows with ``ref_rank`` within the startable
+cut, both active, preference by the model's own ordering rule) and
+``spearman_common`` (rows with ``ref_rank`` within the replacement level).
+The own-top-N versions (``start_sit``, ``spearman``) stay as secondary
+metrics.
+
 Bootstrap
 =========
 
@@ -168,6 +182,7 @@ CLUSTER: tuple[str, ...] = ("season", "week")
 #: None no direction (coverage has a target, width trades off against coverage)
 HIGHER_IS_BETTER: dict[str, bool | None] = {
     "mae": False,
+    "mae_mean": False,
     "pinball_q10": False,
     "pinball_q50": False,
     "pinball_q90": False,
@@ -177,6 +192,9 @@ HIGHER_IS_BETTER: dict[str, bool | None] = {
     "spearman": True,
     "start_sit": True,
     "start_sit_weighted": True,
+    "spearman_common": True,
+    "start_sit_common": True,
+    "start_sit_common_weighted": True,
     "brier_boom": False,
     "brier_bust": False,
     "calib_slope_boom": None,
@@ -184,6 +202,9 @@ HIGHER_IS_BETTER: dict[str, bool | None] = {
     "pit_max_dev": False,
     "lineup_efficiency": True,
 }
+
+#: model-agnostic positional rank column (D-074, see module docstring)
+REF_RANK = "ref_rank"
 
 _REP = "_rep"  # bootstrap replicate tag (see module docstring)
 _SCORE = "_score"  # ordering score within a group: higher is better, equal only for true ties
@@ -298,6 +319,62 @@ def replacement_filter(
     return ranked.filter(level.is_null() | (pl.col("pred_rank") <= level))
 
 
+def reference_ranks(
+    frames: Mapping[str, pl.DataFrame] | Sequence[pl.DataFrame], group: Sequence[str] = GROUP
+) -> pl.DataFrame:
+    """Model-agnostic positional ranks (D-074) from the mean ``pred_q50`` over ``frames``.
+
+    Returns ``entity_id, <group...>, ref_q50, ref_rank``: per key the mean of
+    the non-null ``pred_q50`` values across the frames, ranked within
+    ``group`` (default position-season-week) descending, ties by
+    ``entity_id``. Keys without any projection get a null rank. Actuals are
+    never read.
+    """
+    parts = list(frames.values()) if isinstance(frames, Mapping) else list(frames)
+    if not parts:
+        raise ValueError("reference_ranks needs at least one frame")
+    keys = ["entity_id", *[c for c in group if c != "entity_id"]]
+    stacked = pl.concat(
+        [p.select([*keys, pl.col("pred_q50").cast(pl.Float64)]) for p in parts], how="vertical_relaxed"
+    ).with_columns(pl.col("pred_q50").fill_nan(None))
+    ref = stacked.group_by(keys).agg(pl.col("pred_q50").mean().alias("ref_q50"))
+    ranked = ref.sort([*group, "ref_q50", "entity_id"], descending=[*([False] * len(group)), True, False],
+                      nulls_last=True)
+    return ranked.with_columns(
+        pl.when(pl.col("ref_q50").is_not_null())
+        .then(pl.int_range(1, pl.len() + 1).over(list(group)))
+        .otherwise(None)
+        .cast(pl.Int32)
+        .alias(REF_RANK)
+    )
+
+
+def with_reference_rank(
+    frames: Mapping[str, pl.DataFrame],
+    reference: Sequence[str] | None = None,
+    group: Sequence[str] = GROUP,
+) -> dict[str, pl.DataFrame]:
+    """Attach one ``ref_rank`` (and ``ref_q50``) to every frame (D-074).
+
+    ``reference`` names the frames whose ``pred_q50`` values form the
+    reference (default: all). Frames should already be aligned to common keys
+    (:func:`align_frames`) so every model is scored on the same pairs.
+    """
+    names = list(reference) if reference is not None else list(frames)
+    missing = [n for n in names if n not in frames]
+    if missing:
+        raise ValueError(f"reference frames {missing} not in frames")
+    ref = reference_ranks([frames[n] for n in names], group)
+    keys = ["entity_id", *[c for c in group if c != "entity_id"]]
+    out = {}
+    for name, f in frames.items():
+        base = f.drop([c for c in (REF_RANK, "ref_q50") if c in f.columns])
+        casts = {c: base.schema[c] for c in keys}
+        out[name] = base.join(ref.with_columns([pl.col(c).cast(t) for c, t in casts.items()]),
+                              on=keys, how="left")
+    return out
+
+
 def _sorted_groups(frame: pl.DataFrame, cols: Sequence[str]) -> list[tuple[int, int]]:
     """``(start, stop)`` row bounds of each group in a frame sorted by ``cols``."""
     if frame.is_empty():
@@ -317,6 +394,12 @@ def mae(frame: pl.DataFrame) -> float:
     """Mean absolute error of the median projection (``pred_q50``) vs ``actual``."""
     f = population(frame)
     return _mean_or_nan((f["pred_q50"] - f["actual"]).abs().to_numpy())
+
+
+def mae_mean(frame: pl.DataFrame) -> float:
+    """Mean absolute error of ``pred_mean`` vs ``actual`` (D-053 asks for both MAEs)."""
+    f = population(frame).filter(pl.col("pred_mean").is_not_null())
+    return _mean_or_nan((f["pred_mean"] - f["actual"]).abs().to_numpy())
 
 
 def pinball_loss(frame: pl.DataFrame, q: float = 0.5) -> float:
@@ -420,6 +503,10 @@ def calibration_slope(frame: pl.DataFrame, prob_col: str, outcome_col: str) -> f
     probabilities, or a non-converging fit (separation).
     """
     p, y = _prob_outcome(frame, prob_col, outcome_col)
+    return _calibration_slope_arrays(p, y)
+
+
+def _calibration_slope_arrays(p: np.ndarray, y: np.ndarray) -> float:
     if p.size < 10 or np.unique(y).size < 2:
         return math.nan
     x = logit(np.clip(p, 1e-6, 1 - 1e-6))
@@ -453,9 +540,7 @@ def pit_histogram(
     if col not in frame.columns:
         raise ValueError(f"column {col!r} not in frame")
     f = population(frame).filter(pl.col(col).is_not_null())
-    u = np.clip(f[col].cast(pl.Float64).to_numpy(), 0.0, 1.0)
-    idx = np.minimum((u * bins).astype(int), bins - 1)
-    counts = np.bincount(idx, minlength=bins)
+    counts = _pit_counts(f[col].cast(pl.Float64).to_numpy(), bins)
     total = int(counts.sum())
     return pl.DataFrame(
         {
@@ -467,6 +552,19 @@ def pit_histogram(
             "expected": [1.0 / bins] * bins,
         }
     )
+
+
+def _pit_counts(values: np.ndarray, bins: int) -> np.ndarray:
+    u = np.clip(values[~np.isnan(values)], 0.0, 1.0)
+    idx = np.minimum((u * bins).astype(int), bins - 1)
+    return np.bincount(idx, minlength=bins)
+
+
+def _pit_max_dev_counts(counts: np.ndarray) -> float:
+    total = int(counts.sum())
+    if total == 0:
+        return math.nan
+    return float(np.max(np.abs(counts / total - 1.0 / counts.size)))
 
 
 def pit_max_deviation(frame: pl.DataFrame, col: str = "pred_cdf_at_actual", bins: int = 10) -> float:
@@ -487,21 +585,34 @@ def spearman_by_group(
     group: Sequence[str] = GROUP,
     min_entities: int = 8,
     levels: Mapping[str, int] | None = REPLACEMENT_LEVEL,
+    common: bool = False,
 ) -> pl.DataFrame:
     """Spearman correlation of the projection ordering vs ``actual`` per group.
 
     Rows are restricted to the positional replacement level (``levels``; pass
-    ``None`` to keep every projected row), then to the evaluation population.
+    ``None`` to keep every projected row), ranked by the model itself or, with
+    ``common``, by the model-agnostic ``ref_rank`` (D-074), then to the
+    evaluation population.
     Ranks are averaged on ties (the scipy definition). Groups with fewer than
     ``min_entities`` rows or a constant column are dropped. Columns:
     ``<group...>, n, rho``.
     """
     cols = _group_cols(frame, group)
-    if levels is not None:
+    if levels is not None and common:
+        if REF_RANK not in frame.columns:
+            raise ValueError(f"common=True needs the {REF_RANK!r} column (with_reference_rank)")
+        level = _level_expr(levels)
+        base = rank_within(frame, group).filter(level.is_null() | (pl.col(REF_RANK) <= level))
+    elif levels is not None:
         base = replacement_filter(frame, levels, group)
     else:
         base = rank_within(frame, group)
-    pop = population(base)
+    return _spearman_table(population(base), cols, min_entities)
+
+
+def _spearman_table(pop: pl.DataFrame, cols: Sequence[str], min_entities: int) -> pl.DataFrame:
+    """Per-group Spearman of ``_score`` vs ``actual`` on an already ranked and filtered population."""
+    cols = list(cols)
     schema = {**{c: pop.schema[c] for c in cols}, "n": pl.UInt32, "rho": pl.Float64}
     if pop.is_empty():
         return pl.DataFrame(schema=schema)
@@ -534,9 +645,10 @@ def spearman_within(
     group: Sequence[str] = GROUP,
     min_entities: int = 8,
     levels: Mapping[str, int] | None = REPLACEMENT_LEVEL,
+    common: bool = False,
 ) -> float:
     """Mean Spearman correlation over groups with at least ``min_entities`` rows."""
-    table = spearman_by_group(frame, group, min_entities, levels)
+    table = spearman_by_group(frame, group, min_entities, levels, common)
     return _mean_or_nan(table["rho"].to_numpy())
 
 
@@ -563,31 +675,52 @@ class StartSitResult:
 
 
 def startable_population(
-    frame: pl.DataFrame, startable: Mapping[str, int] = STARTABLE, group: Sequence[str] = GROUP
+    frame: pl.DataFrame,
+    startable: Mapping[str, int] = STARTABLE,
+    group: Sequence[str] = GROUP,
+    common: bool = False,
 ) -> pl.DataFrame:
     """Startable rows (rank at or above the position's cut) that are in the population.
 
-    Positions absent from ``startable`` are excluded.
+    The rank is the model's own (``pred_rank``) or, with ``common``, the
+    model-agnostic ``ref_rank`` (D-074). Positions absent from ``startable``
+    are excluded.
     """
     ranked = rank_within(frame, group)
     level = _level_expr(startable)
-    return population(ranked.filter(level.is_not_null() & (pl.col("pred_rank") <= level)))
+    rank_col = "pred_rank"
+    if common:
+        if REF_RANK not in frame.columns:
+            raise ValueError(f"common=True needs the {REF_RANK!r} column (with_reference_rank)")
+        rank_col = REF_RANK
+    return population(ranked.filter(level.is_not_null() & (pl.col(rank_col) <= level)))
 
 
 def start_sit_pairs(
     frame: pl.DataFrame,
     startable: Mapping[str, int] = STARTABLE,
     group: Sequence[str] = GROUP,
+    common: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(gap, concordance)`` arrays over all startable same-position pairs.
 
     A pair is two startable, active players of the same position in the same
     season-week that are not a true tie under the ordering rule. Concordance
     is 1 when the preferred player scored more, 0.5 on an exact tie in actual
-    points, 0 otherwise. ``gap`` is ``|pred_q50(a) - pred_q50(b)|``.
+    points, 0 otherwise. ``gap`` is ``|pred_q50(a) - pred_q50(b)|``. With
+    ``common`` the startable set comes from ``ref_rank`` (D-074), so every
+    model is scored on the same pairs; the preference is still the model's,
+    and a pair the model ranks as a true tie stays in the set with
+    concordance 0.5 (no preference is a coin flip), so the pair count is
+    identical across models.
     """
     cols = _group_cols(frame, group)
-    pop = startable_population(frame, startable, group).sort([*cols, "pred_rank"])
+    pop = startable_population(frame, startable, group, common).sort([*cols, "pred_rank"])
+    return _pairs_from_sorted(pop, cols, common)
+
+
+def _pairs_from_sorted(pop: pl.DataFrame, cols: Sequence[str], common: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Pair loop of :func:`start_sit_pairs` on a startable population sorted by group and rank."""
     if pop.height < 2:
         return np.empty(0), np.empty(0)
     score = pop[_SCORE].to_numpy()
@@ -602,11 +735,13 @@ def start_sit_pairs(
         i, j = np.triu_indices(n, 1)
         i, j = i + start, j + start
         ds = score[i] - score[j]
-        keep = ds != 0
-        i, j, ds = i[keep], j[keep], ds[keep]
+        if not common:
+            keep = ds != 0
+            i, j, ds = i[keep], j[keep], ds[keep]
         da = actual[i] - actual[j]
         gaps.append(np.abs(pred[i] - pred[j]))
-        conc.append(np.where(da == 0, 0.5, (np.sign(ds) == np.sign(da)).astype(float)))
+        # on the common set a model's true tie stays in the pair set as a coin flip (0.5)
+        conc.append(np.where((da == 0) | (ds == 0), 0.5, (np.sign(ds) == np.sign(da)).astype(float)))
     if not gaps:
         return np.empty(0), np.empty(0)
     return np.concatenate(gaps), np.concatenate(conc)
@@ -637,14 +772,15 @@ def start_sit_accuracy(
     startable: Mapping[str, int] = STARTABLE,
     group: Sequence[str] = GROUP,
     gap_edges: Sequence[float] = DEFAULT_GAP_EDGES,
+    common: bool = False,
 ) -> StartSitResult:
     """Share of startable same-position pairs where the preferred player scored more.
 
     Also returns the version weighted by the absolute projection gap and the
     accuracy binned by projection gap (``gap_edges`` are ``[lo, hi)`` bin
-    boundaries).
+    boundaries). ``common`` uses the D-074 pair set (see :func:`start_sit_pairs`).
     """
-    gap, conc = start_sit_pairs(frame, startable, group)
+    gap, conc = start_sit_pairs(frame, startable, group, common)
     by_gap = _gap_table(gap, conc, gap_edges)
     if gap.size == 0:
         return StartSitResult(math.nan, math.nan, 0, by_gap)
@@ -806,6 +942,26 @@ def _cluster_index(frame: pl.DataFrame, cluster: Sequence[str]) -> dict[tuple, n
     return out
 
 
+def cluster_universe(frames: Sequence[pl.DataFrame], cluster: Sequence[str] = CLUSTER) -> list[tuple]:
+    """Cluster keys in the order the paired bootstrap draws from them.
+
+    The union over ``frames`` in order of first appearance. Two bootstrap
+    calls with the same seed and the same universe draw identical clusters,
+    so frames can be bootstrapped in separate calls (or processes) and their
+    replicate values still pair.
+    """
+    universe: list[tuple] = []
+    seen: set[tuple] = set()
+    for f in frames:
+        if f.is_empty():
+            continue
+        for key in f.select(list(cluster)).unique(maintain_order=True).iter_rows():
+            if key not in seen:
+                seen.add(key)
+                universe.append(key)
+    return universe
+
+
 def _resample(frame: pl.DataFrame, index: Mapping[tuple, np.ndarray], keys: Sequence[tuple], draw: np.ndarray) -> pl.DataFrame | None:
     parts = [index.get(keys[int(k)]) for k in draw]
     sizes = np.array([0 if p is None else p.size for p in parts], dtype=np.int64)
@@ -826,13 +982,7 @@ def _paired_bundle_bootstrap(
 ) -> dict[str, dict[str, np.ndarray]]:
     """Bootstrap a metric bundle for several frames with shared cluster draws."""
     index = {name: _cluster_index(f, cluster) for name, f in frames.items()}
-    universe: list[tuple] = []
-    seen: set[tuple] = set()
-    for idx in index.values():
-        for key in idx:
-            if key not in seen:
-                seen.add(key)
-                universe.append(key)
+    universe = cluster_universe(list(frames.values()), cluster)
     out: dict[str, dict[str, np.ndarray]] = {name: {} for name in frames}
     if not universe or n_boot <= 0:
         return out
@@ -846,6 +996,29 @@ def _paired_bundle_bootstrap(
                 arr = out[name].setdefault(metric, np.full(n_boot, math.nan))
                 arr[b] = value
     return out
+
+
+def paired_bundle_bootstrap(
+    frames: Mapping[str, pl.DataFrame],
+    bundle: BundleFn,
+    n_boot: int = 500,
+    cluster: Sequence[str] = CLUSTER,
+    seed: int = 0,
+) -> dict[str, dict[str, np.ndarray]]:
+    """Replicate values of every bundle metric for several frames with shared cluster draws.
+
+    Returns ``{frame name: {metric: array of length n_boot}}`` (NaN where a
+    metric is undefined on a resample). Differences between any two frames
+    (``boots[a][m] - boots[b][m]``) are paired, so their percentile interval
+    is the paired cluster-bootstrap interval of the difference.
+    """
+    return _paired_bundle_bootstrap(frames, bundle, n_boot, cluster, seed)
+
+
+def percentile_interval(values: np.ndarray, alpha: float = 0.05) -> tuple[float, float]:
+    """``(lo, hi)`` percentile interval of bootstrap values, NaN draws dropped."""
+    lo, hi, _ = _percentile(np.asarray(values, dtype=float), alpha)
+    return lo, hi
 
 
 def paired_bootstrap(
@@ -933,36 +1106,86 @@ def metric_bundle(
     startable: Mapping[str, int] = STARTABLE,
     nominal: float = NOMINAL_COVERAGE,
 ) -> BundleFn:
-    """The per-position scalar metrics as one function (calibration only when columns exist)."""
+    """The per-position scalar metrics as one function (calibration only when columns exist).
+
+    The bundle ranks the frame once and filters the population once, then
+    computes every metric from those (point metrics on numpy arrays). It
+    returns the same values as the individual metric functions, which
+    ``tests/eval/test_metrics.py`` checks.
+    """
     cols = set(columns)
     has_boom = {"boom_prob", "boom_actual"} <= cols
     has_bust = {"bust_prob", "bust_actual"} <= cols
     has_pit = "pred_cdf_at_actual" in cols
+    has_ref = REF_RANK in cols
+    rep_level = _level_expr(levels) if levels is not None else pl.lit(None, dtype=pl.Int32)
+    st_level = _level_expr(startable)
+
+    def arr(frame: pl.DataFrame, col: str) -> np.ndarray:
+        return frame[col].cast(pl.Float64).to_numpy()
+
+    def masked_mean(values: np.ndarray) -> float:
+        values = values[~np.isnan(values)]
+        return float(values.mean()) if values.size else math.nan
+
+    def accuracy(gap: np.ndarray, conc: np.ndarray) -> tuple[float, float]:
+        total = float(gap.sum()) if gap.size else 0.0
+        plain = float(conc.mean()) if conc.size else math.nan
+        weighted = float((gap * conc).sum() / total) if total > 0 else math.nan
+        return plain, weighted
 
     def bundle(f: pl.DataFrame) -> dict[str, float]:
-        coverage = interval_coverage(f)
-        gap, conc = start_sit_pairs(f, startable)
-        total_gap = float(gap.sum()) if gap.size else 0.0
+        group = _group_cols(f, GROUP)
+        ranked = rank_within(f, GROUP)
+        pop = population(ranked)
+        y = arr(pop, "actual")
+        q50 = arr(pop, "pred_q50")
+        q10 = arr(pop, "pred_q10")
+        q90 = arr(pop, "pred_q90")
+        mean = arr(pop, "pred_mean")
+        both = ~np.isnan(q10) & ~np.isnan(q90)
+        inside = ((y >= q10) & (y <= q90))[both].astype(float)
+        coverage = float(inside.mean()) if inside.size else math.nan
+
+        def pin(q: float, p: np.ndarray) -> float:
+            d = y - p
+            return masked_mean(np.where(np.isnan(p), np.nan, np.maximum(q * d, (q - 1.0) * d)))
+
+        own_st = pop.filter(st_level.is_not_null() & (pl.col("pred_rank") <= st_level))
+        gap, conc = _pairs_from_sorted(own_st, group, common=False)
+        ss, ssw = accuracy(gap, conc)
+        own_rep = pop.filter(rep_level.is_null() | (pl.col("pred_rank") <= rep_level))
         out = {
-            "mae": mae(f),
-            "pinball_q10": pinball_loss(f, 0.1),
-            "pinball_q50": pinball_loss(f, 0.5),
-            "pinball_q90": pinball_loss(f, 0.9),
+            "mae": masked_mean(np.abs(q50 - y)),
+            "mae_mean": masked_mean(np.abs(mean - y)),
+            "pinball_q10": pin(0.1, q10),
+            "pinball_q50": pin(0.5, q50),
+            "pinball_q90": pin(0.9, q90),
             "coverage_80": coverage,
             "coverage_gap": abs(coverage - nominal) if not math.isnan(coverage) else math.nan,
-            "interval_width": interval_width(f),
-            "spearman": spearman_within(f, levels=levels),
-            "start_sit": float(conc.mean()) if conc.size else math.nan,
-            "start_sit_weighted": float((gap * conc).sum() / total_gap) if total_gap > 0 else math.nan,
+            "interval_width": float((q90 - q10)[both].mean()) if both.any() else math.nan,
+            "spearman": _mean_or_nan(_spearman_table(own_rep, group, 8)["rho"].to_numpy()),
+            "start_sit": ss,
+            "start_sit_weighted": ssw,
         }
-        if has_boom:
-            out["brier_boom"] = brier(f, "boom_prob", "boom_actual")
-            out["calib_slope_boom"] = calibration_slope(f, "boom_prob", "boom_actual")
-        if has_bust:
-            out["brier_bust"] = brier(f, "bust_prob", "bust_actual")
-            out["calib_slope_bust"] = calibration_slope(f, "bust_prob", "bust_actual")
+        if has_ref:
+            com_st = pop.filter(st_level.is_not_null() & (pl.col(REF_RANK) <= st_level))
+            cgap, cconc = _pairs_from_sorted(com_st, group, common=True)
+            css, cssw = accuracy(cgap, cconc)
+            com_rep = pop.filter(rep_level.is_null() | (pl.col(REF_RANK) <= rep_level))
+            out["spearman_common"] = _mean_or_nan(_spearman_table(com_rep, group, 8)["rho"].to_numpy())
+            out["start_sit_common"] = css
+            out["start_sit_common_weighted"] = cssw
+        for kind, present in (("boom", has_boom), ("bust", has_bust)):
+            if not present:
+                continue
+            p, o = arr(pop, f"{kind}_prob"), arr(pop, f"{kind}_actual")
+            keep = ~np.isnan(p) & ~np.isnan(o)
+            p, o = p[keep], o[keep]
+            out[f"brier_{kind}"] = _mean_or_nan((p - o) ** 2)
+            out[f"calib_slope_{kind}"] = _calibration_slope_arrays(p, o)
         if has_pit:
-            out["pit_max_dev"] = pit_max_deviation(f)
+            out["pit_max_dev"] = _pit_max_dev_counts(_pit_counts(arr(pop, "pred_cdf_at_actual"), 10))
         return out
 
     return bundle
@@ -987,6 +1210,7 @@ def metric_functions(
     """Named scalar metric functions (for ad-hoc :func:`bootstrap_ci` calls)."""
     return {
         "mae": mae,
+        "mae_mean": mae_mean,
         "pinball_q10": pinball(0.1),
         "pinball_q50": pinball(0.5),
         "pinball_q90": pinball(0.9),
@@ -1374,6 +1598,7 @@ __all__ = [
     "KEY_COLUMNS",
     "NOMINAL_COVERAGE",
     "OPTIONAL_COLUMNS",
+    "REF_RANK",
     "REPLACEMENT_LEVEL",
     "REQUIRED_COLUMNS",
     "SLOT_ELIGIBILITY",
@@ -1387,6 +1612,7 @@ __all__ = [
     "bootstrap_ci",
     "brier",
     "calibration_slope",
+    "cluster_universe",
     "compare",
     "evaluate",
     "frame_to_markdown",
@@ -1396,15 +1622,19 @@ __all__ = [
     "lineup_efficiency",
     "lineup_efficiency_mean",
     "mae",
+    "mae_mean",
     "metric_bundle",
     "metric_functions",
     "paired_bootstrap",
+    "paired_bundle_bootstrap",
+    "percentile_interval",
     "pinball",
     "pinball_loss",
     "pit_histogram",
     "pit_max_deviation",
     "population",
     "rank_within",
+    "reference_ranks",
     "reliability_table",
     "replacement_filter",
     "spearman_by_group",
@@ -1416,4 +1646,5 @@ __all__ = [
     "startable_population",
     "to_markdown",
     "validate_frame",
+    "with_reference_rank",
 ]

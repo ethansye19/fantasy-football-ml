@@ -455,3 +455,52 @@ def test_compare_paired_delta_and_alignment():
     assert "delta model" in md
     aligned, dropped = m.align_frames({"baseline": partial, "model": good})
     assert dropped["baseline"] == 0 and dropped["model"] == good.height - partial.height
+
+
+def test_bundle_matches_individual_metric_functions():
+    """The single-pass bundle returns exactly what the individual functions return."""
+    rng = np.random.default_rng(11)
+    base = synth_actuals(weeks=range(1, 5), seed=3)
+    n = base.height
+    q50 = np.round(base["talent"].to_numpy() + rng.normal(0, 3, n))  # rounding creates ties
+    frame = with_preds(base, q50, q50 - 4, q50 + 4).with_columns(
+        pl.Series("active", rng.random(n) > 0.15),
+        pl.Series("pred_mean", q50 + 0.5),
+        pl.Series("rank_pred", rng.permutation(n).astype(float)),
+        pl.Series("boom_prob", rng.uniform(0, 1, n)),
+        pl.Series("boom_actual", (rng.random(n) > 0.7).astype(float)),
+        pl.Series("pred_cdf_at_actual", rng.uniform(0, 1, n)),
+    )
+    frame = frame.with_columns(
+        pl.when(pl.col("entity_id").str.ends_with("3")).then(None).otherwise(pl.col("pred_q10")).alias("pred_q10"),
+        pl.when(pl.col("entity_id").str.ends_with("5")).then(None).otherwise(pl.col("actual")).alias("actual"),
+    )
+    other = frame.with_columns((pl.col("pred_q50") + pl.Series(rng.normal(0, 5, n))).alias("pred_q50"))
+    frames = m.with_reference_rank({"a": m.validate_frame(frame), "b": m.validate_frame(other)})
+    f = frames["a"]
+    # a replicate-tagged resample (a week drawn twice) must agree too
+    idx = m._cluster_index(f, m.CLUSTER)
+    keys = list(idx)
+    resampled = m._resample(f, idx, keys, np.array([0, 0, 2, 3]))
+    for sample in (f, resampled):
+        got = m.metric_bundle(sample.columns)(sample)
+        want = {
+            "mae": m.mae(sample),
+            "mae_mean": m.mae_mean(sample),
+            "pinball_q10": m.pinball_loss(sample, 0.1),
+            "pinball_q50": m.pinball_loss(sample, 0.5),
+            "pinball_q90": m.pinball_loss(sample, 0.9),
+            "coverage_80": m.interval_coverage(sample),
+            "interval_width": m.interval_width(sample),
+            "spearman": m.spearman_within(sample),
+            "start_sit": m.start_sit_accuracy(sample).accuracy,
+            "start_sit_weighted": m.start_sit_accuracy(sample).weighted_accuracy,
+            "spearman_common": m.spearman_within(sample, common=True),
+            "start_sit_common": m.start_sit_accuracy(sample, common=True).accuracy,
+            "start_sit_common_weighted": m.start_sit_accuracy(sample, common=True).weighted_accuracy,
+            "brier_boom": m.brier(sample, "boom_prob", "boom_actual"),
+            "calib_slope_boom": m.calibration_slope(sample, "boom_prob", "boom_actual"),
+            "pit_max_dev": m.pit_max_deviation(sample),
+        }
+        for key, value in want.items():
+            assert got[key] == pytest.approx(value, rel=1e-12, abs=1e-12, nan_ok=True), key
