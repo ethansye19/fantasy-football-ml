@@ -76,6 +76,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-074 | 2026-11-03 | accepted (modified) | Start/sit and Spearman are compared on one model-agnostic pair set; each model's own top-N is secondary |
 | D-075 | 2026-11-03 | accepted | Backtest run ids resume; `ffml backtest --run-id --n-jobs` |
 | D-076 | 2026-11-03 | accepted | Registry transitions require an evaluator report with `Verdict: APPROVED` |
+| D-077 | 2026-11-03 | accepted | Start/sit reference ranking = mean raw `pred_q50` of the primary-configuration models compared; ties by entity id |
+| D-078 | 2026-11-03 | accepted | Verdict rule: 95% paired week-clustered interval entirely on the good side of zero; headline compares calibrated forms, raw grid alongside |
+| D-079 | 2026-11-03 | accepted | Harness actuals (`ffml/scoring` presets) are the scoring of record; the consensus is scored against them |
+| D-080 | 2026-11-03 | accepted | The release-candidate inputs audit and team/DST leakage checks are part of the Gate 3 evaluator audit |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
