@@ -160,9 +160,13 @@ def predict(
     ros: bool = typer.Option(True, help="Also produce rest-of-season weeks"),
 ) -> None:
     """Produce the predictions snapshot (simulated stat lines) for a week."""
-    from ffml.sim.predict import run_predict
+    from ffml.sim.predict import LivePredictionBlocked, run_predict
 
-    run_predict(season=season, week=week, rest_of_season=ros)
+    try:
+        run_predict(season=season, week=week, rest_of_season=ros)
+    except LivePredictionBlocked as exc:
+        console.print(f"[yellow]prediction blocked:[/yellow] {exc}")
+        raise typer.Exit(code=2) from None
 
 
 @app.command()
