@@ -84,6 +84,9 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-082 | 2026-11-03 | accepted (owner) | If the chain does not beat the consensus, the report says so plainly; no consensus features, no verdict-rule changes, no holdout tuning |
 | D-083 | 2026-11-03 | accepted (owner) | The chain timing budget is rerun on an idle machine after the backtests and included in the Gate 3 evidence |
 | D-084 | 2026-11-03 | accepted (owner) | The owner sees the final validation report before the one-time holdout session opens |
+| D-085 | 2026-11-03 | accepted (owner) | Coverage acceptance uses tie-aware (randomized PIT) coverage, 75-85% band, fixed seed, same rule for every model; frozen before 2025; recorded in the model card as a rule change made after validation |
+| D-086 | 2026-11-03 | accepted (owner) | Boom/bust calibration per position, walk-forward (out-of-sample), before/after shown for every position, frozen before 2025; kicker boom/bust hidden or marked low confidence if still poorly calibrated |
+| D-087 | 2026-11-03 | accepted (owner) | The owner sees the updated report again before the holdout session |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -475,6 +478,32 @@ secondary column.
    evidence.
 4. The final validation report goes to the owner before the one-time holdout
    session (EV-3.4) opens; the session waits for the owner's go-ahead.
+
+## D-085 to D-087 Owner decisions after the validation report (2026-11-03)
+
+**D-085, coverage rule change after validation.** The closed-interval rule
+counted every scoreless game as covered whenever a model's 10th percentile
+was exactly 0, which the chain correctly predicts for many RB, WR and TE
+player-weeks (ties at q10: RB 15.7%, WR 24.6%, TE 40.1%). Acceptance now uses
+tie-aware coverage: the share of rows whose randomized PIT, drawn uniformly
+between F(y-) and F(y) from the quantile knots with a fixed seed (0), lies in
+(0.1, 0.9). The 75-85% band is unchanged. The same rule applies to every model.
+Closed-interval coverage and both tails (below q10, tied at q10, tied at q90,
+above q90) are still reported by position. This was changed after the
+2022-2024 results were seen and before 2025 was opened; the model card says
+so.
+
+**D-086, per-position boom/bust calibration.** The isotonic boom/bust
+calibrator was pooled across positions, and kicker boom/bust probabilities
+were poorly calibrated (slopes 0.14-0.26). It becomes per position, fitted
+walk-forward on earlier weeks only (pooled fallback when a position has too
+few rows), so every reported result stays out-of-sample. The report shows
+before and after for every position. The frozen calibrator for the holdout
+and live use is fitted on 2022-2024 and saved with the candidate before 2025
+is opened. If kicker slopes remain poor, the app hides kicker boom/bust or
+marks it low confidence, and the model card discloses it.
+
+**D-087.** The owner reviews the updated report before the holdout session.
 
 ## Owner answers received 2026-11-01
 
