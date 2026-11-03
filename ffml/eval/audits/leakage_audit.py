@@ -20,6 +20,10 @@
    correlation are reported next to the largest correlation with each target
    shuffled, as a noise reference.
 
+Checks 2 and 3 run on ``player_week`` (item names without a suffix) and on
+the other feature datasets the chain reads, ``team_week`` and ``dst_week``
+(item names with the dataset in parentheses).
+
 Inputs that do not exist yet produce SKIP items rather than errors.
 """
 
@@ -43,6 +47,8 @@ from ffml.holdout import assert_seasons_allowed
 LEAKAGE_TEST = "tests/features/test_leakage.py"
 VALIDATION_SEASONS: tuple[int, ...] = (2022, 2023, 2024)
 DATASET = "player_week"
+#: further feature datasets the release candidate reads (audited the same way)
+SECONDARY_DATASETS: tuple[str, ...] = ("team_week", "dst_week")
 TIME_COLUMNS: tuple[str, ...] = ("cutoff_ts", "asof_ts", "kickoff_utc")
 #: columns that identify a row and are not features
 META_COLUMNS: frozenset[str] = frozenset(
@@ -178,22 +184,30 @@ def _first_kickoff_from_dim_game(seasons: Sequence[int]) -> pl.DataFrame | None:
     return week_first_kickoff(games)
 
 
-def timestamp_audit(report: AuditReport, frame: pl.DataFrame, first_kickoff: pl.DataFrame | None, source: str) -> None:
+def _item(name: str, dataset: str) -> str:
+    return name if dataset == DATASET else f"{name} ({dataset})"
+
+
+def timestamp_audit(
+    report: AuditReport, frame: pl.DataFrame, first_kickoff: pl.DataFrame | None, source: str,
+    dataset: str = DATASET,
+) -> None:
+    name = _item("timestamp audit", dataset)
     missing = [c for c in TIME_COLUMNS if c not in frame.columns]
     if missing:
-        report.add("timestamp audit", "FAIL", f"{DATASET} lacks timestamp columns {missing}")
+        report.add(name, "FAIL", f"{dataset} lacks timestamp columns {missing}")
         return
     counts = check_timestamps(frame, first_kickoff)
     bad = {k: v for k, v in counts.items() if k not in _INFO_KEYS and v}
     evidence = [f"{k}: {v}" for k, v in counts.items()]
     detail = f"{counts['rows']} rows checked against week first kickoff from {source}"
     if bad:
-        report.add("timestamp audit", "FAIL", f"{detail}; violations {bad}", evidence)
+        report.add(name, "FAIL", f"{detail}; violations {bad}", evidence)
     else:
-        report.add("timestamp audit", "PASS", f"{detail}; no violations", evidence)
+        report.add(name, "PASS", f"{detail}; no violations", evidence)
     if counts["asof_not_cutoff_minus_1h"]:
         report.add(
-            "as-of offset", "WARN",
+            _item("as-of offset", dataset), "WARN",
             f"{counts['asof_not_cutoff_minus_1h']} rows where asof_ts is not cutoff_ts - 1h (D-046 historical rule)",
         )
 
@@ -365,10 +379,13 @@ def probe_target_copies(
     return out
 
 
-def shuffle_probe(report: AuditReport, frame: pl.DataFrame, seed: int, allowlist: Iterable[str]) -> None:
+def shuffle_probe(
+    report: AuditReport, frame: pl.DataFrame, seed: int, allowlist: Iterable[str], dataset: str = DATASET
+) -> None:
+    name = _item("shuffle probe", dataset)
     res = probe_target_copies(frame, seed=seed, allowlist=allowlist)
     if not res["targets"]:
-        report.add("shuffle probe", "SKIP", f"{DATASET} has no y_ target columns")
+        report.add(name, "SKIP", f"{dataset} has no y_ target columns")
         return
     flagged = res["flagged"]
     top_pairs = res["top_pairs"]
@@ -401,11 +418,11 @@ def shuffle_probe(report: AuditReport, frame: pl.DataFrame, seed: int, allowlist
             f"FLAG {f} vs {t} [{s}]: corr {c:.4f} (n={n}){' (exact copy)' if e else ''}"
             for f, t, s, c, n, e in flagged
         ] + evidence
-        report.add("shuffle probe", "FAIL", f"{len(flagged)} near-copies of targets; {detail}", evidence)
+        report.add(name, "FAIL", f"{len(flagged)} near-copies of targets; {detail}", evidence)
     elif not res["pairs_computed"]:
-        report.add("shuffle probe", "WARN", f"inconclusive, no pair had enough overlap; {detail}", evidence)
+        report.add(name, "WARN", f"inconclusive, no pair had enough overlap; {detail}", evidence)
     else:
-        report.add("shuffle probe", "PASS", f"no feature copies a target; {detail}", evidence)
+        report.add(name, "PASS", f"no feature copies a target; {detail}", evidence)
 
 
 # --------------------------------------------------------------------------- #
@@ -429,6 +446,7 @@ def audit_leakage(
     seed: int = 0,
     allowlist: Iterable[str] = COPY_ALLOWLIST,
     first_kickoff: pl.DataFrame | None = None,
+    secondary: Sequence[str] = SECONDARY_DATASETS,
 ) -> AuditReport:
     """Run the leakage audit (see module docstring); missing inputs become SKIP items."""
     root = Path(root)
@@ -455,6 +473,14 @@ def audit_leakage(
         source = "dim_game" if first_kickoff is not None else f"{DATASET} itself (dim_game unavailable)"
     timestamp_audit(report, frame, first_kickoff, source)
     shuffle_probe(report, frame, seed, allowlist)
+    for dataset in secondary:
+        other = _read_features(features_root, dataset, seasons)
+        if other is None or other.is_empty():
+            for check in ("timestamp audit", "shuffle probe"):
+                report.add(_item(check, dataset), "SKIP", f"no {dataset} rows for seasons {list(seasons)}")
+            continue
+        timestamp_audit(report, other, first_kickoff, source.replace(DATASET, dataset), dataset)
+        shuffle_probe(report, other, seed, allowlist, dataset)
     return report
 
 
@@ -462,6 +488,7 @@ __all__ = [
     "COPY_ALLOWLIST",
     "LEAKAGE_TEST",
     "MIN_OVERLAP",
+    "SECONDARY_DATASETS",
     "VALIDATION_SEASONS",
     "audit_leakage",
     "check_timestamps",
