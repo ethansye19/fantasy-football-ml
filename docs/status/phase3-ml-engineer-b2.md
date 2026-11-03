@@ -192,3 +192,56 @@ Next:
 - Add ChainModel primary and final_report to `default_20261102` (resume command above), then tabulate chain versus baselines and challenger.
 - Fit and save frozen calibration next to the chain artifact once it is registered as a candidate.
 - Build a live roster universe for the baselines.
+
+---
+
+# Follow-up / ML Engineer B2 / calibration v2 (D-086)
+Date: 2026-11-03
+Scope: per-position walk-forward isotonic boom/bust calibration with a pooled fallback; recalibrate the main and ablation runs without refitting; freeze the calibrator next to the chain candidate and register the candidate.
+
+Done:
+- `ffml/models/calibration.py` (3455c29): calibration version `v2-per-position-isotonic`.
+  - `OnlineIsotonic(by=("position",), min_count=200)` fits one map per position for each predicted week. Maps use earlier weeks only and the same kickoff rule. A position under `min_count` uses the map pooled over positions, then the identity.
+  - The source of each row is written to `cal_boom_source` / `cal_bust_source` (`position`, `pooled`, `identity`).
+  - `fit_final` freezes `(scoring, position)` maps plus a pooled map per scoring. The format is `ffml.calibration/2`; v1 files still load.
+  - `FrozenCalibration.apply` writes the sources and `calibration_version`.
+  - Conformal quantile offsets are unchanged: the calibrated quantile columns are identical to v1 across all 936,096 calibrated rows.
+- `ffml/eval/harness.py`: `calibration_version` goes on the calibrated rows (null on raw rows) and into the manifest (`calibration_version`, `calibration.version`). Every combine recalibrates from the raw parts, so `--recalibrate` was not needed.
+- `ffml/models/registry.py`: `register_candidate(..., calibration=path)` records the file's path, SHA-256 and version.
+- Tests:
+  - `tests/models/test_calibration.py` (+5): per-position maps use only earlier weeks (kicker outcomes flipped from week w on leave every position's week-w probabilities and sources unchanged); per-position beats pooled on a flat kicker truth; pooled-then-identity fallback with sources; frozen per-position round trip, unknown scoring, `use_scoring`, and a v1 file.
+  - `tests/eval/test_harness.py` (+1): version and source columns, and recombine reproducing the file without refits.
+  - `tests/models/test_registry.py` (+1): calibration field.
+- Recalibrated `data/backtests/default_20261102` and `data/backtests/ablations_20261103`. The v1 manifests are kept as `_manifest_cal_v1_pooled_isotonic.json`, and the ablation v1 predictions as `predictions_cal_v1_pooled_isotonic.parquet`. The preserved main-run v1 file was not touched (SHA-256 still `d4a420c0c95c57ca0464a186861b356c05ca4078db0ee7bd6f5fbaf843d8027c`).
+- Frozen calibrator for the candidate: `artifacts/models/chain/chain_v1-primary-c2024w19-20261102T222634Z/calibration.json`.
+  - SHA-256 `860af8926e75b93e781eb94a0c6055206b8fdf78b9e539f072eb80293a21da19`.
+  - Fitted on the 87,576 raw `chain_v1` rows of 2022-2024 under ppr, half and std.
+  - Contents: 18 offset rows, and 18 per-position maps plus 3 pooled maps for each of boom and bust.
+- Registry: `artifacts/models/REGISTRY.json` holds `chain_v1-primary-c2024w19-20261102T222634Z` as `candidate`, with `backtest_run_id` `default_20261102`, the calibration hash above, and `evaluator_report` null. Nothing is approved.
+
+Evidence:
+- `.venv/Scripts/python -m pytest tests/models/test_calibration.py tests/eval/test_harness.py tests/models/test_registry.py -q`: `32 passed in 8.24s`.
+- `.venv/Scripts/python -m pytest -q`: `407 passed, 1 warning in 126.85s (0:02:06)`. One earlier full run had `1 failed, 406 passed`, in `tests/eval/test_report_backtest.py::test_build_report_end_to_end`. That test passed alone (20 passed) and in the rerun of the whole suite.
+- `ruff check .`: `All checks passed!`
+- `ffml backtest --config default --run-id default_20261102 --n-jobs 1`: real 0m50.8s (harness 46.9 s, combine 46.5 s). All 10 models skipped every part, so nothing was refit. 1,872,192 rows (936,096 raw + 936,096 calibrated), as before. Git 3455c29.
+- `ffml backtest --config ablations --run-id ablations_20261103 --n-jobs 1`: real 0m20.8s, 525,456 rows (262,728 + 262,728).
+- Raw rows identical: SHA-256 of the sorted raw rows (uncompressed IPC, v1 columns) is `2cb459a37800f06ba7e57befb1bab7141c1a34a059b258983eb3ce1efb03ebd5` in both the preserved and the new main file (936,096 rows). For the ablation run it is `54b0c3c6b04ab237379b48ee10bdad47bfef808f74904125878d78c85d24fc32` in both (262,728 rows). The three new columns are null on every raw row.
+- Sources: every 2022-2024 `chain_v1+cal` row in the main run used its own position map, because 2021 warms it up. The ablation run, which has no 2021, uses identity and then pooled maps in the first weeks of 2022.
+- Before/after, `chain_v1+cal`, PPR 2022-2024 (logistic calibration slope / Brier; quick check, the evaluator does the formal version):
+
+  | pos | boom slope raw / v1 / v2 | boom Brier raw / v1 / v2 | bust slope raw / v1 / v2 | bust Brier raw / v1 / v2 |
+  | --- | --- | --- | --- | --- |
+  | QB | 1.287 / 1.185 / 0.923 | 0.117 / 0.116 / 0.116 | 1.313 / 1.199 / 0.961 | 0.189 / 0.189 / 0.190 |
+  | RB | 1.162 / 1.108 / 0.966 | 0.088 / 0.088 / 0.088 | 1.176 / 1.105 / 1.016 | 0.143 / 0.142 / 0.142 |
+  | WR | 0.893 / 0.913 / 0.946 | 0.064 / 0.064 / 0.065 | 1.066 / 1.012 / 1.006 | 0.148 / 0.148 / 0.148 |
+  | TE | 0.946 / 0.956 / 0.930 | 0.052 / 0.052 / 0.052 | 1.028 / 1.005 / 0.949 | 0.113 / 0.113 / 0.114 |
+  | K | 0.155 / 0.142 / 0.118 | 0.177 / 0.177 / 0.177 | 0.259 / 0.153 / 0.456 | 0.232 / 0.233 / 0.229 |
+  | DST | 1.454 / 1.295 / 0.774 | 0.165 / 0.164 / 0.165 | 1.244 / 1.102 / 0.289 | 0.221 / 0.221 / 0.222 |
+
+Not done / findings:
+- Kicker boom is still poorly calibrated after v2 (slope 0.118). The raw kicker probabilities carry almost no signal, and isotonic maps cannot add any. Under D-086 the app should hide kicker boom/bust or mark it low confidence.
+- DST bust gets worse under v2 (slope 1.102 to 0.289) while Brier is flat. With about 32 rows per week, the per-position isotonic maps overfit noisy steps. DST should be treated like K, or given a smoother per-position method.
+- Brier moves by at most 0.004 at any position, so v2 mainly changes slopes, not accuracy.
+
+Decisions proposed:
+- Proposal (next free number): for positions whose walk-forward slope stays outside 0.7-1.3 after v2 (today K boom, K bust, DST bust), recalibrate with a two-parameter logistic (Platt) map per position. Alternatively, keep isotonic and require the larger `min_count` for those positions before a per-position map is used. Either way, confirm walk-forward before the holdout freeze. Until then, the frozen v2 file stands, and K, plus DST bust, are shown as low confidence in the app.
