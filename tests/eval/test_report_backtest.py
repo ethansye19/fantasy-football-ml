@@ -333,8 +333,18 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
         "| literal | WARN | docstrings only |\n",
         encoding="utf-8",
     )
+    # a v1 report and an earlier-calibration file for the v2 sections (D-085, D-086)
+    (reports / "backtest_v1.md").write_text(
+        "# v1\n\n| item | value |\n| --- | --- |\n| predictions file sha256 | `abcdef0123456789...` (matches) |\n",
+        encoding="utf-8")
+    pred = pl.read_parquet(run / "predictions.parquet")
+    before = pred.with_columns(
+        pl.when(pl.col("model") == "chain_v1+cal").then((pl.col("boom_prob") * 0.5).clip(0.01, 0.99))
+        .otherwise(pl.col("boom_prob")).alias("boom_prob"))
+    before.write_parquet(run / "predictions_cal_v1_pooled_isotonic.parquet")
     kw = dict(n_boot=6, n_jobs=1, include_consensus=True, cross_check=True, reports_dir=reports,
-              data_dir=data, positions=("QB", "WR", "K"))
+              data_dir=data, positions=("QB", "WR", "K"), calibration_before="predictions_cal_v1_pooled_isotonic.parquet",
+              previous_report="backtest_v1")
     path = R.build_backtest_report(run, "backtest_test", **kw)
     text = path.read_text(encoding="utf-8")
     for heading in ("## 1. Setup", "## 3. Headline metrics", "## 4. By week", "## 5. Calibration",
@@ -354,8 +364,20 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     assert "### 8.1 The Thursday effect" in text and "MISMATCH" not in text
     assert "on early-game player-weeks and" in text
     assert "Against the FantasyPros consensus: every position and metric" in text
-    assert "### 5.1 Interval coverage detail" in text and "tie-aware (diagnostic)" in text
-    assert "calibrated result (acceptance)" in text
+    assert "### 5.1 Interval coverage detail" in text and "tie-aware (acceptance, D-085)" in text
+    # v2: changes section, rule-change statement, the same rule for every model, boom/bust before and after
+    assert text.index("## Changes from v1") < text.index("## 1. Setup")
+    assert "(v1: `abcdef0123456789...`)" in text and "Quantile columns of `chain_v1+cal`" in text
+    assert "unchanged on" in text  # only boom_prob differs in the before file
+    assert "**Rule change (D-085).**" in text
+    assert "changed after the 2022-2024 results were seen and before the" in text
+    assert "`reports/backtest_2026-11-03.md`, which stays committed unchanged" in text
+    assert "The same coverage rule applied to every calibrated model (tie-aware" in text
+    assert "### 5.2 Boom and bust calibration per position, before and after (D-086)" in text
+    assert "low confidence after" in text and "Reliability of `boom_prob` by position" in text
+    assert (data / "backtest_test_boom_bust.csv").exists()
+    assert "tie-aware coverage gap" in text
+    assert "calibrated result (acceptance, D-085)" in text and "v1 rule result (superseded)" in text
     assert (data / "backtest_test_coverage.csv").exists()
     assert "Reliability of `boom_prob`" in text
     assert "- Holdout audit: **PASS** (PASS 4, WARN 1)." in text
@@ -564,6 +586,74 @@ def test_tail_decomposition_and_tie_aware_coverage():
     # without ties the diagnostic is close to the closed coverage
     smooth = frame.with_columns(pl.Series("actual", rng.uniform(0.5, 9.5, n)))
     assert abs(R.tie_aware_coverage(smooth, bounds) - M.interval_coverage(M.validate_frame(smooth))) < 0.06
+
+
+def _knot_frame(y, n_weeks=4):
+    n = len(y)
+    return pl.DataFrame({
+        "entity_id": [f"WR{i:03d}" for i in range(n)], "position": ["WR"] * n, "season": [2022] * n,
+        "week": [1 + i % n_weeks for i in range(n)], "model": ["m"] * n, "actual": np.asarray(y, dtype=float),
+        "active": [True] * n, "pred_mean": [4.0] * n, "pred_q05": [0.0] * n, "pred_q10": [0.0] * n,
+        "pred_q25": [2.0] * n, "pred_q50": [4.0] * n, "pred_q75": [6.0] * n, "pred_q90": [8.0] * n,
+        "pred_q95": [9.0] * n,
+    })
+
+
+def test_tie_aware_coverage_is_seeded_and_equals_closed_without_ties():
+    rng = np.random.default_rng(3)
+    bounds = pl.DataFrame({"position": ["WR"], "pos_min": [-2.0], "pos_max": [40.0], "season": [2022]},
+                          schema_overrides={"season": pl.Int32})
+    # no actual equals a knot: tie-aware coverage is exactly the closed-interval coverage
+    smooth = _knot_frame(rng.uniform(0.25, 12.0, 500))
+    assert R.tie_aware_coverage(smooth, bounds) == M.interval_coverage(M.validate_frame(smooth))
+    # with ties: deterministic for seed 0, and the per-row column is reused by every caller
+    tied = _knot_frame(np.where(np.arange(500) % 3 == 0, 0.0, rng.uniform(0.25, 12.0, 500)))
+    a = R.with_randomized_pit(tied, bounds, seed=0)
+    b = R.with_randomized_pit(tied.sample(fraction=1.0, shuffle=True, seed=9), bounds, seed=0)
+    key = ["entity_id", "season", "week"]
+    assert a.sort(key)[M.RAND_PIT].equals(b.sort(key)[M.RAND_PIT])  # row order does not matter
+    assert R.tie_aware_coverage(a) == R.tie_aware_coverage(tied, bounds, seed=0)
+    assert not a[M.RAND_PIT].equals(R.with_randomized_pit(tied, bounds, seed=1)[M.RAND_PIT])  # the seed matters
+    assert R.tie_aware_coverage(a) < M.interval_coverage(M.validate_frame(tied)) - 0.25
+    # the bundle reads the same column (and the inactive rows get no draw)
+    bundle = M.metric_bundle(a.columns)(M.validate_frame(R._slim(a)))
+    assert bundle["coverage_tie_aware"] == R.tie_aware_coverage(a)
+    assert bundle["coverage_gap_tie_aware"] == pytest.approx(abs(bundle["coverage_tie_aware"] - 0.8))
+    inactive = R.with_randomized_pit(tied.with_columns(pl.lit(False).alias("active")), bounds)
+    assert inactive[M.RAND_PIT].null_count() == inactive.height
+    # a model with only q10/q50/q90 (the consensus) gets the same rule from its own knots
+    three = smooth.drop("pred_q05", "pred_q25", "pred_q75", "pred_q95")
+    assert R.knot_columns(three) == ([0.1, 0.5, 0.9], ["pred_q10", "pred_q50", "pred_q90"])
+    assert R.tie_aware_coverage(three, bounds) == M.interval_coverage(M.validate_frame(three))
+
+
+def test_low_confidence_flag_rule():
+    assert not R.low_confidence(1.0, 1.3)
+    assert not R.low_confidence(0.8, 0.95) and not R.low_confidence(1.2, 1.5)  # band edges are inside
+    assert R.low_confidence(0.79, 0.95) and R.low_confidence(1.21, 1.4)  # outside [0.8, 1.2]
+    assert R.low_confidence(0.85, 0.79)  # interval wholly below 0.8
+    assert R.low_confidence(math.nan, math.nan)  # cannot be estimated
+    assert not R.low_confidence(0.9, math.nan)  # no interval: the point rule decides
+
+
+def test_boom_bust_calibration_before_after():
+    base = truth(weeks=tuple(range(1, 9)))
+    after = model_rows(base, "chain_v1+cal", 1.0, 5, probs=True)
+    rng = np.random.default_rng(4)
+    # calibrated probabilities: draw outcomes from them; "before" squashes them towards 0.5 (under-confident)
+    p = rng.uniform(0.02, 0.98, after.height)
+    y = (rng.random(after.height) < p).astype(float)
+    after = after.with_columns(pl.Series("boom_prob", p), pl.Series("boom_actual", y),
+                               pl.Series("bust_prob", 1 - p), pl.Series("bust_actual", 1 - y))
+    before = after.with_columns((0.5 + (pl.col("boom_prob") - 0.5) * 0.3).alias("boom_prob"))
+    stats, rel = R.boom_bust_calibration(before, after, ("WR", "RB"), n_boot=40)
+    s = {(r["position"], r["kind"], r["version"]): r for r in stats.iter_rows(named=True)}
+    assert s[("WR", "boom", "after")]["low_confidence"] is False
+    assert 0.8 <= s[("WR", "boom", "after")]["slope"] <= 1.2
+    assert s[("WR", "boom", "before")]["slope"] > 1.2 and s[("WR", "boom", "before")]["low_confidence"] is True
+    r = s[("WR", "boom", "after")]
+    assert r["slope_lo"] <= r["slope"] <= r["slope_hi"] and abs(r["intercept"]) < 0.5
+    assert set(rel["version"].unique()) == {"before", "after"} and set(rel["kind"].unique()) == {"boom", "bust"}
 
 
 def test_coverage_paragraph_is_neutral_and_names_failing_positions():

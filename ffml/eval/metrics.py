@@ -199,12 +199,18 @@ HIGHER_IS_BETTER: dict[str, bool | None] = {
     "brier_bust": False,
     "calib_slope_boom": None,
     "calib_slope_bust": None,
+    "calib_intercept_boom": None,
+    "calib_intercept_bust": None,
+    "coverage_tie_aware": None,
+    "coverage_gap_tie_aware": False,
     "pit_max_dev": False,
     "lineup_efficiency": True,
 }
 
 #: model-agnostic positional rank column (D-074, see module docstring)
 REF_RANK = "ref_rank"
+#: per-row randomized PIT (seeded); when present the bundle adds tie-aware coverage (D-085)
+RAND_PIT = "pit_rand"
 
 _REP = "_rep"  # bootstrap replicate tag (see module docstring)
 _SCORE = "_score"  # ordering score within a group: higher is better, equal only for true ties
@@ -590,11 +596,24 @@ def calibration_slope(frame: pl.DataFrame, prob_col: str, outcome_col: str) -> f
 
 
 def _calibration_slope_arrays(p: np.ndarray, y: np.ndarray) -> float:
+    return calibration_fit(p, y)[1]
+
+
+def calibration_fit(p: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Logistic recalibration ``logit P(y=1) = a + b * logit(p)``: returns ``(a, b)``.
+
+    ``b`` is the calibration slope of :func:`calibration_slope`, ``a`` the
+    intercept (0 and 1 for perfectly calibrated probabilities). Both are NaN
+    when fewer than 10 rows, one outcome class, constant probabilities, or a
+    non-converging fit (separation).
+    """
+    p = np.asarray(p, dtype=float)
+    y = np.asarray(y, dtype=float)
     if p.size < 10 or np.unique(y).size < 2:
-        return math.nan
+        return math.nan, math.nan
     x = logit(np.clip(p, 1e-6, 1 - 1e-6))
     if float(np.ptp(x)) == 0.0:
-        return math.nan
+        return math.nan, math.nan
     design = np.column_stack([np.ones_like(x), x])
     beta = np.zeros(2)
     for _ in range(100):
@@ -604,13 +623,13 @@ def _calibration_slope_arrays(p: np.ndarray, y: np.ndarray) -> float:
         try:
             step = np.linalg.solve(hessian, design.T @ (y - mu))
         except np.linalg.LinAlgError:
-            return math.nan
+            return math.nan, math.nan
         beta = beta + step
         if not np.all(np.isfinite(beta)) or np.max(np.abs(beta)) > 1e3:
-            return math.nan
+            return math.nan, math.nan
         if np.max(np.abs(step)) < 1e-10:
-            return float(beta[1])
-    return math.nan
+            return float(beta[0]), float(beta[1])
+    return math.nan, math.nan
 
 
 def pit_histogram(
@@ -1201,6 +1220,7 @@ def metric_bundle(
     has_bust = {"bust_prob", "bust_actual"} <= cols
     has_pit = "pred_cdf_at_actual" in cols
     has_ref = REF_RANK in cols
+    has_rand_pit = RAND_PIT in cols
     rep_level = _level_expr(levels) if levels is not None else pl.lit(None, dtype=pl.Int32)
     st_level = _level_expr(startable)
 
@@ -1269,9 +1289,17 @@ def metric_bundle(
             keep = ~np.isnan(p) & ~np.isnan(o)
             p, o = p[keep], o[keep]
             out[f"brier_{kind}"] = _mean_or_nan((p - o) ** 2)
-            out[f"calib_slope_{kind}"] = _calibration_slope_arrays(p, o)
+            intercept, slope = calibration_fit(p, o)
+            out[f"calib_slope_{kind}"] = slope
+            out[f"calib_intercept_{kind}"] = intercept
         if has_pit:
             out["pit_max_dev"] = _pit_max_dev_counts(_pit_counts(arr(pop, "pred_cdf_at_actual"), 10))
+        if has_rand_pit:
+            u = arr(pop, RAND_PIT)
+            u = u[~np.isnan(u)]
+            cov = float(((u > 0.1) & (u < 0.9)).mean()) if u.size else math.nan
+            out["coverage_tie_aware"] = cov
+            out["coverage_gap_tie_aware"] = abs(cov - nominal) if not math.isnan(cov) else math.nan
         return out
 
     return bundle
@@ -1700,6 +1728,8 @@ __all__ = [
     "KNOT_COLUMNS",
     "KNOT_LEVELS",
     "TIE_TOL",
+    "RAND_PIT",
+    "calibration_fit",
     "calibration_slope",
     "cdf_limits",
     "cluster_universe",

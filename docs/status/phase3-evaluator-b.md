@@ -210,3 +210,27 @@ Release-candidate recommendation (input for the orchestrator and the owner):
 
 Next:
 - EV-3.4 after the owner's go-ahead: one `holdout_eval` session with the frozen candidate and frozen calibration, then the release note and registry.
+
+## Report generator v2 (D-085, D-086; code only, not run on real data)
+
+Done:
+- D-085, tie-aware coverage acceptance:
+  - `with_randomized_pit` adds one seed-0 randomized PIT per row (`pit_rand`), drawn uniformly on [F(y-), F(y)] from the model's own quantile knots and the prior-season position bounds. The consensus uses its q10/q50/q90.
+  - The bundle reports `coverage_tie_aware` and `coverage_gap_tie_aware` when that column is present. Every section reuses the same draws: acceptance, the verdict's coverage-gap rows, the delta tables and the section 5.1 tail table.
+  - The acceptance table shows the tie-aware result per position (raw and calibrated) beside the superseded closed-interval result. It states that the rule changed after the 2022-2024 results and before the holdout was opened, referring to D-085 and the unchanged v1 report.
+  - A table applies the same rule to every calibrated model.
+  - `coverage_rule="closed"` regenerates v1.
+- D-086, before/after boom/bust calibration:
+  - `boom_bust_calibration` reports, per position, n, Brier, intercept and slope with a 95% week-clustered interval, before and after, plus reliability tables.
+  - `metrics.calibration_fit` now returns the intercept with the slope.
+  - `low_confidence` is fixed now: slope outside [0.8, 1.2], or the slope interval's upper bound below 0.8, or an inestimable slope. The after flag is the operative one.
+- A "Changes from v1" section comes first: the rule change, the recalibration, the predictions sha against v1, and whether the calibrated quantiles changed between the before file and the run.
+- CLI: `--coverage-rule`, `--calibration-before`, `--previous-report`.
+
+Evidence:
+- `pytest tests/eval -q`: `90 passed in 54.04s`.
+  - New tests: seeded tie-aware coverage (deterministic, independent of row order, equal to closed coverage without ties, the same for a q10/q50/q90-only model); the low-confidence rule; before/after calibration; the v2 sections end to end.
+- `ruff check .`: `All checks passed!`
+
+Next:
+- When resumed: `python -m ffml.eval.report_backtest --run-id default_20261102 --ablation-run-id ablations_20261103 --out backtest_2026-11-03_v2 --calibration-before predictions_cal_v1_pooled_isotonic.parquet --previous-report backtest_2026-11-03 --audit evaluator_audit_2026-11-03_gate3`, then review.

@@ -42,6 +42,16 @@ Conventions
   ``coverage_gap = |coverage - 0.80|``.
 * **Calibrated forms.** ``<model>+cal`` rows (online conformal, 2021 warm-up,
   D-072) are compared with each other; the shipped chain is the calibrated one.
+* **Coverage acceptance.** ``coverage_rule="tie_aware"`` (D-085, default): the
+  share of active rows whose randomized PIT (one seed-0 draw per row,
+  :func:`with_randomized_pit`, uniform on ``[F(y-), F(y)]`` from the model's
+  quantile knots) lies in (0.1, 0.9), 75-85% per position after calibration,
+  the same rule for every model; closed-interval coverage, tails and ties stay
+  in section 5.1. The v1 report (``reports/backtest_2026-11-03.md``) used
+  ``coverage_rule="closed"``.
+* **Boom/bust calibration (D-086).** With ``calibration_before`` the report
+  compares the earlier and the current boom/bust calibration per position and
+  flags low confidence by :func:`low_confidence` (fixed before the results).
 
 Only aggregate metrics are written to the markdown report (D-007).
 """
@@ -82,6 +92,13 @@ CONSENSUS = "consensus_ecr"
 POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "K", "DST")
 ACCEPT_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE")
 COVERAGE_BAND: tuple[float, float] = (0.75, 0.85)
+#: acceptance coverage definitions: tie-aware randomized PIT (D-085, current) or the closed interval (v1)
+RULE_TIE_AWARE, RULE_CLOSED = "tie_aware", "closed"
+COVERAGE_RULES: tuple[str, ...] = (RULE_TIE_AWARE, RULE_CLOSED)
+#: D-086 low-confidence rule, fixed before the recalibrated numbers were seen: a calibrated slope
+#: outside this band, or a slope whose 95% interval lies wholly below the floor, is low confidence
+LOW_CONF_SLOPE_BAND: tuple[float, float] = (0.8, 1.2)
+LOW_CONF_SLOPE_FLOOR = 0.8
 LINEUP_SLOTS: tuple[str, ...] = M.DEFAULT_SLOTS
 SCORINGS: tuple[str, ...] = ("ppr", "half", "std")
 VERDICT_METRICS: tuple[str, ...] = (
@@ -99,6 +116,8 @@ METRIC_LABEL: dict[str, str] = {
     "pinball_q90": "pinball q90",
     "coverage_80": "80% coverage",
     "coverage_gap": "coverage gap",
+    "coverage_tie_aware": "tie-aware coverage",
+    "coverage_gap_tie_aware": "tie-aware coverage gap",
     "interval_width": "80% width",
     "spearman_common": "Spearman",
     "spearman": "Spearman (own top-N)",
@@ -112,7 +131,7 @@ KEEP_COLUMNS: tuple[str, ...] = (
     "pred_mean", "pred_q05", "pred_q10", "pred_q25", "pred_q50", "pred_q75", "pred_q90", "pred_q95",
     "actual", "active",
     "boom_prob", "bust_prob", "boom_actual", "bust_actual", "pred_cdf_at_actual", "rank_pred",
-    "active_prob", "pred_mean_uncond", "pred_q50_uncond", M.REF_RANK,
+    "active_prob", "pred_mean_uncond", "pred_q50_uncond", M.REF_RANK, M.RAND_PIT,
 )
 SORT_KEYS: tuple[str, ...] = ("season", "week", "position", "entity_id")
 
@@ -724,24 +743,62 @@ def position_bounds(reference: pl.DataFrame, seasons: Sequence[int]) -> pl.DataF
     return pl.concat(rows, how="vertical_relaxed")
 
 
-def tie_aware_coverage(frame: pl.DataFrame, bounds: pl.DataFrame | None, seed: int = 0) -> float:
-    """Share of the population with a randomized PIT in (0.1, 0.9) (diagnostic, not the acceptance rule)."""
-    f = M.population(M.validate_frame(_slim(frame))).sort(list(SORT_KEYS))
-    if any(c not in f.columns for c in M.KNOT_COLUMNS) or f.is_empty():
-        return math.nan
-    f = f.filter(pl.all_horizontal([pl.col(c).is_not_null() for c in M.KNOT_COLUMNS]))
-    if f.is_empty():
-        return math.nan
+def knot_columns(frame: pl.DataFrame) -> tuple[list[float], list[str]]:
+    """Quantile levels and columns a frame carries (all seven for harness models; q10/q50/q90 for the consensus)."""
+    levels, cols = [], []
+    for level, col in zip(M.KNOT_LEVELS, M.KNOT_COLUMNS, strict=True):
+        if col in frame.columns and frame[col].null_count() < frame.height:
+            levels.append(level)
+            cols.append(col)
+    return levels, cols
+
+
+def with_randomized_pit(frame: pl.DataFrame, bounds: pl.DataFrame | None, seed: int = 0) -> pl.DataFrame:
+    """Add the canonical per-row randomized PIT ``pit_rand`` (D-085), the same rule for every model.
+
+    Rows of the evaluation population (active, with an actual and every
+    quantile knot the model carries) are ordered by season, week, position
+    and entity; one generator seeded with ``seed`` draws ``U`` uniform on
+    ``[F(y-), F(y)]`` for them in that order (:func:`ffml.eval.metrics.randomized_pit`,
+    knots at the model's quantiles plus the prior-season position bounds).
+    Other rows get null. Subsets of the frame (a position, the matched
+    population, a bootstrap resample) reuse these values, so every section
+    sees the same draws.
+    """
+    base = frame.drop([c for c in (M.RAND_PIT, "_ri") if c in frame.columns]).with_row_index("_ri")
+    levels, cols = knot_columns(base)
+    if not cols:
+        return base.with_columns(pl.lit(None, dtype=pl.Float64).alias(M.RAND_PIT)).drop("_ri")
+    eligible = base.filter(
+        pl.col("active").fill_null(False) & pl.col("actual").is_not_null() & pl.col("pred_q50").is_not_null()
+        & pl.all_horizontal([pl.col(c).is_not_null() & ~pl.col(c).cast(pl.Float64).is_nan() for c in cols])
+    ).sort(list(SORT_KEYS))
+    if eligible.is_empty():
+        return base.with_columns(pl.lit(None, dtype=pl.Float64).alias(M.RAND_PIT)).drop("_ri")
     if bounds is not None and not bounds.is_empty():
-        f = f.join(bounds.with_columns(pl.col("season").cast(pl.Int32)), on=["season", "position"], how="left")
+        b = bounds.select(pl.col("season").cast(eligible.schema["season"]), pl.col("position").cast(pl.String),
+                          pl.col("pos_min").cast(pl.Float64), pl.col("pos_max").cast(pl.Float64))
+        eligible = eligible.join(b, on=["season", "position"], how="left", maintain_order="left")
     else:
-        f = f.with_columns(pl.lit(None, dtype=pl.Float64).alias("pos_min"),
-                           pl.lit(None, dtype=pl.Float64).alias("pos_max"))
+        eligible = eligible.with_columns(pl.lit(None, dtype=pl.Float64).alias("pos_min"),
+                                         pl.lit(None, dtype=pl.Float64).alias("pos_max"))
     u = M.randomized_pit(
-        f["actual"].to_numpy(), f.select(M.KNOT_COLUMNS).cast(pl.Float64).to_numpy(),
-        f["pos_min"].cast(pl.Float64).to_numpy(), f["pos_max"].cast(pl.Float64).to_numpy(), seed=seed,
+        eligible["actual"].cast(pl.Float64).to_numpy(), eligible.select(cols).cast(pl.Float64).to_numpy(),
+        eligible["pos_min"].to_numpy(), eligible["pos_max"].to_numpy(), seed=seed, levels=levels,
     )
-    return float(((u > 0.1) & (u < 0.9)).mean())
+    draws = pl.DataFrame({"_ri": eligible["_ri"], M.RAND_PIT: u})
+    return base.join(draws, on="_ri", how="left", maintain_order="left").drop("_ri")
+
+
+def tie_aware_coverage(frame: pl.DataFrame, bounds: pl.DataFrame | None = None, seed: int = 0) -> float:
+    """Share of the population with a randomized PIT in (0.1, 0.9) (D-085 acceptance coverage).
+
+    Uses the frame's ``pit_rand`` when present, else draws it with
+    :func:`with_randomized_pit`.
+    """
+    f = frame if M.RAND_PIT in frame.columns else with_randomized_pit(frame, bounds, seed)
+    u = M.population(M.validate_frame(_slim(f)))[M.RAND_PIT].drop_nulls().to_numpy()
+    return float(((u > 0.1) & (u < 0.9)).mean()) if u.size else math.nan
 
 
 def coverage_detail(
@@ -767,6 +824,79 @@ def coverage_detail(
                 "coverage_tie_aware": tie_aware_coverage(sub, bounds, seed),
             })
     return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def low_confidence(slope: float, slope_hi: float, band: tuple[float, float] = LOW_CONF_SLOPE_BAND,
+                   floor: float = LOW_CONF_SLOPE_FLOOR) -> bool:
+    """D-086 flag, fixed before the recalibrated results were seen.
+
+    A position's calibrated boom or bust probability is low confidence when
+    its calibration slope lies outside ``band`` ([0.8, 1.2]), or the upper
+    bound of the slope's 95% interval is below ``floor`` (0.8). A slope that
+    cannot be estimated (NaN) is low confidence as well.
+    """
+    if slope is None or math.isnan(slope):
+        return True
+    if slope < band[0] or slope > band[1]:
+        return True
+    return slope_hi is not None and not math.isnan(slope_hi) and slope_hi < floor
+
+
+def _calib_bundle(frame: pl.DataFrame) -> dict[str, float]:
+    pop = M.population(frame)
+    out: dict[str, float] = {}
+    for kind in ("boom", "bust"):
+        p = pop[f"{kind}_prob"].cast(pl.Float64).to_numpy() if f"{kind}_prob" in pop.columns else np.empty(0)
+        y = pop[f"{kind}_actual"].cast(pl.Float64).to_numpy() if f"{kind}_actual" in pop.columns else np.empty(0)
+        keep = ~np.isnan(p) & ~np.isnan(y) if p.size else np.zeros(0, dtype=bool)
+        p, y = p[keep], y[keep]
+        intercept, slope = M.calibration_fit(p, y)
+        out[f"{kind}_slope"] = slope
+        out[f"{kind}_intercept"] = intercept
+        out[f"{kind}_brier"] = float(((p - y) ** 2).mean()) if p.size else math.nan
+        out[f"{kind}_n"] = float(p.size)
+    return out
+
+
+def boom_bust_calibration(
+    before: pl.DataFrame, after: pl.DataFrame, positions: Sequence[str] = POSITIONS,
+    n_boot: int = 500, seed: int = 0, alpha: float = 0.05,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Before/after boom and bust calibration per position (D-086), both out-of-sample.
+
+    Returns ``stats`` (position, kind, version, n, Brier, intercept, slope
+    with its 95% week-clustered interval, low-confidence flag) and ``reliability``
+    (position, kind, version, ten equal-width bins). Both frames are paired
+    by season-week in one bootstrap.
+    """
+    stats, rel = [], []
+    for pos in positions:
+        frames = {}
+        for version, f in (("before", before), ("after", after)):
+            sub = f.filter(pl.col("position") == pos)
+            if not sub.is_empty():
+                frames[version] = M.validate_frame(_slim(sub)).sort(list(SORT_KEYS))
+        if not frames:
+            continue
+        boots = M.paired_bundle_bootstrap(frames, _calib_bundle, n_boot, seed=seed) if n_boot > 0 else {}
+        for version, f in frames.items():
+            point = _calib_bundle(f)
+            for kind in ("boom", "bust"):
+                arr = boots.get(version, {}).get(f"{kind}_slope")
+                lo, hi = M.percentile_interval(arr, alpha) if arr is not None else (math.nan, math.nan)
+                slope = point[f"{kind}_slope"]
+                stats.append({
+                    "position": pos, "kind": kind, "version": version, "n": int(point[f"{kind}_n"]),
+                    "brier": point[f"{kind}_brier"], "intercept": point[f"{kind}_intercept"], "slope": slope,
+                    "slope_lo": lo, "slope_hi": hi, "low_confidence": low_confidence(slope, hi),
+                })
+                if f"{kind}_prob" in f.columns and f[f"{kind}_prob"].null_count() < f.height:
+                    table = M.reliability_table(f, f"{kind}_prob", f"{kind}_actual")
+                    rel.append(table.with_columns(pl.lit(pos).alias("position"), pl.lit(kind).alias("kind"),
+                                                  pl.lit(version).alias("version")))
+    stats_frame = pl.DataFrame(stats) if stats else pl.DataFrame()
+    rel_frame = pl.concat(rel, how="vertical_relaxed") if rel else pl.DataFrame()
+    return stats_frame, rel_frame
 
 
 def coverage_paragraph(detail: pl.DataFrame, acc_coverage: Sequence[tuple[str, float, float, bool]],
@@ -968,7 +1098,9 @@ def acceptance(
     models: ModelSet,
     positions: Sequence[str] = POSITIONS,
     band: tuple[float, float] = COVERAGE_BAND,
+    metric: str = "coverage_80",
 ) -> Acceptance:
+    """Section 8 rules; ``metric`` is the coverage definition (``coverage_tie_aware`` under D-085)."""
     lines: list[str] = []
     calibrated = [c for c in cells if c.form == "calibrated"]
     point_metrics = ("mae", "pinball_q10", "pinball_q50", "pinball_q90")
@@ -996,12 +1128,27 @@ def acceptance(
     coverage = []
     focus_cal = models.focus + CAL
     for pos in positions:
-        raw_cov = main.value(pos, models.focus, "coverage_80")
-        cal_cov = main.value(pos, focus_cal, "coverage_80")
+        raw_cov = main.value(pos, models.focus, metric)
+        cal_cov = main.value(pos, focus_cal, metric)
         within = (not math.isnan(cal_cov)) and band[0] <= cal_cov <= band[1]
         if not (math.isnan(raw_cov) and math.isnan(cal_cov)):
             coverage.append((pos, raw_cov, cal_cov, within))
     return Acceptance(lines, coverage)
+
+
+def acceptance_all_models(
+    main: BootResult, labels: Sequence[str], positions: Sequence[str] = POSITIONS, metric: str = "coverage_80",
+    band: tuple[float, float] = COVERAGE_BAND,
+) -> list[tuple[str, str, float, bool]]:
+    """``(model, position, coverage, within band)`` for every listed model: the rule applied identically."""
+    out = []
+    for label in labels:
+        for pos in positions:
+            if not main.has(pos, label):
+                continue
+            v = main.value(pos, label, metric)
+            out.append((label, pos, v, (not math.isnan(v)) and band[0] <= v <= band[1]))
+    return out
 
 
 COMPARATOR_NAME: dict[str, str] = {
@@ -1019,6 +1166,7 @@ METRIC_PHRASE: dict[str, str] = {
     "pinball_q50": "pinball loss at q50",
     "pinball_q90": "pinball loss at q90",
     "coverage_gap": "80% coverage gap (distance from 0.80)",
+    "coverage_gap_tie_aware": "tie-aware 80% coverage gap (distance from 0.80, D-085)",
     "spearman_common": "Spearman rank correlation",
     "start_sit_common": "start/sit accuracy",
 }
@@ -1092,8 +1240,18 @@ def render_verdict(
     positions: Sequence[str] = POSITIONS,
     band: tuple[float, float] = COVERAGE_BAND,
     coverage_text: str = "",
+    metrics: Sequence[str] = VERDICT_METRICS,
+    rule: str = RULE_CLOSED,
+    acc_closed: Acceptance | None = None,
+    all_models: Sequence[tuple[str, str, float, bool]] | None = None,
 ) -> str:
-    """Markdown for the verdict section: grids, acceptance rules, coverage and the complete list."""
+    """Markdown for the verdict section: grids, acceptance rules, coverage and the complete list.
+
+    ``rule`` names the coverage definition behind ``acc`` (closed interval or
+    tie-aware, D-085); with the tie-aware rule, ``acc_closed`` adds the
+    superseded closed-interval result for reference and ``all_models`` the
+    same rule applied to every calibrated model.
+    """
     focus = models.focus
     lines: list[str] = []
     comparators = list(dict.fromkeys(c.comparator for c in cells))
@@ -1111,7 +1269,7 @@ def render_verdict(
         header = ["position", "metric", *[f"vs {c}" for c in comparators]]
         rows = []
         for pos in positions:
-            for metric in VERDICT_METRICS:
+            for metric in metrics:
                 row_cells = {c.comparator: c for c in sub if c.position == pos and c.metric == metric}
                 if not row_cells:
                     continue
@@ -1121,28 +1279,59 @@ def render_verdict(
         lines.append(_md_table(header, rows))
     lines.append("\n### Acceptance rules (MODELING.md section 8, calibrated forms)\n")
     lines.extend(acc.lines or ["- no comparator available"])
-    lines.append(
-        f"\n### Coverage acceptance ({band[0]:.0%}-{band[1]:.0%} per position after calibration, closed interval "
-        "[q10, q90], rule as written)\n"
-    )
-
     def within(v: float) -> bool:
         return (not math.isnan(v)) and band[0] <= v <= band[1]
 
-    cov_rows = [
-        [pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), "PASS" if ok else "FAIL"]
-        for pos, raw, cal, ok in acc.coverage
-    ]
-    lines.append(_md_table(["position", "raw coverage", "raw result", "calibrated coverage",
-                            "calibrated result (acceptance)"], cov_rows))
     subject = subject_name(models)
-    lines.append("")
-    for pos, raw, cal, ok in acc.coverage:
+    tie_rule = rule == RULE_TIE_AWARE
+    if tie_rule:
         lines.append(
-            f"- {pos}: **{'PASS' if ok else 'FAIL'}**. {subject}'s calibrated 80% interval covers {_num(cal)} of "
-            f"active player-weeks, {'inside' if ok else 'outside'} {band[0]:.2f}-{band[1]:.2f} (raw {_num(raw)}, "
-            f"{'inside' if within(raw) else 'outside'} the band)."
+            f"\n### Coverage acceptance ({band[0]:.0%}-{band[1]:.0%} per position after calibration, tie-aware "
+            "coverage, D-085)\n"
         )
+        lines.append(
+            "**Rule change (D-085).** Acceptance uses tie-aware coverage: the share of active player-weeks whose "
+            "randomized PIT, drawn uniformly between F(y-) and F(y) from each model's quantile knots with seed 0, "
+            "lies in (0.1, 0.9). The band is unchanged and the same rule is applied to every model. This rule was "
+            "changed after the 2022-2024 results were seen and before the "
+            f"{get_settings().holdout_season} holdout season was opened. The previous closed-interval rule and "
+            "its results are in the v1 report `reports/backtest_2026-11-03.md`, which stays committed unchanged; "
+            "the closed-interval columns below repeat them for reference.\n"
+        )
+        closed = {pos: (raw, cal, ok) for pos, raw, cal, ok in (acc_closed.coverage if acc_closed else [])}
+        cov_rows = []
+        for pos, raw, cal, ok in acc.coverage:
+            c_raw, c_cal, c_ok = closed.get(pos, (math.nan, math.nan, False))
+            cov_rows.append([pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), "PASS" if ok else "FAIL",
+                             _num(c_cal), ("PASS" if c_ok else "FAIL") if pos in closed else ""])
+        lines.append(_md_table(["position", "tie-aware raw", "raw result", "tie-aware calibrated",
+                                "calibrated result (acceptance, D-085)", "closed calibrated (v1 rule)",
+                                "v1 rule result (superseded)"], cov_rows))
+        lines.append("")
+        for pos, raw, cal, ok in acc.coverage:
+            lines.append(
+                f"- {pos}: **{'PASS' if ok else 'FAIL'}**. {subject}'s calibrated tie-aware coverage is "
+                f"{_num(cal)}, {'inside' if ok else 'outside'} {band[0]:.2f}-{band[1]:.2f} (raw {_num(raw)}, "
+                f"{'inside' if within(raw) else 'outside'} the band)."
+            )
+    else:
+        lines.append(
+            f"\n### Coverage acceptance ({band[0]:.0%}-{band[1]:.0%} per position after calibration, closed "
+            "interval [q10, q90], rule as written)\n"
+        )
+        cov_rows = [
+            [pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), "PASS" if ok else "FAIL"]
+            for pos, raw, cal, ok in acc.coverage
+        ]
+        lines.append(_md_table(["position", "raw coverage", "raw result", "calibrated coverage",
+                                "calibrated result (acceptance)"], cov_rows))
+        lines.append("")
+        for pos, raw, cal, ok in acc.coverage:
+            lines.append(
+                f"- {pos}: **{'PASS' if ok else 'FAIL'}**. {subject}'s calibrated 80% interval covers {_num(cal)} "
+                f"of active player-weeks, {'inside' if ok else 'outside'} {band[0]:.2f}-{band[1]:.2f} "
+                f"(raw {_num(raw)}, {'inside' if within(raw) else 'outside'} the band)."
+            )
     n_pass = sum(1 for *_, ok in acc.coverage if ok)
     lines.append(
         f"\nCoverage after calibration is within the band for {n_pass} of {len(acc.coverage)} positions"
@@ -1154,7 +1343,15 @@ def render_verdict(
     )
     if coverage_text:
         lines.append("\n" + coverage_text)
-    subject = subject_name(models)
+    if all_models:
+        model_labels = list(dict.fromkeys(m for m, *_ in all_models))
+        pos_order = [p for p in positions if any(p == q for _, q, *_ in all_models)]
+        cell = {(m, p): (v, ok) for m, p, v, ok in all_models}
+        rows = [[f"`{m}`", *[f"{_num(cell[(m, p)][0])} {'PASS' if cell[(m, p)][1] else 'FAIL'}"
+                             if (m, p) in cell else "" for p in pos_order]] for m in model_labels]
+        lines.append(f"\nThe same coverage rule applied to every calibrated model ({'tie-aware' if tie_rule else 'closed'}"
+                     " coverage, PASS inside the band):\n")
+        lines.append(_md_table(["model", *pos_order], rows))
     if any(c.comparator == CONSENSUS for c in cells):
         lines.append(
             "\n### Against the FantasyPros consensus: every position and metric (D-081, D-082)\n\n"
@@ -1374,18 +1571,30 @@ def _calibration_section(frames: Mapping[str, pl.DataFrame], main: BootResult, m
     return "\n".join(out)
 
 
-def _coverage_section(detail: pl.DataFrame, main: BootResult, models: ModelSet, positions: Sequence[str]) -> str:
+def _coverage_section(detail: pl.DataFrame, main: BootResult, models: ModelSet, positions: Sequence[str],
+                      rule: str = RULE_CLOSED) -> str:
     out = []
     if detail.is_empty():
         return "(no rows)"
-    out.append(
-        "Exclusive shares of active rows relative to [q10, q90] (ties within 1e-9 points): below q10, tied at q10, "
-        "strictly inside, tied at q90 (and not at q10), above q90. Closed coverage, the acceptance definition, is "
-        "tied q10 + inside + tied q90. The last column is a **diagnostic, not used for acceptance**: the share of "
-        "rows whose randomized PIT lies in (0.1, 0.9), with the PIT drawn uniformly in [F(y-), F(y)] from the "
-        "quantile knots q05..q95 and the prior-season position bounds (seed 0), so a point mass is spread over "
-        "its probability instead of counting as inside.\n"
+    tie = (
+        "the share of rows whose randomized PIT lies in (0.1, 0.9), with the PIT drawn uniformly in [F(y-), F(y)] "
+        "from the model's quantile knots and the prior-season position bounds (seed 0), so a point mass is spread "
+        "over its probability instead of counting as inside"
     )
+    if rule == RULE_TIE_AWARE:
+        out.append(
+            "Exclusive shares of active rows relative to [q10, q90] (ties within 1e-9 points): below q10, tied at "
+            "q10, strictly inside, tied at q90 (and not at q10), above q90. Closed coverage is tied q10 + inside + "
+            "tied q90 and is reported for reference. The last column is the **acceptance definition (D-085)**: "
+            f"{tie}.\n"
+        )
+    else:
+        out.append(
+            "Exclusive shares of active rows relative to [q10, q90] (ties within 1e-9 points): below q10, tied at "
+            "q10, strictly inside, tied at q90 (and not at q10), above q90. Closed coverage, the acceptance "
+            "definition, is tied q10 + inside + tied q90. The last column is a **diagnostic, not used for "
+            f"acceptance**: {tie}.\n"
+        )
     order = {p: i for i, p in enumerate(POSITIONS)}
     t = detail.with_columns(pl.col("position").replace_strict(order, default=99).alias("_o")).sort(["_o", "model"])
     rows = []
@@ -1394,7 +1603,9 @@ def _coverage_section(detail: pl.DataFrame, main: BootResult, models: ModelSet, 
                      _num(r["inside"]), _num(r["tied_q90"]), _num(r["above_q90"]), _num(r["coverage_closed"]),
                      _num(r["coverage_tie_aware"])])
     out.append(_md_table(["position", "model", "n", "below q10", "tied q10", "inside", "tied q90", "above q90",
-                          "closed coverage", "tie-aware (diagnostic)"], rows))
+                          "closed coverage",
+                          "tie-aware (acceptance, D-085)" if rule == RULE_TIE_AWARE else "tie-aware (diagnostic)"],
+                         rows))
     focus_cal = models.focus + CAL
     comps = [m + CAL for m in models.comparators()]
     header = ["position", "comparator", f"pinball q10 `{focus_cal}`", "comparator", "difference [95% CI]",
@@ -1414,6 +1625,108 @@ def _coverage_section(detail: pl.DataFrame, main: BootResult, models: ModelSet, 
     )
     out.append(_md_table(header, prow))
     return "\n".join(out)
+
+
+def _boom_bust_section(stats: pl.DataFrame, rel: pl.DataFrame, before_name: str | None, focus_cal: str) -> str:
+    if stats.is_empty():
+        return "Not available: no before file was supplied or the focus model has no boom/bust probabilities."
+    out = [
+        f"`{focus_cal}` boom and bust probabilities under the earlier pooled isotonic calibrator (**before**, "
+        f"`{before_name}`) and the per-position calibrator (**after**, the run's `predictions.parquet`). Both are "
+        "fitted walk-forward on earlier weeks only, so both are out-of-sample. Logistic recalibration "
+        "`logit P(outcome) = a + b * logit(p)`: intercept `a` (0 when calibrated) and slope `b` (1 when "
+        "calibrated), with 95% week-clustered paired bootstrap intervals for the slope.\n",
+        f"**Low-confidence rule (D-086, fixed before the after numbers were seen):** a position's boom or bust "
+        f"probability is low confidence when its calibrated slope lies outside [{LOW_CONF_SLOPE_BAND[0]}, "
+        f"{LOW_CONF_SLOPE_BAND[1]}], or the upper bound of the slope's 95% interval is below {LOW_CONF_SLOPE_FLOOR} "
+        "(a slope that cannot be estimated counts as low confidence). The operative flag is the after one; the app "
+        "hides or marks low-confidence labels.\n",
+    ]
+    rows = []
+    for pos in POSITIONS:
+        for kind in ("boom", "bust"):
+            sub = stats.filter((pl.col("position") == pos) & (pl.col("kind") == kind))
+            if sub.is_empty():
+                continue
+            by = {r["version"]: r for r in sub.iter_rows(named=True)}
+            b, a = by.get("before"), by.get("after")
+
+            def slope(r: dict[str, Any] | None) -> str:
+                if r is None:
+                    return ""
+                return f"{_num(r['slope'])} [{_num(r['slope_lo'])}, {_num(r['slope_hi'])}]"
+
+            rows.append([
+                pos, kind, _num(int((a or b)["n"])),
+                _num(b["brier"]) if b else "", _num(a["brier"]) if a else "",
+                _num(b["intercept"]) if b else "", _num(a["intercept"]) if a else "",
+                slope(b), slope(a),
+                ("yes" if b["low_confidence"] else "no") if b else "",
+                ("**yes**" if a["low_confidence"] else "no") if a else "",
+            ])
+    out.append(_md_table(["position", "kind", "n", "Brier before", "Brier after", "intercept before",
+                          "intercept after", "slope before [95% CI]", "slope after [95% CI]",
+                          "low confidence before", "low confidence after"], rows))
+    after = stats.filter(pl.col("version") == "after")
+    if not after.is_empty():
+        out.append("")
+        for r in after.iter_rows(named=True):
+            state = "LOW CONFIDENCE" if r["low_confidence"] else "calibrated within the rule"
+            out.append(f"- {r['position']} {r['kind']}: {state} (slope {_num(r['slope'])}, 95% interval "
+                       f"{_num(r['slope_lo'])} to {_num(r['slope_hi'])}).")
+    if not rel.is_empty():
+        for kind in ("boom", "bust"):
+            k = rel.filter(pl.col("kind") == kind)
+            if k.is_empty():
+                continue
+            trows = []
+            for pos in POSITIONS:
+                for b in range(10):
+                    cells = []
+                    for version in ("before", "after"):
+                        r = k.filter((pl.col("position") == pos) & (pl.col("version") == version)
+                                     & (pl.col("bin") == b))
+                        if r.is_empty():
+                            cells += ["", "", ""]
+                        else:
+                            r0 = r.row(0, named=True)
+                            cells += [_num(int(r0["n"])), _num(r0["mean_prob"]), _num(r0["outcome_rate"])]
+                    if any(c not in ("", "0") for c in (cells[0], cells[3])):
+                        trows.append([pos, f"{b / 10:.1f}-{(b + 1) / 10:.1f}", *cells])
+            out.append(f"\nReliability of `{kind}_prob` by position (bins with no rows in either version omitted):\n")
+            out.append(_md_table(["position", "bin", "n before", "mean prob before", "rate before", "n after",
+                                  "mean prob after", "rate after"], trows))
+    return "\n".join(out)
+
+
+def _changes_section(previous: str | None, reports_dir: Path, rule: str, before_name: str | None,
+                     file_sha: str, quantiles_unchanged: str | None) -> str:
+    prev_sha = None
+    if previous:
+        path = reports_dir / f"{previous}.md"
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("| predictions file sha256 |"):
+                    prev_sha = line.split("`")[1] if "`" in line else None
+                    break
+    items = []
+    if rule == RULE_TIE_AWARE:
+        items.append("Coverage acceptance uses tie-aware coverage (randomized PIT in (0.1, 0.9), seed 0, from the "
+                     "quantile knots; same 75-85% band; same rule for every model), D-085. The rule was changed "
+                     "after the 2022-2024 results were seen and before the holdout season was opened. Closed-interval "
+                     "coverage and both tails and ties are still reported (section 5.1); the verdict's coverage-gap "
+                     "rows use the tie-aware definition.")
+    if before_name:
+        items.append(f"Boom and bust probabilities are recalibrated per position, walk-forward (D-086); section 5.2 "
+                     f"compares them with the earlier pooled calibrator (`{before_name}`) and applies the "
+                     "low-confidence rule.")
+    items.append(f"Predictions file sha256 `{file_sha[:16]}...`" + (f" (v1: `{prev_sha}`)." if prev_sha else "."))
+    if quantiles_unchanged is not None:
+        items.append(quantiles_unchanged)
+    items.append("Everything else is computed as in v1: same populations, pair sets, seed 0 and bootstrap rule "
+                 "(D-077 to D-084)." + (f" The v1 report `reports/{previous}.md` stays committed unchanged."
+                                       if previous else ""))
+    return "\n".join(f"- {i}" for i in items)
 
 
 def _secondary_section(table: pl.DataFrame) -> str:
@@ -1665,6 +1978,9 @@ def build_backtest_report(
     reports_dir: Path | None = None,
     data_dir: Path | None = None,
     positions: Sequence[str] = POSITIONS,
+    coverage_rule: str = RULE_TIE_AWARE,
+    calibration_before: str | Path | None = None,
+    previous_report: str | None = None,
 ) -> Path:
     """Write ``reports/<out_name>.md`` and ``data/reports/<out_name>_*.csv`` from one backtest run.
 
@@ -1672,7 +1988,20 @@ def build_backtest_report(
     ``no_vegas``, ``no_ngs``, ``depth_same_week``) are compared with the focus
     model of the main run. ``include_consensus`` and ``cross_check`` read
     restricted and processed data; tests switch them off.
+
+    ``coverage_rule`` is the acceptance definition: ``"tie_aware"`` (D-085,
+    the current rule) or ``"closed"`` (the closed interval of the v1 report).
+    ``calibration_before`` is a predictions file with the earlier boom/bust
+    calibration (D-086 before/after section); a bare file name is looked up
+    in the run directory. ``previous_report`` names the earlier report under
+    ``reports/`` for the "Changes from v1" section.
     """
+    if coverage_rule not in COVERAGE_RULES:
+        raise ValueError(f"coverage_rule must be one of {COVERAGE_RULES}, got {coverage_rule!r}")
+    tie_rule = coverage_rule == RULE_TIE_AWARE
+    acc_metric = "coverage_tie_aware" if tie_rule else "coverage_80"
+    gap_metric = "coverage_gap_tie_aware" if tie_rule else "coverage_gap"
+    verdict_metrics = tuple(gap_metric if m == "coverage_gap" else m for m in VERDICT_METRICS)
     ensure_utf8()
     started = time.time()
     reports_dir = Path(reports_dir) if reports_dir is not None else PROJECT_ROOT / "reports"
@@ -1687,6 +2016,9 @@ def build_backtest_report(
     ref_models = reference_models(models, present)
     aligned, before, dropped = headline_frames(ppr, raw, present, ref_models)
     labels = list(aligned)
+    # canonical randomized PIT per model (D-085): one seeded draw per row, reused by every section
+    bounds = _bounds(report_seasons) if cross_check else None
+    aligned = {m: with_randomized_pit(f, bounds, seed) for m, f in aligned.items()}
 
     main = run_bootstrap(aligned, positions, n_boot=n_boot, seed=seed, n_jobs=n_jobs)
     pairs = pair_counts(aligned)
@@ -1713,6 +2045,7 @@ def build_backtest_report(
         consensus = _cons_frame(report_seasons)
         cons_rows = consensus.height
         cons_frames = consensus_population(consensus, aligned, raw, ref_models)
+        cons_frames[CONSENSUS] = with_randomized_pit(cons_frames[CONSENSUS], bounds, seed)
         table_labels = matched_table_labels(models, best, cons_frames)
         identical = population_keys_identical({m: cons_frames[m] for m in table_labels})
         boot_labels = [models.focus, models.focus + CAL, CONSENSUS]
@@ -1787,14 +2120,47 @@ def build_backtest_report(
             cw = cev.per_week.with_columns(pl.lit("consensus").alias("population"))
             per_week = cw if per_week is None else pl.concat([per_week, cw], how="diagonal_relaxed")
 
-    cells = verdict_cells(main, cons_boot, models, positions)
-    acc = acceptance(cells, main, models, positions)
+    cells = verdict_cells(main, cons_boot, models, positions, verdict_metrics)
+    acc = acceptance(cells, main, models, positions, metric=acc_metric)
+    acc_closed = acceptance(cells, main, models, positions, metric="coverage_80")
 
-    # interval coverage detail (PPR): tails, ties, tie-aware diagnostic
-    bounds = _bounds(report_seasons) if cross_check else None
-    detail_labels = [models.focus, *[m + CAL for m in models.raw]]
+    # interval coverage detail (PPR): tails, ties, tie-aware coverage, for every model
+    detail_labels = [m for m in labels if m in aligned]
     detail = coverage_detail(aligned, detail_labels, bounds, positions, seed=seed)
-    coverage_text = coverage_paragraph(detail, acc.coverage, models)
+    coverage_text = "" if tie_rule else coverage_paragraph(detail, acc.coverage, models)
+    all_models_acc = acceptance_all_models(main, [m for m in labels if m.endswith(CAL)], positions, acc_metric)
+
+    # boom/bust calibration before and after (D-086)
+    calib_stats = pl.DataFrame()
+    calib_rel = pl.DataFrame()
+    before_path: Path | None = None
+    before_cal: pl.DataFrame | None = None
+    quantile_note: str | None = None
+    if calibration_before is not None:
+        before_path = Path(calibration_before)
+        if not before_path.is_absolute() and not before_path.exists():
+            before_path = run_dir / before_path
+        before_all = pl.read_parquet(before_path).filter(
+            (pl.col("scoring") == "ppr") & pl.col("season").is_in(report_seasons))
+        focus_cal = models.focus + CAL
+        before_cal = before_all.filter(pl.col("model") == focus_cal)
+        if focus_cal in aligned and not before_cal.is_empty():
+            after_cal = aligned[focus_cal]
+            keys = list(M.KEY_COLUMNS)
+            before_cal = before_cal.join(after_cal.select(keys), on=keys, how="semi")
+            calib_stats, calib_rel = boom_bust_calibration(
+                before_cal, after_cal.join(before_cal.select(keys), on=keys, how="semi"), positions,
+                n_boot=n_boot, seed=seed)
+            qcols = [c for c in M.KNOT_COLUMNS if c in before_cal.columns and c in after_cal.columns]
+            both = before_cal.select(*keys, *qcols).join(
+                after_cal.select(*keys, *[pl.col(c).alias(f"{c}_after") for c in qcols]), on=keys, how="inner")
+            diffs = [float((both[c] - both[f"{c}_after"]).abs().max() or 0.0) for c in qcols]
+            worst = max(diffs) if diffs else math.nan
+            quantile_note = (
+                f"Quantile columns of `{focus_cal}` between the before file and this run: "
+                + ("unchanged" if worst <= 1e-9 else f"changed (largest absolute difference {worst:.4g} points)")
+                + f" on {both.height:,} matched rows; the boom/bust recalibration is the only intended change."
+            )
 
     # ---------------------------------------------------------------- render
     file_sha = _sha256(run_dir / PREDICTIONS)
@@ -1809,12 +2175,18 @@ def build_backtest_report(
                  f"(`build_backtest_report({str(run_id)!r}, {out_name!r}"
                  + (f", ablation_run_id={str(ablation_run_id)!r}" if ablation_run_id else "")
                  + (f", focus={focus!r}" if focus else "")
+                 + f", coverage_rule={coverage_rule!r}"
+                 + (f", calibration_before={Path(calibration_before).name!r}" if calibration_before else "")
                  + f")`, {n_boot} bootstrap draws, seed {seed}).\n")
     lines.append(
         f"> **Holdout session pending.** The {get_settings().holdout_season} holdout season has not been "
         "evaluated. It will be evaluated once, in a single evaluator session (EV-3.4, D-049), after the owner "
         "has reviewed this report (D-084). Every number below comes from the 2022-2024 validation seasons.\n"
     )
+    if previous_report or calibration_before is not None:
+        lines.append("## Changes from v1\n")
+        lines.append(_changes_section(previous_report, reports_dir, coverage_rule,
+                                      before_path.name if before_path else None, file_sha, quantile_note) + "\n")
     if models.draft_note:
         lines.append(f"> **{models.draft_note}**\n")
 
@@ -1897,7 +2269,8 @@ def build_backtest_report(
         "`B`: the interval excludes zero in the focus model's favour (it beats the comparator); `W`: excludes zero "
         "against it."
     )
-    delta_md, delta_records = _delta_section(main, models, positions)
+    delta_metrics = (*DELTA_METRICS, "coverage_gap_tie_aware") if tie_rule else DELTA_METRICS
+    delta_md, delta_records = _delta_section(main, models, positions, delta_metrics)
     lines.append(delta_md)
 
     lines.append("\n## 4. By week of season (PPR, 2022-2024 pooled, all positions)\n")
@@ -1908,9 +2281,13 @@ def build_backtest_report(
     lines.append("\n## 5. Calibration (PPR)\n")
     lines.append(_calibration_section(aligned, main, models, positions))
     lines.append("\n### 5.1 Interval coverage detail: tails, ties and a tie-aware diagnostic\n")
-    lines.append(_coverage_section(detail, main, models, positions))
+    lines.append(_coverage_section(detail, main, models, positions, coverage_rule))
     if coverage_text:
         lines.append("\n" + coverage_text)
+    if calibration_before is not None:
+        lines.append("\n### 5.2 Boom and bust calibration per position, before and after (D-086)\n")
+        lines.append(_boom_bust_section(calib_stats, calib_rel, before_path.name if before_path else None,
+                                        models.focus + CAL))
 
     lines.append("\n## 6. Secondary population: inactive players included (availability layer)\n")
     lines.append(
@@ -2013,7 +2390,9 @@ def build_backtest_report(
     lines.append("\n## 12. Verdict (MODELING.md section 8)\n")
     if models.draft_note:
         lines.append(f"> Format check only: the focus model is `{models.focus}`, not the chain.\n")
-    lines.append(render_verdict(cells, acc, models, positions, coverage_text=coverage_text))
+    lines.append(render_verdict(cells, acc, models, positions, coverage_text=coverage_text,
+                                metrics=verdict_metrics, rule=coverage_rule, acc_closed=acc_closed,
+                                all_models=all_models_acc))
 
     lines.append("\n## 13. Files\n")
     lines.append(
@@ -2032,6 +2411,8 @@ def build_backtest_report(
         per_week.write_csv(data_dir / f"{out_name}_per_week.csv")
     if not detail.is_empty():
         detail.write_csv(data_dir / f"{out_name}_coverage.csv")
+    if not calib_stats.is_empty():
+        calib_stats.write_csv(data_dir / f"{out_name}_boom_bust.csv")
     records = [*delta_records, *lineup_records, *cons_records, *abl_records]
     records += [{"population": "verdict", "position": c.position, "form": c.form, "focus": c.delta.focus,
                  "other": c.delta.other, "metric": c.metric, "focus_value": c.delta.focus_value,
@@ -2060,10 +2441,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--focus", default=None)
     parser.add_argument("--audit", default=None, help="audit report name under reports/ (default: latest)")
     parser.add_argument("--no-consensus", action="store_true")
+    parser.add_argument("--coverage-rule", choices=COVERAGE_RULES, default=RULE_TIE_AWARE,
+                        help="acceptance coverage: tie_aware (D-085, default) or closed (the v1 report)")
+    parser.add_argument("--calibration-before", default=None,
+                        help="predictions file with the earlier boom/bust calibration (D-086 before/after)")
+    parser.add_argument("--previous-report", default=None, help="earlier report name under reports/ (Changes)")
     args = parser.parse_args(argv)
     path = build_backtest_report(
         args.run_id, args.out, args.ablation_run_id, n_boot=args.n_boot, seed=args.seed, n_jobs=args.n_jobs,
         focus=args.focus, include_consensus=not args.no_consensus, audit_name=args.audit,
+        coverage_rule=args.coverage_rule, calibration_before=args.calibration_before,
+        previous_report=args.previous_report,
     )
     print(f"wrote {path}")
     return 0
@@ -2086,8 +2474,15 @@ __all__ = [
     "Delta",
     "ModelSet",
     "VerdictCell",
+    "COVERAGE_RULES",
+    "LOW_CONF_SLOPE_BAND",
+    "LOW_CONF_SLOPE_FLOOR",
+    "RULE_CLOSED",
+    "RULE_TIE_AWARE",
     "SplitDelta",
     "acceptance",
+    "acceptance_all_models",
+    "boom_bust_calibration",
     "audit_summary",
     "build_backtest_report",
     "cell_sentence",
@@ -2098,6 +2493,8 @@ __all__ = [
     "coverage_detail",
     "coverage_paragraph",
     "headline_frames",
+    "knot_columns",
+    "low_confidence",
     "matched_frames",
     "matched_table_labels",
     "pair_counts",
@@ -2116,4 +2513,5 @@ __all__ = [
     "tie_aware_coverage",
     "verdict_cells",
     "verdict_sentences",
+    "with_randomized_pit",
 ]
