@@ -543,6 +543,43 @@ def _read_actuals(seasons: Sequence[int], purpose: str) -> pl.DataFrame:
     return actual_points(pg, dst)
 
 
+def reference_actuals(seasons: Sequence[int], purpose: str = "backtest") -> pl.DataFrame:
+    """Evaluator reference PPR points for ``seasons`` (D-052 cross-check against ``ffml/scoring``).
+
+    One row per key (``entity_id, season, week``; a played row wins over a
+    roster row) with :data:`ACTUAL_COLUMNS` plus ``kicking_points``: the
+    Sleeper-default kicking points of the row's own kicking stats for every
+    position (the reference ``actual`` adds them for kickers only), so a
+    cross-check can classify emergency-kicker differences. The holdout guard
+    is called before reading.
+    """
+    seasons = sorted({int(s) for s in seasons})
+    assert_seasons_allowed(seasons, purpose)
+    store = SnapshotStore(get_settings().processed_dir)
+    pg = store.read("fact_player_game", seasons=list(seasons))
+    try:
+        dst = store.read("fact_dst_game", seasons=list(seasons))
+    except FileNotFoundError:
+        dst = None
+    actuals = actual_points(pg, dst)
+    reg = pg.filter(pl.col("game_type") == "REG") if "game_type" in pg.columns else pg
+    kicking = reg.select(
+        pl.col("player_id").cast(pl.String).alias("entity_id"),
+        pl.col("season").cast(pl.Int32),
+        pl.col("week").cast(pl.Int32),
+        pl.col("played").cast(pl.Boolean).fill_null(False).alias("_played"),
+        kicking_points_expr().alias("kicking_points"),
+    )
+    keys = ["entity_id", "season", "week"]
+    kicking = kicking.sort("_played", descending=True).unique(keys, keep="first").drop("_played")
+    out = actuals.sort("active", descending=True).unique(keys, keep="first", maintain_order=True)
+    return (
+        out.join(kicking, on=keys, how="left")
+        .with_columns(pl.col("kicking_points").fill_null(0.0))
+        .sort([*keys])
+    )
+
+
 def consensus_with_diagnostics(
     seasons: Iterable[int], scoring: str = "ppr", purpose: str = "backtest"
 ) -> ConsensusResult:
@@ -684,6 +721,7 @@ __all__ = [
     "latest_valid",
     "page_ranks",
     "ppr_points_expr",
+    "reference_actuals",
     "select_consensus",
     "write_restricted_frame",
 ]
