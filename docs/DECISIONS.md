@@ -80,6 +80,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-078 | 2026-11-03 | accepted | Verdict rule: 95% paired week-clustered interval entirely on the good side of zero; headline compares calibrated forms, raw grid alongside |
 | D-079 | 2026-11-03 | accepted | Harness actuals (`ffml/scoring` presets) are the scoring of record; the consensus is scored against them |
 | D-080 | 2026-11-03 | accepted | The release-candidate inputs audit and team/DST leakage checks are part of the Gate 3 evaluator audit |
+| D-081 | 2026-11-03 | accepted (owner) | Chain vs consensus is compared on identical player-weeks; the effect of the missing Thursday players is shown separately |
+| D-082 | 2026-11-03 | accepted (owner) | If the chain does not beat the consensus, the report says so plainly; no consensus features, no verdict-rule changes, no holdout tuning |
+| D-083 | 2026-11-03 | accepted (owner) | The chain timing budget is rerun on an idle machine after the backtests and included in the Gate 3 evidence |
+| D-084 | 2026-11-03 | accepted (owner) | The owner sees the final validation report before the one-time holdout session opens |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -454,6 +458,23 @@ season-week and position from the average `pred_q50` over all compared models
 (a model-agnostic reference that never looks at actuals) and scores every
 model on exactly those pairs; each model's own top-N result is reported as a
 secondary column.
+
+## D-081 to D-084 Owner instructions for the final validation report and Gate 3 (2026-11-03)
+
+1. The chain and the FantasyPros consensus are compared on exactly the same
+   player-weeks (the consensus population, which lacks players whose game
+   precedes the Friday scrape). The chain's results on the excluded Thursday
+   player-weeks, and on all player-weeks, are reported separately so the
+   effect of the missing Thursday players is visible.
+2. If the chain does not beat the consensus, the report says so plainly.
+   Consensus rankings are never added as a model feature (they are also
+   restricted, D-007), the verdict rule (D-078) is not changed after seeing
+   results, and nothing is tuned against the 2025 holdout.
+3. After the backtests finish, the chain timing test runs again on an idle
+   machine with `FFML_ENFORCE_TIMING=1`, and its output is part of the Gate 3
+   evidence.
+4. The final validation report goes to the owner before the one-time holdout
+   session (EV-3.4) opens; the session waits for the owner's go-ahead.
 
 ## Owner answers received 2026-11-01
 
