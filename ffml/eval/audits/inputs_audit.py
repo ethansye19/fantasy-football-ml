@@ -18,6 +18,10 @@
    is touched), and the feature snapshot ids in the manifest equal the
    ``LATEST`` snapshots under ``data/features`` that the leakage audit
    examined (WARN otherwise: the audit then did not see that run's inputs).
+4. **Model registry** (D-076). Before the holdout release no entry may be
+   approved or live; every candidate's artifact directory and frozen
+   calibrator exist, and the calibrator's SHA-256 matches the recorded one
+   (each hash is listed in the evidence).
 """
 
 from __future__ import annotations
@@ -213,6 +217,71 @@ def check_backtest_runs(
     return versions
 
 
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def check_registry(report: AuditReport, artifacts_dir: Path, root: Path) -> None:
+    """Registry before the holdout: candidate artifacts and frozen calibrators exist, hashes match, none approved.
+
+    Reads ``<artifacts>/models/REGISTRY.json`` as plain JSON. FAIL when an
+    entry is ``approved`` or ``live`` (approval needs the holdout release
+    note, D-076), when a candidate's artifact directory or frozen calibrator
+    is missing, or when the calibrator's SHA-256 differs from the recorded
+    one. The evidence records every calibrator hash.
+    """
+    path = artifacts_dir / "models" / "REGISTRY.json"
+    if not path.exists():
+        report.add("model registry", "SKIP", "no models/REGISTRY.json yet")
+        return
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("models", [])
+    fails: list[str] = []
+    evidence: list[str] = []
+
+    def resolve(rel: str) -> Path:
+        p = Path(rel)
+        if p.is_absolute():
+            return p
+        # registry paths are written relative to the project root ("artifacts/...")
+        return root / p if (root / p).exists() else artifacts_dir.parent / p
+
+    for entry in entries:
+        version, status = entry.get("version"), entry.get("status")
+        if status in ("approved", "live"):
+            fails.append(f"{version}: status {status} before the holdout release (D-076)")
+        artifact = entry.get("path")
+        if not artifact or not resolve(artifact).exists():
+            fails.append(f"{version}: artifact directory {artifact!r} missing")
+        cal = entry.get("calibration") or {}
+        if status == "candidate":
+            if not cal.get("path"):
+                fails.append(f"{version}: no frozen calibrator recorded")
+            elif not resolve(cal["path"]).exists():
+                fails.append(f"{version}: frozen calibrator {cal['path']} missing")
+            else:
+                computed = _file_sha256(resolve(cal["path"]))
+                if computed != cal.get("sha256"):
+                    fails.append(f"{version}: calibrator sha256 {computed} differs from recorded {cal.get('sha256')}")
+        evidence.append(
+            f"{version}: status {status}, artifact {artifact}, calibrator {cal.get('path')} "
+            f"({cal.get('calibration_version')}), sha256 {cal.get('sha256')}"
+        )
+    statuses = sorted({str(e.get("status")) for e in entries})
+    if fails:
+        report.add("model registry", "FAIL", f"{len(fails)} problems in {len(entries)} entries", fails + evidence)
+    else:
+        report.add("model registry", "PASS",
+                   f"{len(entries)} entries (statuses {statuses}): artifacts and frozen calibrators present, "
+                   "calibrator hashes match, none approved", evidence)
+
+
 def audit_inputs(
     root: Path = PROJECT_ROOT,
     *,
@@ -235,6 +304,7 @@ def audit_inputs(
     check_restricted_reads(report, root)
     versions = check_backtest_runs(report, backtests_dir, features_root, season)
     check_candidate_features(report, artifacts_dir, versions)
+    check_registry(report, artifacts_dir, root)
     return report
 
 
@@ -244,6 +314,7 @@ __all__ = [
     "audit_inputs",
     "check_backtest_runs",
     "check_candidate_features",
+    "check_registry",
     "check_restricted_reads",
     "scan_restricted_python",
     "scan_restricted_text",

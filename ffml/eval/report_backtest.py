@@ -408,6 +408,30 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _registry_rows(focus: str) -> list[list[str]]:
+    """Setup rows for the model registry: candidate entries and their frozen calibrator (hash recomputed)."""
+    path = get_settings().artifacts_dir / "models" / "REGISTRY.json"
+    if not path.exists():
+        return [["model registry", "no `REGISTRY.json`"]]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = []
+    for entry in payload.get("models", []):
+        if entry.get("name") != focus.split("+")[0]:
+            continue
+        cal = entry.get("calibration") or {}
+        cal_path = PROJECT_ROOT / cal["path"] if cal.get("path") else None
+        if cal_path is not None and cal_path.exists():
+            computed = _sha256(cal_path)
+            check = "matches the file" if computed == cal.get("sha256") else f"MISMATCH: file is `{computed}`"
+        else:
+            check = "file missing"
+        rows.append([f"registry entry `{entry.get('version')}`", f"status **{entry.get('status')}**, "
+                     f"backtest run `{entry.get('backtest_run_id')}`"])
+        rows.append(["frozen calibrator", f"`{cal.get('path')}` ({cal.get('calibration_version')}), sha256 "
+                     f"`{cal.get('sha256')}` ({check})"])
+    return rows or [["model registry", f"no entry named `{focus}`"]]
+
+
 def _git(*args: str) -> str:
     try:
         out = subprocess.run(
@@ -2210,6 +2234,9 @@ def build_backtest_report(
         ["input snapshots", "; ".join(f"{k}: {v}" for grp in manifest.get("input_snapshots", {}).values() for k, v in grp.items())],
         ["models in the run", ", ".join(f"`{k}`" for k in manifest_models)],
         ["focus model", f"`{models.focus}`" + (f"; sensitivity `{models.final_report}`" if models.final_report else "")],
+        ["calibration version", str(manifest.get("calibration_version")
+                                    or manifest.get("calibration", {}).get("version") or "not recorded")],
+        *_registry_rows(models.focus),
     ]))
     lines.append("\nPopulations (PPR, reported seasons):\n")
     pop_rows = []

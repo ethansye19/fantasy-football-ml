@@ -137,6 +137,40 @@ def test_leakage_audit_covers_team_and_dst_datasets(tmp_settings, tmp_path):
     reset_settings_cache()
 
 
+def _registry(root: Path, status: str = "candidate", sha: str | None = None, cal: bool = True) -> Path:
+    import hashlib
+
+    art = root / "artifacts"
+    version = "chain_v1-primary-c2024w19-x"
+    write(root, f"artifacts/models/chain/{version}/params.json", "{}")
+    cal_rel = f"artifacts/models/chain/{version}/calibration.json"
+    if cal:
+        write(root, cal_rel, '{"offsets": {}}')
+    digest = sha or hashlib.sha256(b'{"offsets": {}}').hexdigest()
+    entry = {"name": "chain_v1", "version": version, "path": f"artifacts/models/chain/{version}",
+             "status": status, "calibration": {"path": cal_rel, "sha256": digest,
+                                               "calibration_version": "v2-per-position-isotonic"}}
+    write(root, "artifacts/models/REGISTRY.json", json.dumps({"models": [entry]}))
+    return art
+
+
+def test_registry_check(tmp_path):
+    kw = dict(backtests_dir=tmp_path / "b", features_root=tmp_path / "f")
+    art = _registry(tmp_path)
+    good = item(ia.audit_inputs(tmp_path, artifacts_dir=art, **kw), "model registry")
+    assert good.status == "PASS" and any("sha256 " in e and "v2-per-position-isotonic" in e for e in good.evidence)
+    approved = item(ia.audit_inputs(tmp_path, artifacts_dir=_registry(tmp_path, status="approved"), **kw),
+                    "model registry")
+    assert approved.status == "FAIL" and any("before the holdout release" in e for e in approved.evidence)
+    wrong = item(ia.audit_inputs(tmp_path, artifacts_dir=_registry(tmp_path, sha="0" * 64), **kw), "model registry")
+    assert wrong.status == "FAIL" and any("differs from recorded" in e for e in wrong.evidence)
+    (tmp_path / "artifacts/models/chain/chain_v1-primary-c2024w19-x/calibration.json").unlink()
+    missing = item(ia.audit_inputs(tmp_path, artifacts_dir=_registry(tmp_path, cal=False), **kw), "model registry")
+    assert missing.status == "FAIL" and any("missing" in e for e in missing.evidence)
+    assert item(ia.audit_inputs(tmp_path / "empty", artifacts_dir=tmp_path / "none", **kw),
+                "model registry").status == "SKIP"
+
+
 def test_backtest_run_without_recorded_snapshots_warns(tmp_path):
     runs = tmp_path / "backtests"
     _run(runs, "bare", [2022])

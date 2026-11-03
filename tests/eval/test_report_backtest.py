@@ -314,6 +314,24 @@ def _synthetic_exclusions(keys, seasons):
     return keys.select(list(M.KEY_COLUMNS)).with_columns(reason.alias("reason"))
 
 
+def _fixed_git(*args):
+    return "abc1234" if args and args[0] == "rev-parse" else ""
+
+
+def test_report_text_depends_on_repository_state_only_through_git(tmp_path, monkeypatch):
+    """The flake's cause: a HEAD change between two builds changes only the git line of the report."""
+    monkeypatch.setattr(R, "_registry_rows", lambda focus: [])
+    run = write_run(tmp_path, scorings=("ppr",))
+    kw = dict(n_boot=0, n_jobs=1, include_consensus=False, cross_check=False, reports_dir=tmp_path / "r",
+              data_dir=tmp_path / "d", positions=("QB",))
+    monkeypatch.setattr(R, "_git", _fixed_git)
+    first = R.build_backtest_report(run, "a", **kw).read_text(encoding="utf-8")
+    monkeypatch.setattr(R, "_git", lambda *a: "def5678" if a and a[0] == "rev-parse" else " M ffml/eval/harness.py")
+    second = R.build_backtest_report(run, "a", **kw).read_text(encoding="utf-8")
+    diff = [(x, y) for x, y in zip(first.splitlines(), second.splitlines(), strict=True) if x != y]
+    assert len(diff) == 1 and "git sha of this report" in diff[0][0]
+
+
 def _synthetic_bounds(seasons):
     return pl.DataFrame({"position": list(POS_COUNTS), "pos_min": [-4.0] * 6, "pos_max": [60.0] * 6,
                          "season": [2022] * 6}, schema_overrides={"season": pl.Int32})
@@ -324,6 +342,10 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_reference", _synthetic_reference)
     monkeypatch.setattr(R, "_cons_exclusions", _synthetic_exclusions)
     monkeypatch.setattr(R, "_bounds", _synthetic_bounds)
+    # the report embeds HEAD and whether ffml/eval is dirty; other agents committing or editing ffml/eval
+    # between the two builds below made the byte-for-byte reproducibility check flaky, so pin them
+    monkeypatch.setattr(R, "_git", _fixed_git)
+    monkeypatch.setattr(R, "_registry_rows", lambda focus: [["registry", "synthetic (not read)"]])
     run = write_run(tmp_path)
     reports, data = tmp_path / "reports", tmp_path / "data"
     reports.mkdir()
