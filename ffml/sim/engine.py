@@ -93,6 +93,7 @@ against the opposing offense (same events).
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -369,8 +370,14 @@ def _draw_active(
     position: np.ndarray,
     team: np.ndarray,
     n_sims: int,
+    override: dict[int, np.ndarray] | None = None,
 ) -> np.ndarray:
-    """Bernoulli active flags with the passer fallback (module docstring, step 3)."""
+    """Bernoulli active flags with the passer fallback (module docstring, step 3).
+
+    ``override`` maps a player row to its own ``(n_sims,)`` active flags (the
+    rest-of-season mode's persistent availability draws); those rows replace
+    the Bernoulli draws before the passer fallback is applied.
+    """
     p_draw = avail.copy()
     fallback: list[tuple[int, np.ndarray]] = []
     qb = np.flatnonzero(position == "QB")
@@ -389,6 +396,9 @@ def _draw_active(
             p_draw[f] = max(0.0, (avail[f] - none_other) / (1.0 - none_other))
         fallback.append((f, cands))
     active = rng.random((avail.size, n_sims)) < p_draw[:, None]
+    if override:
+        for i, flags in override.items():
+            active[i] = np.asarray(flags, dtype=bool)
     for f, cands in fallback:
         none = ~active[cands].any(axis=0)
         active[f, none] = True
@@ -419,8 +429,14 @@ def simulate_full(
     dst_params: pl.DataFrame | None = None,
     n_sims: int | None = None,
     seed: int | None = None,
+    active_override: Mapping[str, np.ndarray] | None = None,
 ) -> SimulationResult:
-    """Like :func:`simulate` but also returns the team-level draws."""
+    """Like :func:`simulate` but also returns the team-level draws.
+
+    ``active_override`` (optional) maps ``entity_id`` to ``(n_sims,)`` boolean
+    active flags that replace that player's Bernoulli draws (rest-of-season
+    persistence, :mod:`ffml.sim.ros`); the passer fallback still applies.
+    """
     settings = get_settings()
     S = int(n_sims if n_sims is not None else settings.n_sims)
     seed = int(seed if seed is not None else settings.random_seed)
@@ -518,7 +534,14 @@ def simulate_full(
     def pcol(name: str) -> np.ndarray:
         return pp[name].to_numpy().astype(np.float64)
 
-    active = _draw_active(rng, pcol("availability_prob"), position, p_team, S)
+    override = None
+    if active_override:
+        override = {
+            i: active_override[e]
+            for i, e in enumerate(pp["entity_id"].to_list())
+            if e in active_override
+        }
+    active = _draw_active(rng, pcol("availability_prob"), position, p_team, S, override)
     is_off = np.isin(position, OFFENSE_POSITIONS)
     off = np.flatnonzero(is_off)
     kick = np.flatnonzero(position == "K")

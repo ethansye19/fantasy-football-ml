@@ -160,6 +160,10 @@ class ChainData:
             out = _derive_player(out)
         return out
 
+    def prepare(self, name: str, frame: pl.DataFrame) -> pl.DataFrame:
+        """Add the chain's derived columns to externally built rows (live predictions)."""
+        return self._prepare(name, frame)
+
     def ensure(self, last_season: int) -> None:
         """Load every dataset for seasons ``FIRST_SEASON..last_season`` (guarded)."""
         if self._loaded_through is not None and self._loaded_through >= last_season:

@@ -42,7 +42,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -68,7 +69,7 @@ from ffml.models.chain.summary import MIN_ACTIVE_SIMS, QCOLS, summarize_chain
 from ffml.models.protocol import validate_predictions
 from ffml.scoring.rules import ScoringRules
 from ffml.scoring.statline import FG_BUCKETS
-from ffml.sim.engine import simulate
+from ffml.sim.engine import simulate, simulate_full
 from ffml.sim.params import DEFAULT_FG_ATT_SHARE, DEFAULT_FG_MAKE_PROB
 
 log = logging.getLogger(__name__)
@@ -113,6 +114,17 @@ def resolve_choices(stage_choice: str | Mapping[str, str] | None) -> dict[str, s
 
 def week_seed(seed: int, season: int, week: int) -> int:
     return int(seed) + int(season) * 100 + int(week)
+
+
+@dataclass(frozen=True)
+class ChainPrediction:
+    """Output of :meth:`ChainModel.predict_detailed`."""
+
+    frame: pl.DataFrame  # protocol prediction frame (all scorings)
+    sims: pl.DataFrame | None  # simulated stat lines (engine output)
+    teams: pl.DataFrame | None  # team-level draws (TEAM_SIM_COLUMNS)
+    params: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]  # TeamGame, PlayerGame, DstGame
+    forced_ids: list[str]  # entities whose conditional columns came from the forced pass
 
 
 class ChainModel:
@@ -313,16 +325,34 @@ class ChainModel:
             raise RuntimeError(f"stage {name} is not fitted")
         return model.predict(df)
 
+    def primary_availability(self, players: pl.DataFrame) -> np.ndarray:
+        """P(active) of the availability stage before any same-week report cap."""
+        frame = players if self.config == "final_report" else strip_avail(players)
+        return self._predict_stage("availability", frame)
+
     def stage_predictions(
-        self, season: int, week: int, neutral: bool = False
+        self,
+        season: int,
+        week: int,
+        neutral: bool = False,
+        rows: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | None = None,
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-        """Week rows with ``p_<stage>`` columns (``neutral``: defense features at training means)."""
+        """Week rows with ``p_<stage>`` columns (``neutral``: defense features at training means).
+
+        ``rows`` (team_week, player_week, dst_week frames already passed through
+        :meth:`ChainData.prepare`) replaces the stored rows of the week; the live
+        predictor (:mod:`ffml.sim.predict`) uses it for rows built from
+        ``future_targets``. ``None`` reads the stored feature rows.
+        """
         if self.cutoff is None:
             raise RuntimeError("ChainModel.fit must be called before predict")
         ex = self.exclusions
-        team = abl.drop_excluded(self.data.week_rows("team_week", season, week), ex)
-        players = abl.drop_excluded(self.data.week_rows("player_week", season, week), ex)
-        dst = abl.drop_excluded(self.data.week_rows("dst_week", season, week), ex)
+        if rows is None:
+            team = abl.drop_excluded(self.data.week_rows("team_week", season, week), ex)
+            players = abl.drop_excluded(self.data.week_rows("player_week", season, week), ex)
+            dst = abl.drop_excluded(self.data.week_rows("dst_week", season, week), ex)
+        else:
+            team, players, dst = (abl.drop_excluded(f, ex) for f in rows)
         if neutral:
             players = players.with_columns(
                 [
@@ -344,9 +374,28 @@ class ChainModel:
         return out["team_week"], out["player_week"], out["dst_week"]
 
     def build_params(
-        self, season: int, week: int, neutral: bool = False
+        self,
+        season: int,
+        week: int,
+        neutral: bool = False,
+        rows: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | None = None,
+        availability: Callable[[pl.DataFrame], np.ndarray] | None = None,
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-        team, players, dst = self.stage_predictions(season, week, neutral=neutral)
+        """Engine parameter frames for a week.
+
+        ``availability`` (optional) maps the player frame with ``p_<stage>``
+        columns to the probabilities that replace ``p_availability`` (the live
+        layer, :mod:`ffml.sim.predict`).
+        """
+        team, players, dst = self.stage_predictions(season, week, neutral=neutral, rows=rows)
+        if availability is not None:
+            players = players.with_columns(pl.Series("p_availability", availability(players)))
+        return self.params_from_predictions(team, players, dst)
+
+    def params_from_predictions(
+        self, team: pl.DataFrame, players: pl.DataFrame, dst: pl.DataFrame
+    ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+        """Engine parameter frames from week rows that already carry ``p_<stage>`` columns."""
         strength = self.consts.get("strength")
         if strength is not None and abl.lines_excluded(self.exclusions):
             # no Vegas lines: the game draw is centred on lagged team strength; stage
@@ -367,12 +416,32 @@ class ChainModel:
     # ------------------------------------------------------------------ #
 
     def predict(self, season: int, week: int, scorings: Mapping[str, ScoringRules]) -> pl.DataFrame:
+        return self.predict_detailed(season, week, scorings).frame
+
+    def predict_detailed(
+        self,
+        season: int,
+        week: int,
+        scorings: Mapping[str, ScoringRules],
+        rows: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | None = None,
+        availability: Callable[[pl.DataFrame], np.ndarray] | None = None,
+        n_sims: int | None = None,
+        seed: int | None = None,
+    ) -> ChainPrediction:
+        """:meth:`predict` plus the simulated stat lines, team draws and parameter frames.
+
+        ``rows`` and ``availability`` are passed to :meth:`build_params` (live
+        predictions); ``n_sims`` and ``seed`` override the model's values. With
+        the defaults the frame is exactly :meth:`predict`'s.
+        """
         t0 = time.perf_counter()
-        tp, pp, dp = self.build_params(season, week)
+        tp, pp, dp = self.build_params(season, week, rows=rows, availability=availability)
         if tp.height == 0:
-            return self._empty_frame()
-        seed = week_seed(self.seed, season, week)
-        sims = simulate(tp, pp, dp, n_sims=self.n_sims, seed=seed)
+            return ChainPrediction(self._empty_frame(), None, None, (tp, pp, dp), [])
+        S = int(n_sims) if n_sims is not None else self.n_sims
+        seed = int(seed) if seed is not None else week_seed(self.seed, season, week)
+        result = simulate_full(tp, pp, dp, n_sims=S, seed=seed)
+        sims = result.players
         counts = sims.group_by("entity_id").agg(pl.col("active").sum().alias("n"))
         forced_ids = counts.filter(pl.col("n") < MIN_ACTIVE_SIMS)["entity_id"].to_list()
         forced = None
@@ -383,10 +452,12 @@ class ChainModel:
                 .otherwise(pl.col("availability_prob"))
                 .alias("availability_prob")
             )
-            forced = simulate(tp, pp_forced, dp, n_sims=self.n_sims, seed=seed + 7)
+            forced = simulate(tp, pp_forced, dp, n_sims=S, seed=seed + 7)
         self.timings["simulate"] = time.perf_counter() - t0
         # drivers inputs (scoring-independent)
-        _, pp_neutral, _ = self.build_params(season, week, neutral=True)
+        _, pp_neutral, _ = self.build_params(
+            season, week, neutral=True, rows=rows, availability=availability
+        )
         act_in = drv.offense_inputs(pp, tp, dp, blend=True)
         neu_in = drv.offense_inputs(pp_neutral, tp, dp, blend=False)
         frames = []
@@ -421,7 +492,9 @@ class ChainModel:
         out = pl.concat(frames, how="vertical_relaxed")
         out = self._finalise(out)
         self.timings["predict_total"] = time.perf_counter() - t0
-        return validate_predictions(out)
+        return ChainPrediction(
+            validate_predictions(out), sims, result.teams, (tp, pp, dp), list(forced_ids)
+        )
 
     def _finalise(self, out: pl.DataFrame) -> pl.DataFrame:
         cols = [
@@ -567,4 +640,11 @@ def model_version(config: str, cutoff: tuple[int, int]) -> str:
     return f"{MODEL_NAME}-{config}-c{cutoff[0]}w{cutoff[1]:02d}-{stamp}"
 
 
-__all__ = ["ChainModel", "MODEL_NAME", "load_selection", "model_version", "resolve_choices"]
+__all__ = [
+    "ChainModel",
+    "ChainPrediction",
+    "MODEL_NAME",
+    "load_selection",
+    "model_version",
+    "resolve_choices",
+]

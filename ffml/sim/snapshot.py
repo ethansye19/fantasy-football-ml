@@ -6,6 +6,8 @@ Layout::
         player_sims.parquet      simulated stat lines (ffml.sim.engine output)
         player_summary.parquet   per-entity summary (ffml.sim.summarize output)
         team_env.parquet         team environment (optional)
+        ros_sims.parquet         rest-of-season simulated stat lines (optional, ffml.sim.ros)
+        ros_summary.parquet      rest-of-season totals per scoring preset (optional)
         _manifest.json           model_version, seeds, n_sims, inputs, file hashes
     data/predictions/LATEST      json: season, week, run_id, model_version, path
 
@@ -39,6 +41,9 @@ SUMMARY_FILE = "player_summary.parquet"
 TEAM_ENV_FILE = "team_env.parquet"
 REQUIRED_META: tuple[str, ...] = ("model_version", "seeds", "n_sims", "inputs")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_EXTRA_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}\.parquet$")
+ROS_SIMS_FILE = "ros_sims.parquet"
+ROS_SUMMARY_FILE = "ros_summary.parquet"
 
 
 @dataclass(frozen=True)
@@ -93,18 +98,24 @@ def write_predictions_snapshot(
     *,
     root: Path | str | None = None,
     update_latest: bool = True,
+    extra_frames: Mapping[str, pl.DataFrame] | None = None,
 ) -> Path:
     """Write one immutable prediction run and (by default) point ``LATEST`` at it.
 
     ``meta`` must contain ``model_version``, ``seeds``, ``n_sims`` and
     ``inputs`` (for example input snapshot ids); other keys are kept under
-    ``extra``. Returns the run directory.
+    ``extra``. ``extra_frames`` maps further file names (``<name>.parquet``,
+    for example the rest-of-season ``ros_sims.parquet``) to frames written
+    into the same run with hashes in the manifest. Returns the run directory.
     """
     missing = [k for k in REQUIRED_META if k not in meta]
     if missing:
         raise ValueError(f"meta is missing {missing}")
     if not _RUN_ID_RE.match(run_id):
         raise ValueError(f"run_id {run_id!r} must match {_RUN_ID_RE.pattern}")
+    for name in extra_frames or {}:
+        if not _EXTRA_RE.match(name) or name in (SIMS_FILE, SUMMARY_FILE, TEAM_ENV_FILE):
+            raise ValueError(f"extra frame name {name!r} must be a new <name>.parquet")
     base = _root(root)
     final = run_dir(season, week, run_id, base)
     if final.exists():
@@ -118,6 +129,7 @@ def write_predictions_snapshot(
         frames = {SIMS_FILE: player_sims, SUMMARY_FILE: summary}
         if team_env is not None:
             frames[TEAM_ENV_FILE] = team_env
+        frames.update(extra_frames or {})
         for name, frame in frames.items():
             path = staging / name
             frame.write_parquet(path, compression="zstd")
@@ -205,6 +217,8 @@ def read_latest_predictions(
 __all__ = [
     "LATEST_NAME",
     "MANIFEST_NAME",
+    "ROS_SIMS_FILE",
+    "ROS_SUMMARY_FILE",
     "PredictionsSnapshot",
     "read_latest_predictions",
     "read_predictions",
