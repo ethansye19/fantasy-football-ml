@@ -24,6 +24,20 @@ features 0.2.0. Recommended by the Independent Evaluator.
 | Holdout evaluated exactly once | not run | open |
 | Week 9 predictions from the approved version | blocked until the holdout release (D-058) | open |
 
+## Update after the owner's decisions (report v2, D-085 to D-087)
+
+`reports/backtest_2026-11-03_v2.md`, audit `reports/evaluator_audit_2026-11-03_gate3b.md`
+(PASS, HEAD 4d79b05; registry holds one candidate, none approved; frozen
+calibrator SHA-256 `860af892...a21da19` matches).
+
+| Item | Result |
+| --- | --- |
+| Tie-aware coverage, `chain_v1+cal` (75-85%, seed 0) | QB 0.801, RB 0.811, WR 0.778, TE 0.791, DST 0.762 pass; **K 0.740 fail** (raw K 0.819) |
+| Same rule, challenger and five baselines | all pass (0.785-0.813) |
+| Boom/bust slopes after per-position calibration | QB, RB, WR, TE 0.92-1.02 (not flagged); K boom 0.12, K bust 0.46, DST boom 0.77, DST bust 0.29 (all low confidence under the pre-set rule) |
+| Verdict cells changed from v1 | 27 of 400, all coverage-gap cells (definition change); no MAE, pinball, Spearman or start/sit cell moved |
+| Holdout | untouched; waits for the owner (D-087) |
+
 ## Timing (D-083)
 
 Chain timing test with the budget enforced, run after both backtests finished
