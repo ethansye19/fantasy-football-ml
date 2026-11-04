@@ -323,3 +323,60 @@ Next:
   ```
   python -m ffml.eval.report_backtest --run-id default_20261102 --ablation-run-id ablations_20261103 --out backtest_2026-11-03_v3 --calibration-before predictions_cal_v1_pooled_isotonic.parquet --coverage-before predictions_cal_v2_per_position.parquet --previous-report backtest_2026-11-03_v2 --previous-label v2 --calibrator-seeds <B2 file> --audit <fresh audit>
   ```
+
+## Report v3 and audit gate3c (2026-11-03): calibration v3, the last change before the holdout
+
+Done:
+- 34937b6: `--calibrator-check` reruns B2's v3 quantile calibrator (`OnlinePITQuantile`) in memory on the raw `chain_v1` PPR rows of every run season, for calibrator seeds 0-4 and for `atoms="plain"` at seed 0. Each variant is scored with the acceptance metric (metric seed 0) and compared with B2's stated ranges, parsed from their status note. The registry audit also checks that earlier calibrators are kept with their hashes.
+- Audit `evaluator_audit_2026-11-03_gate3c` at 34937b6: **PASS**.
+  - Holdout PASS 4, WARN 1; leakage PASS 7; inputs PASS 4.
+  - The registry has one entry, candidate only.
+  - The v3 calibrator `calibration.json`, sha256 `3c77725c4e6cf21cd2fc26acaeeea2b3aff22991087614bf35dcd9da280bcd39`, matches the file. v2 is kept as `calibration_v2.json`, sha256 `860af892...`, which also matches.
+- Report `reports/backtest_2026-11-03_v3.md`:
+  - 500 draws, seed 0, 1,337 s; predictions sha256 `58d782bf...`.
+  - Checks pass: identical pair sets and matched keys, consensus sentences 43 of 43, others 84 of 84, no restricted rows; v1 and v2 are unchanged.
+- I rewrote this note's v3-generator `Next` line above with the actual run command.
+
+Evidence (PPR 2022-2024, calibrated, tie-aware coverage at metric seed 0):
+- `chain_v1+cal`, v2 → v3:
+
+  | position | v2 | v3 | result |
+  | --- | --- | --- | --- |
+  | QB | 0.801 | 0.779 | PASS |
+  | RB | 0.811 | 0.785 | PASS |
+  | WR | 0.778 | 0.786 | PASS |
+  | TE | 0.793 | 0.793 | PASS |
+  | K | 0.740 | 0.807 | PASS (was FAIL) |
+  | DST | 0.762 | 0.820 | PASS |
+
+- Every other calibrated model passes at every position (0.785-0.813), including the final-report variant, whose K went from FAIL to PASS.
+- Metric seeds 0-4: the chain's largest range is 0.006 (TE 0.792-0.799); every model stays between 0.771 and 0.820, and no PASS/FAIL changes.
+- Calibrator seeds 0-4, my recomputation:
+
+  | position | range |
+  | --- | --- |
+  | QB | 0.778-0.779 |
+  | RB | 0.784-0.786 |
+  | WR | 0.785-0.786 |
+  | TE | 0.793-0.794 |
+  | K | 0.807 |
+  | DST | 0.820 |
+
+  - The seed-0 rerun reproduces the run's calibrated quantiles exactly.
+  - These agree with B2's stated ranges at every position.
+- Atom rule (disclosed): with `atoms="plain"`, K is 0.772 and DST 0.763 (B2's figures); QB to TE are unchanged. No PASS/FAIL depends on the rule.
+- Verdict changes from v2: 15 cells, all calibrated. v3 also recalibrates q50.
+  - 9 are coverage-gap cells moving from worse to no difference.
+  - Against the challenger, RB MAE and pinball q50 now beat it (MAE -0.038 [-0.075, -0.000]); WR no longer does (MAE -0.017 [-0.036, +0.002]).
+  - Against the consensus, K pinball q10 goes from beats to no difference, and RB pinball q10 from worse to no difference.
+  - Raw cells are unchanged. All 16 section 8 acceptance lines PASS.
+- Boom/bust is unchanged from v2. K boom and bust and DST boom and bust stay low confidence.
+
+UI and model card requirements (report section 13):
+- Hide or mark K and DST boom/bust as low confidence (D-089).
+- State the coverage rule change (D-085) and the calibration changes after validation (D-086, D-088).
+- Every UI metric claim must match the report; cells the chain does not beat are stated plainly. Coverage passes at every position, so nothing is frozen as failing.
+
+Recommendation:
+- `chain_v1` with calibration v3 (`3c77725c...`) is ready for the owner's review (D-090). It meets the section 8 accuracy rules and the D-085 coverage rule at every position on 2022-2024, and is insensitive to both seeds and to the atom rule.
+- After the owner's go-ahead: one `holdout_eval` session with this frozen candidate and calibrator (EV-3.4).
