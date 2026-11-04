@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -21,7 +22,32 @@ from ffml.eval import report_backtest as RB
 from ffml.eval import report_holdout as H
 
 FOCUS = "chain_v1"
-COMMIT = "abc1234def5678"
+
+
+def _g(root, *args):
+    out = subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+def _commit(root, files: dict[str, str], message: str) -> str:
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        _g(root, "add", rel)
+    _g(root, "commit", "-q", "-m", message)
+    return _g(root, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A throwaway git repository: R (root) then X (the frozen commit); HEAD at X."""
+    _g(tmp_path, "init", "-q")
+    _g(tmp_path, "config", "user.email", "test@example.com")
+    _g(tmp_path, "config", "user.name", "test")
+    r = _commit(tmp_path, {"README.md": "r\n"}, "R")
+    x = _commit(tmp_path, {"ffml/code.py": "x = 1\n"}, "X")
+    return {"root": tmp_path, "R": r, "X": x}
 
 
 # --------------------------------------------------------------------------- #
@@ -126,7 +152,7 @@ def _write(path, text):
     return path
 
 
-def _run(root, name, *, season, weeks, chain_noise=1.0, git=COMMIT[:7], mode="frozen"):
+def _run(root, name, *, season, weeks, git, chain_noise=1.0, mode="frozen"):
     base = truth(seasons=(season,), weeks=tuple(weeks))
     frames = []
     for model, noise, s in [(FOCUS, chain_noise, 5), ("direct_lgbm", 2.0, 4), ("rolling_avg_4", 4.0, 1),
@@ -148,10 +174,10 @@ def _sha(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def _prereg(root, **over):
+def _prereg(root, commit, **over):
     _write(root / "artifacts" / "FROZEN.json", '{"frozen": true}')
     _write(root / "artifacts" / "cal.json", '{"c": 1}')
-    data = {"candidate": "chain_v1-test", "focus_model": FOCUS, "commit": COMMIT, "holdout_season": 2022,
+    data = {"candidate": "chain_v1-test", "focus_model": FOCUS, "commit": commit, "holdout_season": 2022,
             "forward": {"season": 2023, "weeks": [1, 2, 3]},
             "frozen": {"path": "artifacts/FROZEN.json", "sha256": _sha(b'{"frozen": true}')},
             "calibrators": {FOCUS: {"path": "artifacts/cal.json", "sha256": _sha(b'{"c": 1}')}},
@@ -162,7 +188,7 @@ def _prereg(root, **over):
     return _write(root / "docs" / "prereg.md", md)
 
 
-def _log(root, sessions=1, purpose="holdout_eval", git=COMMIT[:7]):
+def _log(root, git, sessions=1, purpose="holdout_eval"):
     t = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
     lines = []
     for s in range(sessions):
@@ -187,14 +213,71 @@ def _build(root, prereg, hold, fwd=None, dry_run=True, log=None):
                                   data_dir=root / "out", reports_dir=root / "reports")
 
 
-def test_integrity_failures_give_invalid_and_compute_nothing(tmp_path, small, monkeypatch):
+def test_commit_relation_x_doc_only_other_path_and_non_descendant(repo):
+    root, r, x = repo["root"], repo["R"], repo["X"]
+    at_x = H.commit_relation(x, x[:7], root)
+    assert at_x.ok and at_x.files == ()
+    y = _commit(root, {H.PREREG_DOC: "# pre-registration\n"}, "add pre-registration")
+    doc_only = H.commit_relation(x[:7], y, root)
+    assert doc_only.ok and doc_only.files == (H.PREREG_DOC,) and doc_only.x == x and doc_only.y == y
+    other = _commit(root, {"ffml/code.py": "x = 2\n"}, "code change after the pre-registration")
+    touched = H.commit_relation(x, other, root)
+    assert not touched.ok and touched.files == (H.PREREG_DOC, "ffml/code.py") and "not exactly" in touched.detail
+    _g(root, "checkout", "-q", "-b", "side", r)
+    z = _commit(root, {H.PREREG_DOC: "# on a side branch\n"}, "not a descendant of X")
+    side = H.commit_relation(x, z, root)
+    assert not side.ok and "is not a descendant" in side.detail
+    assert not H.commit_relation(x, "deadbeefdeadbeef", root).ok  # unknown commit
+    # an empty commit on Y keeps the diff from X at exactly the pre-registration file: still valid
+    _g(root, "checkout", "-q", y)
+    _g(root, "commit", "-q", "--allow-empty", "-m", "empty on Y")
+    assert H.commit_relation(x, _g(root, "rev-parse", "HEAD"), root).ok
+    # an empty commit directly on X has an empty diff, which is not exactly the pre-registration file
+    _g(root, "checkout", "-q", x)
+    _g(root, "commit", "-q", "--allow-empty", "-m", "empty on X")
+    assert not H.commit_relation(x, _g(root, "rev-parse", "HEAD"), root).ok
+
+
+def _integrity(root, prereg_commit, run_git, log_git):
+    hold = _run(root, f"hold_{run_git[:7]}", season=2022, weeks=(1, 2), git=run_git[:7])
+    checks = H.integrity_checks(H.read_manifest(hold), H.load_prereg(_prereg(root, prereg_commit)), root=root,
+                                season=2022, access_log=_log(root, log_git[:7]))
+    return {c.name: c for c in checks}
+
+
+def test_integrity_commit_rule_end_to_end(repo):
+    root, x = repo["root"], repo["X"]
+    at_x = _integrity(root, x, x, x)
+    assert at_x["commit"].ok and at_x["report generation commit"].ok and at_x["holdout access log"].ok
+    # the pre-registration is committed after X; the run, the session and the generator run at Y
+    y = _commit(root, {H.PREREG_DOC: "# pre-registration\n"}, "add pre-registration")
+    at_y = _integrity(root, x, y, y)
+    assert all(at_y[k].ok for k in ("commit", "report generation commit", "holdout access log"))
+    assert f"X {x[:12]}" in at_y["commit"].detail and H.PREREG_DOC in at_y["commit"].detail
+    # anything else changed after X: every commit check fails
+    bad = _commit(root, {"ffml/code.py": "x = 3\n"}, "a code change")
+    after = _integrity(root, x, bad, bad)
+    assert not after["commit"].ok and not after["report generation commit"].ok and not after["holdout access log"].ok
+    assert "ffml/code.py" in after["commit"].detail
+    # a run made at a non-descendant commit is invalid even when the generator itself is fine
+    _g(root, "checkout", "-q", y)
+    _g(root, "checkout", "-q", "-b", "side", repo["R"])
+    z = _commit(root, {"README.md": "side\n"}, "side")
+    _g(root, "checkout", "-q", y)
+    side = _integrity(root, x, z, y)
+    assert not side["commit"].ok and "not a descendant" in side["commit"].detail
+    assert side["report generation commit"].ok and side["holdout access log"].ok
+
+
+def test_integrity_failures_give_invalid_and_compute_nothing(repo, small, monkeypatch):
+    tmp_path, commit = repo["root"], repo["X"]
     called = []
     monkeypatch.setattr(H, "compute_run", lambda *a, **k: called.append(1) or H.RunResult())
-    hold = _run(tmp_path, "hold", season=2022, weeks=(1, 2, 3, 4))
-    log = _log(tmp_path)
+    hold = _run(tmp_path, "hold", season=2022, weeks=(1, 2, 3, 4), git=commit[:7])
+    log = _log(tmp_path, commit)
     cases = {
         "FROZEN.json": dict(frozen={"path": "artifacts/FROZEN.json", "sha256": "0" * 64}),
-        "commit": dict(commit="fff9999aaa"),
+        "commit": dict(commit=repo["R"]),  # the run's commit X is not X' = R or a doc-only descendant of it
         "snapshot ids": dict(snapshots={"processed": {"fact_player_game": "OTHER"}}),
         "approval lines": dict(lines_sha256="1" * 64),
         "bootstrap and seeds": dict(seed=1),
@@ -205,24 +288,27 @@ def test_integrity_failures_give_invalid_and_compute_nothing(tmp_path, small, mo
     }
     _write(tmp_path / "artifacts" / "other.json", '{"o": 1}')
     for name, over in cases.items():
-        text = _build(tmp_path, _prereg(tmp_path, **over), hold, log=log).read_text(encoding="utf-8")
+        over = dict(over)
+        pre = _prereg(tmp_path, over.pop("commit", commit), **over)
+        text = _build(tmp_path, pre, hold, log=log).read_text(encoding="utf-8")
         assert f"Dry-run verdict (not a release decision): INVALID ({name}" in text or f"; {name}:" in text, name
-    two = _log(tmp_path, sessions=2)
-    text = _build(tmp_path, _prereg(tmp_path), hold, log=two).read_text(encoding="utf-8")
+    two = _log(tmp_path, commit, sessions=2)
+    text = _build(tmp_path, _prereg(tmp_path, commit), hold, log=two).read_text(encoding="utf-8")
     assert "INVALID" in text and "2 access sessions" in text
-    wrong = _log(tmp_path, purpose="backtest")
-    assert "session purposes ['backtest']" in _build(tmp_path, _prereg(tmp_path), hold, log=wrong).read_text(
-        encoding="utf-8")
+    wrong = _log(tmp_path, commit, purpose="backtest")
+    assert "session purposes ['backtest']" in _build(tmp_path, _prereg(tmp_path, commit), hold,
+                                                     log=wrong).read_text(encoding="utf-8")
     assert called == []  # no metric was computed on any invalid session
     with pytest.raises(ValueError, match="dry run"):
-        H.build_holdout_report(hold, None, _prereg(tmp_path), access_log=log, root=tmp_path)
+        H.build_holdout_report(hold, None, _prereg(tmp_path, commit), access_log=log, root=tmp_path)
 
 
-def test_forward_fail_never_changes_the_holdout_verdict(tmp_path, small):
-    hold = _run(tmp_path, "hold", season=2022, weeks=tuple(range(1, 9)))
-    fwd_bad = _run(tmp_path, "fwd", season=2023, weeks=(1, 2, 3), chain_noise=9.0)  # the chain loses here
-    prereg = _prereg(tmp_path)
-    log = _log(tmp_path)
+def test_forward_fail_never_changes_the_holdout_verdict(repo, small):
+    tmp_path, commit = repo["root"], repo["X"]
+    hold = _run(tmp_path, "hold", season=2022, weeks=tuple(range(1, 9)), git=commit[:7])
+    fwd_bad = _run(tmp_path, "fwd", season=2023, weeks=(1, 2, 3), chain_noise=9.0, git=commit[:7])  # chain loses
+    prereg = _prereg(tmp_path, commit)
+    log = _log(tmp_path, commit)
     alone = _build(tmp_path, prereg, hold, log=log).read_text(encoding="utf-8")
     both = _build(tmp_path, prereg, hold, fwd_bad, log=log).read_text(encoding="utf-8")
     verdict = [line for line in alone.splitlines() if line.startswith("Dry-run verdict")]
@@ -240,11 +326,12 @@ def test_forward_fail_never_changes_the_holdout_verdict(tmp_path, small):
     assert all(line.strip() != "Verdict: APPROVED" for line in both.splitlines())
 
 
-def test_real_release_report_path_and_exact_verdict_line(tmp_path, small, monkeypatch):
+def test_real_release_report_path_and_exact_verdict_line(repo, small, monkeypatch):
     """A non-dry run writes reports/evaluator_release_<candidate>.md with one exact verdict line."""
-    hold = _run(tmp_path, "hold", season=2022, weeks=tuple(range(1, 9)))
-    prereg = _prereg(tmp_path)
-    log = _log(tmp_path)
+    tmp_path, commit = repo["root"], repo["X"]
+    hold = _run(tmp_path, "hold", season=2022, weeks=tuple(range(1, 9)), git=commit[:7])
+    prereg = _prereg(tmp_path, commit)
+    log = _log(tmp_path, commit)
     monkeypatch.setattr(H, "get_settings", lambda: type("S", (), {"artifacts_dir": log.parent})())
     path = _build(tmp_path, prereg, hold, dry_run=False)
     assert path == tmp_path / "reports" / "evaluator_release_chain_v1-test.md"

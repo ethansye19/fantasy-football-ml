@@ -34,7 +34,10 @@ Order of work
 =============
 
 1. Integrity checks, before any holdout metric is read: the line set, the
-   run manifest's git sha (every session) against the pre-registered commit,
+   commit rule for every run session, every access-log session and the
+   report generator's HEAD (each at the pre-registered commit X, or at a
+   descendant Y whose ``git diff --name-only X Y`` is exactly
+   ``docs/status/holdout-preregistration.md``; X, Y and the diff are recorded),
    the run's seasons, FROZEN.json and every calibrator file against their
    hashes, the manifest's calibration mode and any calibrator hashes it
    records, the input snapshot ids, and the holdout access log (exactly one
@@ -61,6 +64,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -200,11 +204,54 @@ def _resolve(rel: str, root: Path) -> Path:
     return p if p.is_absolute() else root / p
 
 
-def _sha_ok(a: str | None, b: str | None) -> bool:
-    """Git shas match when one is a prefix of the other (short and full forms), both at least 7 characters."""
-    if not a or not b or len(a) < 7 or len(b) < 7:
-        return False
-    return a.startswith(b) or b.startswith(a)
+#: the only path a descendant of the frozen commit may change (the pre-registration itself)
+PREREG_DOC = "docs/status/holdout-preregistration.md"
+
+
+def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=60, check=False)
+
+
+def _full_sha(sha: str, root: Path) -> str | None:
+    if not sha or not re.fullmatch(r"[0-9a-fA-F]{7,40}", str(sha)):
+        return None
+    out = _run_git(root, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+
+
+@dataclass(frozen=True)
+class CommitRelation:
+    """How commit ``y`` relates to the frozen commit ``x`` (D-091)."""
+
+    ok: bool
+    x: str
+    y: str
+    files: tuple[str, ...]
+    detail: str
+
+
+def commit_relation(x: str | None, y: str | None, root: Path, allowed: str = PREREG_DOC) -> CommitRelation:
+    """Valid when ``y`` is ``x``, or a descendant whose diff from ``x`` is exactly ``allowed``.
+
+    ``git diff --name-only X Y`` must list exactly the pre-registration file
+    and nothing else; any other difference, a commit that is not a descendant
+    of ``x``, or a sha git does not know makes the relation invalid.
+    """
+    fx, fy = _full_sha(str(x or ""), root), _full_sha(str(y or ""), root)
+    if fx is None or fy is None:
+        missing = [s for s, f in ((x, fx), (y, fy)) if f is None]
+        return CommitRelation(False, str(x), str(y), (), f"unknown commit {missing}")
+    if fx == fy:
+        return CommitRelation(True, fx, fy, (), f"at X {fx[:12]}")
+    anc = _run_git(root, "merge-base", "--is-ancestor", fx, fy)
+    if anc.returncode != 0:
+        return CommitRelation(False, fx, fy, (), f"{fy[:12]} is not a descendant of X {fx[:12]}")
+    diff = _run_git(root, "diff", "--name-only", fx, fy)
+    files = tuple(sorted(f for f in diff.stdout.splitlines() if f.strip()))
+    if diff.returncode == 0 and files == (allowed,):
+        return CommitRelation(True, fx, fy, files, f"Y {fy[:12]} descends from X {fx[:12]}; diff {list(files)}")
+    return CommitRelation(False, fx, fy, files,
+                          f"Y {fy[:12]} descends from X {fx[:12]} but the diff is {list(files)}, not exactly [{allowed!r}]")
 
 
 def _manifest_hashes(node: Any, out: dict[str, str] | None = None, key: str = "") -> dict[str, str]:
@@ -237,10 +284,17 @@ def integrity_checks(
     checks.append(Check("bootstrap and seeds", got_stats == stats,
                         f"pre-registered {got_stats}, the pinned spec uses {stats}"))
     commit = data.get("commit")
-    gits = [manifest.get("git"), *manifest.get("git_sessions", [])]
-    bad_git = [g for g in gits if not _sha_ok(str(g) if g else None, commit)]
-    checks.append(Check("commit", not bad_git and bool(commit),
-                        f"run git {sorted(set(map(str, gits)))} against pre-registered {commit}"))
+    gits = sorted({str(g) for g in [manifest.get("git"), *manifest.get("git_sessions", [])] if g})
+    rels = [commit_relation(commit, g, root) for g in gits]
+    checks.append(Check("commit", bool(commit) and bool(rels) and all(r.ok for r in rels),
+                        f"pre-registered X {commit}; run sessions: "
+                        + "; ".join(f"{g}: {r.detail}" for g, r in zip(gits, rels, strict=True))))
+    head = _run_git(root, "rev-parse", "HEAD").stdout.strip()
+    rel = commit_relation(commit, head, root)
+    dirty = _run_git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip()
+    checks.append(Check("report generation commit", rel.ok,
+                        f"generator HEAD {head[:12] or '?'}: {rel.detail}"
+                        + ("; tracked files modified in the working tree" if dirty else "; working tree clean")))
     seasons = [int(s) for s in manifest.get("report_seasons", [])]
     ok_season = seasons == [int(season)]
     detail = f"run reports seasons {seasons}, expected [{season}]"
@@ -287,12 +341,12 @@ def integrity_checks(
                         "run input snapshots equal the pre-registration" if run_snaps == want_snaps
                         else f"run {run_snaps} against pre-registered {want_snaps}"))
     if access_log is not None:
-        checks.append(access_log_check(access_log, commit))
+        checks.append(access_log_check(access_log, commit, root))
     return checks
 
 
-def access_log_check(path: Path, commit: str | None) -> Check:
-    """Exactly one ``holdout_eval`` session at the pre-registered commit (D-049)."""
+def access_log_check(path: Path, commit: str | None, root: Path = PROJECT_ROOT) -> Check:
+    """Exactly one ``holdout_eval`` session at the pre-registered commit or its doc-only descendant (D-049)."""
     entries, bad = parse_access_log(path)
     if bad:
         return Check("holdout access log", False, f"{len(bad)} malformed lines in {path.name}")
@@ -304,11 +358,13 @@ def access_log_check(path: Path, commit: str | None) -> Check:
     if purposes != [HOLDOUT_PURPOSE]:
         return Check("holdout access log", False, f"session purposes {purposes}, expected [{HOLDOUT_PURPOSE!r}]")
     gits = sorted({e.git for e in s})
-    if not all(_sha_ok(g, commit) for g in gits):
-        return Check("holdout access log", False, f"session git {gits} differs from pre-registered {commit}")
+    rels = [commit_relation(commit, g, root) for g in gits]
+    if not all(r.ok for r in rels):
+        return Check("holdout access log", False, "session commits: "
+                     + "; ".join(f"{g}: {r.detail}" for g, r in zip(gits, rels, strict=True)))
     return Check("holdout access log", True,
                  f"one {HOLDOUT_PURPOSE} session, {len(s)} lines, {s[0].timestamp.isoformat()} to "
-                 f"{s[-1].timestamp.isoformat()}, git {gits}")
+                 f"{s[-1].timestamp.isoformat()}; " + "; ".join(f"{g}: {r.detail}" for g, r in zip(gits, rels, strict=True)))
 
 
 # --------------------------------------------------------------------------- #
@@ -601,7 +657,7 @@ def build_holdout_report(
         hold = compute_run(hold_dir, prereg.focus, purpose=HOLDOUT_PURPOSE, n_boot=n_boot, seed=seed,
                            metric_seed=metric_seed, n_jobs=n_jobs, include_consensus=include_consensus,
                            positions=positions)
-        post = access_log_check(log_path, data.get("commit"))
+        post = access_log_check(log_path, data.get("commit"), root)
         hold_checks = [*hold_checks, Check("holdout access log after the reads", post.ok, post.detail)]
     verdict = verdict_text(hold_checks, hold.results if hold.results else None, dry_run)
     fwd_checks: list[Check] = []
@@ -621,7 +677,7 @@ def build_holdout_report(
                               positions=positions)
             # the forward reads (its consensus curve uses the holdout season) must stay in the one session;
             # a failure here fails the forward check only, never the verdict above (D-094)
-            post = access_log_check(log_path, data.get("commit"))
+            post = access_log_check(log_path, data.get("commit"), root)
             fwd_checks.append(Check("holdout access log after the forward reads", post.ok, post.detail))
         fwd_line = forward_text(fwd_checks, fwd.results if fwd.results else None)
 
@@ -696,8 +752,11 @@ __all__ = [
     "PreregLine",
     "Prereg",
     "RunResult",
+    "PREREG_DOC",
+    "CommitRelation",
     "access_log_check",
     "build_holdout_report",
+    "commit_relation",
     "evaluate_lines",
     "forward_text",
     "integrity_checks",
