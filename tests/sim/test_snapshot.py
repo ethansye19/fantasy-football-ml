@@ -88,3 +88,21 @@ def test_default_root_is_the_predictions_dir(tmp_settings, run):
     path = write_predictions_snapshot(2026, 9, "r1", sims, summary, None, META)
     assert path == run_dir(2026, 9, "r1", tmp_settings.predictions_dir)
     assert read_latest_predictions().run_id == "r1"
+
+
+def test_approval_labels_are_top_level_in_the_manifest_and_latest(tmp_path, run):
+    sims, summary, _ = run
+    labels = {"environment": "private_test", "approval_status": "not approved"}
+    meta = {**META, **labels, "label": "not approved", "mode": "private_test"}
+    write_predictions_snapshot(2026, 10, "p1", sims, summary, None, meta, root=tmp_path)
+    m = read_predictions(2026, 10, "p1", root=tmp_path, load_sims=False).manifest
+    assert m["environment"] == "private_test" and m["approval_status"] == "not approved"
+    assert m["label"] == "not approved"
+    assert m["extra"] == {"mode": "private_test"}  # labels are not repeated under extra
+    latest = json.loads((tmp_path / LATEST_NAME).read_text(encoding="utf-8"))
+    assert latest["environment"] == "private_test" and latest["label"] == "not approved"
+    assert latest["approval_status"] == "not approved" and latest["run_id"] == "p1"
+    # without labels in meta the manifest and LATEST keep their old shape
+    write_predictions_snapshot(2026, 10, "p2", sims, summary, None, META, root=tmp_path)
+    latest = json.loads((tmp_path / LATEST_NAME).read_text(encoding="utf-8"))
+    assert not {"environment", "approval_status", "label"} & set(latest)

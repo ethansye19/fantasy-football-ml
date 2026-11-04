@@ -73,6 +73,11 @@ class Settings(BaseSettings):
         return self.data_dir / "predictions"
 
     @property
+    def private_predictions_dir(self) -> Path:
+        """Private test store: runs labeled "not approved", never the public LATEST (D-099)."""
+        return self.data_dir / "predictions_private"
+
+    @property
     def warehouse_path(self) -> Path:
         return self.data_dir / "warehouse.duckdb"
 

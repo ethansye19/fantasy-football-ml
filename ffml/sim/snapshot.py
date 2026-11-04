@@ -11,6 +11,11 @@ Layout::
         _manifest.json           model_version, seeds, n_sims, inputs, file hashes
     data/predictions/LATEST      json: season, week, run_id, model_version, path
 
+The approval labels ``environment``, ``approval_status`` and ``label``
+(:data:`LABEL_KEYS`), when given in ``meta``, are written at the top level of
+the manifest and of ``LATEST`` (D-099). Private test runs use the same layout
+under ``Settings.private_predictions_dir``.
+
 A run directory is written into a hidden staging directory and renamed into
 place in one step, then ``LATEST`` is replaced through a temporary file, so a
 reader never sees a half-written run. Runs are immutable: writing an existing
@@ -40,6 +45,7 @@ SIMS_FILE = "player_sims.parquet"
 SUMMARY_FILE = "player_summary.parquet"
 TEAM_ENV_FILE = "team_env.parquet"
 REQUIRED_META: tuple[str, ...] = ("model_version", "seeds", "n_sims", "inputs")
+LABEL_KEYS: tuple[str, ...] = ("environment", "approval_status", "label")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EXTRA_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}\.parquet$")
 ROS_SIMS_FILE = "ros_sims.parquet"
@@ -139,12 +145,14 @@ def write_predictions_snapshot(
                 "bytes": path.stat().st_size,
                 "sha256": _sha256(path),
             }
-        extra = {k: v for k, v in meta.items() if k not in REQUIRED_META}
+        labels = {k: meta[k] for k in LABEL_KEYS if k in meta}
+        extra = {k: v for k, v in meta.items() if k not in REQUIRED_META and k not in labels}
         manifest = {
             "season": int(season),
             "week": int(week),
             "run_id": run_id,
             "model_version": str(meta["model_version"]),
+            **labels,
             "seeds": meta["seeds"],
             "n_sims": int(meta["n_sims"]),
             "inputs": meta["inputs"],
@@ -163,6 +171,7 @@ def write_predictions_snapshot(
             "week": int(week),
             "run_id": run_id,
             "model_version": str(meta["model_version"]),
+            **labels,
             "path": final.relative_to(base).as_posix(),
             "written_at": manifest["written_at"],
         }
@@ -215,6 +224,7 @@ def read_latest_predictions(
 
 
 __all__ = [
+    "LABEL_KEYS",
     "LATEST_NAME",
     "MANIFEST_NAME",
     "ROS_SIMS_FILE",
