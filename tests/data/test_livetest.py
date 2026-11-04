@@ -525,3 +525,29 @@ def test_github_remote_parsing():
     assert core.parse_github_remote("https://github.com/o/r.git") == ("o", "r")
     assert core.parse_github_remote("git@github.com:o/r.git") == ("o", "r")
     assert core.parse_github_remote("C:/tmp/remote.git") is None
+
+
+def test_real_build_week_commitment_format_round_trip(tmp_path):
+    """A commitment written by ffml.sim.livetest parses and verifies here, digest included."""
+    livetest = pytest.importorskip("ffml.sim.livetest")
+    out = tmp_path / "out"
+    out.mkdir()
+    for name in ("player_summary.parquet", "params.json", "part.parquet"):
+        (out / name).write_bytes(name.encode() * 3)
+    payload = {
+        "format": livetest.COMMITMENT_FORMAT, "season": 2026, "week": 10, "rehearsal": False,
+        "label": "not approved", "approval_status": "not approved",
+        "created_at": "2026-11-12T16:20:00.123456+00:00", "first_kickoff": K10.isoformat(),
+        "code": {"commit": "c" * 40, "clean": True},
+        "outputs": livetest.file_records([out / "player_summary.parquet", out / "params.json"], "predictions"),
+        "calibration_history": {"sources": [{"season": 2026, "week": 9, "path": livetest.rel(out / "part.parquet"),
+                                             "sha256": livetest.sha256_file(out / "part.parquet")}]},
+    }
+    path = tmp_path / "commitment.json"
+    digest = livetest.write_commitment(path, payload)
+    c = core.load_commitment(path)
+    assert c.digest == digest and c.code_commit == "c" * 40 and c.first_kickoff == K10
+    assert len(c.files) == 3 and c.summary_entry() is not None
+    v = core.verify_commitment(c, roots=[tmp_path], season=2026, week=10, kickoff=K10, expected_commit="c" * 40)
+    assert v.ok, v.problems
+    assert v.digest["match"] and livetest.verify_commitment(path) == []

@@ -804,10 +804,11 @@ def attempt(run: Run) -> int:
                     return EXIT_RETRY
             plan2 = load_plan(run, season_hint=wk.season, live=False)
             wk2 = core.find_week(plan2, wk.season, wk.week)
-            if wk2 and wk2.first_kickoff_utc != wk.first_kickoff_utc:
+            if wk2 and (wk2.first_kickoff_utc, wk2.tentative) != (wk.first_kickoff_utc, wk.tentative):
                 run.log.event("plan", "kickoff changed", before=core.iso(wk.first_kickoff_utc),
-                              after=core.iso(wk2.first_kickoff_utc))
-                wk = core.WeekKickoff(**{**asdict(wk), "first_kickoff_utc": min(wk.first_kickoff_utc, wk2.first_kickoff_utc)})
+                              after=core.iso(wk2.first_kickoff_utc), tentative_after=wk2.tentative)
+                merged, _ = merge_plans([wk], [wk2])
+                wk = merged[0]
                 t = core.triggers(wk, timing)
         if not cfg.rehearsal and run.now() >= t["cutoff"]:
             raise run.abort(EXIT_MISSED, "deadline", f"{key}: cutoff {core.iso(t['cutoff'])} passed before the build",
