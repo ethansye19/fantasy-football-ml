@@ -90,6 +90,12 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-088 | 2026-11-03 | accepted (owner) | The conformal calibrator targets the tie-aware rule, with the same seeded tie handling for every position and model; out-of-sample; seed sensitivity shown; last calibration change before the holdout; any position still failing is frozen and disclosed |
 | D-089 | 2026-11-03 | accepted (owner) | K and DST boom/bust are low confidence: hidden or marked in the app and disclosed in the model card; a smoother calibrator goes on the improvements list |
 | D-090 | 2026-11-03 | accepted (owner) | The owner sees the v3 summary and gives the go-ahead before 2025 is opened |
+| D-091 | 2026-11-04 | accepted (owner) | Go-ahead for the one-time 2025 holdout, conditional on pre-registration (commit, hashes, seeds, approval rules, calibration mode) |
+| D-092 | 2026-11-04 | accepted (owner) | A 2025 failure means not approved: no tuning on 2025, no rerun for a better result, no Week 9 projections published as approved |
+| D-093 | 2026-11-04 | accepted (owner) | Rerun only after an infrastructure failure that stops the session before any metric is read, with the same frozen inputs and the reason logged |
+| D-094 | 2026-11-04 | accepted (owner) | If 2025 passes but the 2026 forward check misses the same rules, stop before publishing projections and show the owner |
+| D-095 | 2026-11-04 | accepted | Holdout and forward-check calibration is FIXED: each model's calibrator is frozen on 2022-2024 and never updated from 2025 or 2026 weeks |
+| D-096 | 2026-11-04 | accepted | The 2026 forward check covers weeks 1-7, the weeks fully final in the frozen data snapshot (week 8 had 2 of 14 games unfinished) |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -523,6 +529,30 @@ that still fails is frozen as is and disclosed. D-089: K and DST boom/bust
 stay flagged under the pre-set low-confidence rule; no further post-hoc
 choice is made for them. D-090: the owner reviews the v3 summary and gives
 the go-ahead before 2025 is opened.
+
+## D-091 to D-096 Holdout pre-registration (owner, 2026-11-04)
+
+The owner approved the single 2025 holdout session on these conditions, all
+fixed before 2025 is opened and recorded in docs/status/holdout-preregistration.md:
+the commit, data and feature snapshot ids, model and calibrator hashes, seeds,
+the 22 approval lines, and the calibration mode (D-091). A failure on 2025
+means the candidate is not approved: nothing is tuned on 2025, the session is
+not rerun for a better result, and no Week 9 projections are published as
+approved (D-092). The only allowed rerun is after an infrastructure failure
+that stops the session before any metric is read, with the same frozen inputs
+and the reason logged (D-093). If 2025 passes but the 2026 forward check
+misses the same rules, the orchestrator stops before publishing projections
+and shows the owner the results (D-094). Calibration during both runs is
+fixed (D-095), so that what is tested is exactly the frozen candidate. The
+forward check covers 2026 weeks 1-7 because the frozen snapshot predates two
+week 8 games (D-096). None of this is relaxed to make the Week 9 kickoff (D-021).
+
+Correction recorded at the owner's request: from v2 to v3 the raw predictions
+were unchanged (identical raw-row hash), but the calibrated quantiles and
+coverage changed, and 15 calibrated verdict cells moved. It is not accurate to
+say that accuracy was unchanged. The v2 TE tie-aware coverage was 0.791, as in
+both committed reports. The figure 0.793 in an earlier summary was a
+transcription error.
 
 ## Owner answers received 2026-11-01
 
