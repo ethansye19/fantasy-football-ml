@@ -158,14 +158,51 @@ def predict(
     season: int = typer.Option(None),
     week: int = typer.Option(None),
     ros: bool = typer.Option(True, help="Also produce rest-of-season weeks"),
+    private_test: bool = typer.Option(
+        False,
+        "--private-test",
+        help="Private test of a registry candidate, labeled 'not approved', written only to "
+        "the private predictions store (D-099)",
+    ),
+    model_version: str = typer.Option(
+        None, "--model-version", help="Registry candidate version (with --private-test)"
+    ),
+    model_dir: str = typer.Option(
+        None,
+        "--model-dir",
+        help="Artifact directory; only with --private-test and the registry path of "
+        "--model-version",
+    ),
 ) -> None:
-    """Produce the predictions snapshot (simulated stat lines) for a week."""
-    from ffml.sim.predict import LivePredictionBlocked, run_predict
+    """Produce the predictions snapshot (simulated stat lines) for a week.
+
+    Live (default) uses only the registry's live, approved version and exits
+    with code 2 when there is none (D-097, D-099).
+    """
+    from ffml.sim.predict import (
+        LivePredictionBlocked,
+        NoApprovedModel,
+        PredictionRefused,
+        run_predict,
+    )
 
     try:
-        run_predict(season=season, week=week, rest_of_season=ros)
+        run_predict(
+            season=season,
+            week=week,
+            rest_of_season=ros,
+            model_dir=model_dir,
+            private_test=private_test,
+            model_version=model_version,
+        )
+    except NoApprovedModel as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
     except LivePredictionBlocked as exc:
         console.print(f"[yellow]prediction blocked:[/yellow] {exc}")
+        raise typer.Exit(code=2) from None
+    except PredictionRefused as exc:
+        typer.echo(f"prediction refused: {exc}")
         raise typer.Exit(code=2) from None
 
 
