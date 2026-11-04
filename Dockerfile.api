@@ -1,0 +1,22 @@
+# API image (FastAPI + uvicorn). Built and verified in CI only (no Docker locally, D-004).
+FROM python:3.11-slim
+
+ENV PYTHONUTF8=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FFML_APP_ENV=production
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY ffml ./ffml
+COPY api ./api
+RUN pip install ".[api]" && useradd --create-home --uid 10001 ffml
+USER ffml
+
+# data/ and artifacts/ are mounted from the host (see docker-compose.yml)
+ENV FFML_DATA_DIR=/app/data FFML_ARTIFACTS_DIR=/app/artifacts FFML_REPORTS_DIR=/app/reports
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/meta/health').status == 200 else 1)"
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

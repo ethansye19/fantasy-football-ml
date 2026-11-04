@@ -1,0 +1,38 @@
+# Local/CI stack for the API and its PostgreSQL database (D-004). The web and
+# scheduler services are added in Phase 6 (BE-6.1). Projection routes stay off
+# (HTTP 503 no_approved_model) unless an approved live model is published.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ffml
+      POSTGRES_PASSWORD: ${FFML_POSTGRES_PASSWORD:-ffml-local-only}
+      POSTGRES_DB: ffml
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ffml -d ffml"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      FFML_APP_ENV: ${FFML_APP_ENV:-production}
+      FFML_DATABASE_URL: postgresql+psycopg://ffml:${FFML_POSTGRES_PASSWORD:-ffml-local-only}@postgres:5432/ffml
+      FFML_CORS_ORIGINS: '["http://localhost:3000"]'
+    volumes:
+      - ./data:/app/data:ro
+      - ./artifacts:/app/artifacts:ro
+      - ./reports:/app/reports:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
