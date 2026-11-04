@@ -245,3 +245,63 @@ Not done / findings:
 
 Decisions proposed:
 - Proposal (next free number): for positions whose walk-forward slope stays outside 0.7-1.3 after v2 (today K boom, K bust, DST bust), recalibrate with a two-parameter logistic (Platt) map per position. Alternatively, keep isotonic and require the larger `min_count` for those positions before a per-position map is used. Either way, confirm walk-forward before the holdout freeze. Until then, the frozen v2 file stands, and K, plus DST bust, are shown as low confidence in the app.
+  - Superseded for boom/bust by D-089 (K and DST boom/bust flagged low confidence; a smoother calibrator goes on the improvements list).
+
+---
+
+# Follow-up / ML Engineer B2 / calibration v3 (D-088)
+Date: 2026-11-03
+Scope: align the quantile calibrator with the tie-aware coverage rule (D-085), recombine both runs without refits, show seed sensitivity, and freeze v3 next to the candidate. This is the last calibration change before the holdout.
+
+Done:
+- `ffml/models/calibration.py` (82b4f6f): `OnlinePITQuantile`, calibration version `v3-tie-aware-quantile`.
+  - Randomized PITs come from `ffml.eval.metrics.randomized_pit` and `cdf_limits`, imported read-only. Knots and bounds are the metric's: the seven quantiles plus prior-season position min and max, with `min(lo, q05)` / `max(hi, q95)`. The seed scheme is the metric's: one generator per (model, scoring) partition over the eligible rows (active, actual, all knots), in season, week, position, entity order.
+  - For each predicted week and position, `G` is the empirical CDF of earlier weeks' PITs, under the same kickoff rule. Below `min_count` = 50 the pooled CDF is used, then the identity. The new level-tau quantile is the raw quantile function at `G^-1(tau)`, linear between knots and out to the bounds.
+  - Atom rule: an integer score on an untied knot gives a PIT exactly at that level, and the rule's open interval counts it outside on both tails. When `G^-1(tau)` lands on such an atom, the knot goes on the atom or just off it (`a -/+ 1e-6`), whichever brings the outside share (`U <= tau` below the median, `U >= tau` above) closer to its target. Without this rule, K was 0.772 and DST 0.763; with it, 0.807 and 0.820.
+  - `pred_mean` is unchanged and quantiles stay monotone. The same rule applies to every model. Boom/bust isotonic is unchanged from v2: probabilities are identical on all 936,096 calibrated rows.
+  - Rows record `cal_q_source` (`position` / `pooled` / `identity`) and `cal_n`.
+  - Frozen files use format 3 (`quantile_method = "pit_quantile"`), storing levels per (scoring, position), pooled levels per scoring, and position bounds for frames without bound columns. v1 and v2 files still load and apply offsets. `OnlineConformal.fit_final` now labels its files v2.
+- `ffml/eval/harness.py` (82b4f6f): calibration v3 with seed 0. Output gains `pos_min`, `pos_max` (the PIT bounds) and `cal_q_source`. The manifest records the version, the calibrator and the seed. Rows without a stat line get their predicted position's bounds (`fill_bounds`); rows with one keep theirs, so raw rows are unchanged. `position_bounds` gives the bounds for a future season.
+- `ffml/models/registry.py` (fa277f6): `update_calibration(version, path)`, for candidates only, keeps the previous record in `calibration_history`.
+- Tests:
+  - `tests/models/test_calibration.py` (+7). Point-mass data (ties at zero) gets near-uniform randomized PITs out-of-sample (deciles within 0.025, coverage within 0.015 of 0.80). Integer data with atoms meets the rule's tail shares at the knot levels, with the atom rule closer than plain `G^-1` and than raw. Week w uses only earlier weeks. Identity holds with no history, and the result is close to identity when already calibrated. Fallbacks and sources are recorded. The frozen v3 round trip covers stored bounds, unknown scoring, `use_scoring`, and v2 files loading. `pit_limits` matches the metric's `cdf_limits`.
+  - `tests/eval/test_harness.py`: v3 version, `cal_q_source`, bounds.
+  - `tests/models/test_registry.py` (+1): calibration update until approval.
+- Recombined:
+  - `default_20261102`: real 0m45.4s (combine 41.9 s), 1,872,192 rows (936,096 raw + 936,096 calibrated), nothing refit (all 10 models skipped every part), git 82b4f6f.
+  - `ablations_20261103`: real 0m21.4s, 525,456 rows.
+  - v2 kept as `predictions_cal_v2_per_position.parquet`: `571c6df4…` for default, untouched; `26442ad6…` for ablations, copied before recombining. v2 manifests kept as `_manifest_cal_v2_per_position.json`.
+  - The preserved v1 file is untouched (`d4a420c0…`).
+- Frozen v3 for the candidate:
+  - `artifacts/models/chain/chain_v1-primary-c2024w19-20261102T222634Z/calibration.json`, SHA-256 `3c77725c4e6cf21cd2fc26acaeeea2b3aff22991087614bf35dcd9da280bcd39`. Fitted with seed 0 on the 87,576 raw `chain_v1` rows of 2022-2024 under ppr, half and std. It holds 18 per-position level maps, 18 isotonic maps each for boom and bust, and stored bounds from 2016-2024.
+  - The previous v2 file is kept next to it as `calibration_v2.json`, SHA-256 `860af8926e75b93e781eb94a0c6055206b8fdf78b9e539f072eb80293a21da19`.
+  - Registry entry: still `candidate`, `evaluator_report` null, calibration hash updated to v3, and the v2 record kept in `calibration_history` with `archived_as`. Nothing approved.
+
+Evidence:
+- `.venv/Scripts/python -m pytest -q`: `424 passed, 1 warning in 145.72s (0:02:25)`.
+- `.venv/Scripts/python -m pytest tests/models/test_calibration.py tests/eval/test_harness.py tests/models/test_registry.py -q`: `43 passed in 9.60s`.
+- `ruff check .`: `All checks passed!`
+- Raw rows identical: SHA-256 of sorted raw rows on the v1 columns is `2cb459a37800f06ba7e57befb1bab7141c1a34a059b258983eb3ce1efb03ebd5` in the preserved v1 file and the v3 file (936,096 rows). Ablations: `54b0c3c6b04ab237379b48ee10bdad47bfef808f74904125878d78c85d24fc32` in both (262,728 rows).
+- Tie-aware coverage, PPR 2022-2024, metric seed 0. These use the report's `with_randomized_pit` with the run's prior-season bounds, and reproduce the report's chain K raw 0.819 and v2 0.740. Quick check; the evaluator does the formal version.
+
+  | model | QB | RB | WR | TE | K | DST |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | chain_v1 raw | 0.735 | 0.822 | 0.779 | 0.801 | 0.819 | 0.740 |
+  | chain_v1+cal v2 | 0.801 | 0.811 | 0.778 | 0.791 | 0.740 | 0.762 |
+  | chain_v1+cal v3 | 0.779 | 0.785 | 0.786 | 0.793 | 0.807 | 0.820 |
+  | direct_lgbm raw | 0.792 | 0.815 | 0.796 | 0.809 | 0.781 | 0.804 |
+  | direct_lgbm+cal v2 | 0.797 | 0.809 | 0.802 | 0.794 | 0.792 | 0.813 |
+  | direct_lgbm+cal v3 | 0.796 | 0.806 | 0.802 | 0.802 | 0.797 | 0.813 |
+  | rolling_median_8 raw | 0.649 | 0.675 | 0.689 | 0.692 | 0.652 | 0.658 |
+  | rolling_median_8+cal v2 | 0.793 | 0.805 | 0.802 | 0.799 | 0.797 | 0.806 |
+  | rolling_median_8+cal v3 | 0.793 | 0.801 | 0.803 | 0.794 | 0.802 | 0.807 |
+
+- Seed sensitivity, `chain_v1+cal`, calibrator seeds 0-4, metric seed 0:
+  - seed 0: QB 0.779, RB 0.785, WR 0.786, TE 0.793, K 0.807, DST 0.820.
+  - min-max across seeds: QB 0.778-0.779, RB 0.784-0.786, WR 0.785-0.786, TE 0.793-0.794, K 0.807-0.807, DST 0.820-0.820.
+  - The combined file equals seed 0. Every 2022-2024 chain row used its own position's levels.
+- Method probe (not adopted): a direct per-level search that sets the exact expected outside share on earlier weeks gave QB 0.796, RB 0.822, WR 0.786, TE 0.804, K 0.800, DST 0.820. That is a mean distance from 0.80 of 0.011 against 0.014 for v3, at about 400 times the cost (124 s per partition). It hits every share in-sample, so the remaining out-of-sample gaps (RB, DST) come from walk-forward drift, not the method.
+
+Not done / findings:
+- With seven knots, an integer-valued position cannot reach every PIT value; a point mass ends only at a knot level. The randomized PIT is therefore not exactly uniform for K and DST, even when the rule's tail shares are met. This is a representation limit, disclosed in the test docstrings.
+- v3 lowers chain QB (0.801 to 0.779) and RB (0.811 to 0.785) relative to v2, both inside the 75-85% band. v2's offsets targeted the closed-interval rule, which suits QB, RB, WR and TE better than it suits K.
