@@ -24,6 +24,17 @@ Entry fields: ``name, version, path, status, created_at, git, backtest_run_id,
 evaluator_report`` (null until approved or rejected) and ``history`` (one
 ``{status, at}`` record per transition). Versions are unique across names.
 Writes go through a temporary file and an atomic rename.
+
+Stored paths (``path``, ``calibration.path``, ``evaluator_report``) use
+logical roots so that a checkout other than the one that wrote the registry
+(the live test's pinned worktree, run with ``FFML_ARTIFACTS_DIR`` and
+``FFML_DATA_DIR`` pointing at the main checkout) resolves them to the same
+files: a path under ``Settings.artifacts_dir`` is stored as
+``artifacts/<relative>``, under ``data_dir`` as ``data/<relative>``, under
+``reports_dir`` as ``reports/<relative>``, else relative to the project root
+or absolute. :func:`resolve_path` maps those prefixes back through the
+current settings. With the default settings this is the same text as a
+project-root-relative path, so existing entries are unchanged.
 """
 
 from __future__ import annotations
@@ -72,12 +83,39 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _relative(path: Path | str) -> str:
+def _logical_roots() -> list[tuple[str, Path]]:
+    s = get_settings()
+    return [("artifacts", s.artifacts_dir), ("data", s.data_dir), ("reports", s.reports_dir)]
+
+
+def store_path(path: Path | str) -> str:
+    """The stored form of ``path``: under a settings root as ``<root>/<rel>`` (see module docstring)."""
     p = Path(path)
+    resolved = p.resolve()
+    for name, root in _logical_roots():
+        try:
+            return f"{name}/{resolved.relative_to(Path(root).resolve()).as_posix()}"
+        except ValueError:
+            continue
     try:
-        return p.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+        return resolved.relative_to(PROJECT_ROOT.resolve()).as_posix()
     except ValueError:
         return p.as_posix()
+
+
+def resolve_path(stored: Path | str) -> Path:
+    """The file a stored path names: ``artifacts/``, ``data/`` and ``reports/`` go through settings."""
+    p = Path(stored)
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    for name, root in _logical_roots():
+        if parts and parts[0] == name:
+            return Path(root).joinpath(*parts[1:])
+    return PROJECT_ROOT / p
+
+
+_relative = store_path  # the name used by the transitions below
 
 
 def load_registry(path: Path | str | None = None) -> dict[str, Any]:
@@ -314,6 +352,8 @@ __all__ = [
     "register_candidate",
     "registry_path",
     "reject",
+    "resolve_path",
+    "store_path",
     "retire",
     "set_live",
     "update_calibration",

@@ -187,17 +187,19 @@ def sha256_file(path: Path | str) -> str:
 
 
 def rel(path: Path | str) -> str:
-    """Path relative to the repository root when inside it, else absolute (POSIX)."""
-    p = Path(path).resolve()
-    try:
-        return p.relative_to(PROJECT_ROOT.resolve()).as_posix()
-    except ValueError:
-        return p.as_posix()
+    """Stored form of a path: ``data/...``, ``artifacts/...`` or ``reports/...`` under the settings
+    roots (so a pinned worktree resolves it to the same file), else repository-relative or
+    absolute (POSIX). The registry's convention (:func:`ffml.models.registry.store_path`)."""
+    from ffml.models.registry import store_path
+
+    return store_path(Path(path).resolve())
 
 
 def resolve(path: str) -> Path:
-    p = Path(path)
-    return p if p.is_absolute() else PROJECT_ROOT / p
+    """The file a stored path names (:func:`ffml.models.registry.resolve_path`)."""
+    from ffml.models.registry import resolve_path
+
+    return resolve_path(path)
 
 
 def _utc(now: datetime) -> datetime:

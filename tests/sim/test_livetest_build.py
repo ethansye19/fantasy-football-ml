@@ -156,7 +156,8 @@ def test_build_commits_every_output_with_hashes(registry_env, toy_chain, tmp_pat
         "calibration_state.json",
     ):
         assert name in outputs, name
-    files = [Path(o["path"]) for o in c["outputs"]]
+    files = [livetest.resolve(o["path"]) for o in c["outputs"]]
+    assert all(o["path"].startswith(("data/", "artifacts/")) for o in c["outputs"])
     assert set(files) == {
         *livetest.tree_files(res.run_dir),
         *livetest.tree_files(livetest.artifact_root() / res.model_version),
@@ -235,7 +236,9 @@ def test_rehearsal_after_kickoff_writes_only_to_the_sandbox(registry_env, toy_ch
     assert not registry_env.private_predictions_dir.exists()
     assert not (registry_env.models_dir / "chain_v2").exists()
     entry = reg.get(res.model_version, path=sandbox / "REGISTRY.json")
-    assert entry["status"] == "candidate" and entry["path"].startswith(str(sandbox.as_posix()))
+    assert entry["status"] == "candidate"
+    assert entry["path"].startswith("data/livetest/rehearsal/models/chain_v2/")
+    assert livetest.resolve(entry["path"]).is_relative_to(sandbox)
     assert res.run_dir.is_relative_to(sandbox / "predictions_private")
     run = json.loads((res.run_dir / "_manifest.json").read_text(encoding="utf-8"))
     latest = json.loads((sandbox / "predictions_private" / "LATEST").read_text(encoding="utf-8"))
@@ -361,3 +364,56 @@ def test_code_state_and_peak_memory():
     assert isinstance(state["clean"], bool) and isinstance(state["status"], list)
     peak = livetest.peak_memory_mb()
     assert peak is None or peak > 10
+
+
+# --------------------------------------------------------------------------- #
+# Pinned worktree: registry paths resolve through FFML_ARTIFACTS_DIR
+# --------------------------------------------------------------------------- #
+
+
+def test_gate_resolves_registry_paths_through_the_artifacts_dir(
+    registry_env, synthetic_model_dir, monkeypatch, tmp_path
+):
+    """A candidate registered from one checkout runs from another (the pinned worktree)."""
+    import shutil
+
+    from ffml.config import PROJECT_ROOT, reset_settings_cache
+    from ffml.sim.predict import entry_path, private_test_entry
+
+    model_dir, data = synthetic_model_dir
+    version = "chain_v2-primary-c2023w05-20231005T120000Z"
+    artifact = registry_env.models_dir / "chain_v2" / version
+    shutil.copytree(model_dir, artifact)
+    (artifact / "train_manifest.json").write_text(
+        json.dumps({"model_version": version}), encoding="utf-8"
+    )
+    assert not registry_env.artifacts_dir.resolve().is_relative_to(PROJECT_ROOT.resolve())
+    entry = reg.register_candidate("chain_v2", version, artifact)
+    assert entry["path"] == f"artifacts/models/chain_v2/{version}"
+    assert not (PROJECT_ROOT / entry["path"]).exists()  # the old resolution would miss it
+    # another checkout: a different project root, the same FFML_ARTIFACTS_DIR
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.setattr(reg, "PROJECT_ROOT", worktree)
+    assert entry_path(private_test_entry(version)) == artifact
+    # the artifacts dir moved (registry and artifacts copied): paths follow the setting
+    moved = tmp_path / "moved_artifacts"
+    shutil.copytree(registry_env.artifacts_dir, moved)
+    monkeypatch.setenv("FFML_ARTIFACTS_DIR", str(moved))
+    reset_settings_cache()
+    found = entry_path(private_test_entry(version))
+    assert found == moved / "models" / "chain_v2" / version and found.is_dir()
+    res = run_predict(
+        season=2023,
+        week=5,
+        rest_of_season=False,
+        private_test=True,
+        model_version=version,
+        data=data,
+        ctx=week5_ctx(),
+        n_sims=200,
+        now=NOW,
+    )
+    run = json.loads((res.path / "_manifest.json").read_text(encoding="utf-8"))
+    assert Path(run["extra"]["model_source"]["path"]) == found
+    assert run["model_version"] == version and run["label"] == "not approved"

@@ -85,7 +85,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from ffml.config import PROJECT_ROOT, get_settings
+from ffml.config import get_settings
 from ffml.holdout import HoldoutLockedError, assert_seasons_allowed
 from ffml.scoring.rules import ScoringRules
 from ffml.sim.ros import LAST_REG_WEEK, StrengthModel, simulate_ros, strength_game_lines
@@ -191,8 +191,7 @@ def resolve_model_dir(
 
     live = get_live()
     if live is not None:
-        p = Path(live["path"])
-        p = p if p.is_absolute() else PROJECT_ROOT / p
+        p = entry_path(live)
         return p, {"kind": "registry_live", "version": live["version"], "path": str(p)}
     root = Path(chain_root) if chain_root is not None else get_settings().models_dir / "chain"
     dirs = [Path(d) for d in glob.glob(str(root / "*")) if (Path(d) / "params.json").exists()]
@@ -222,9 +221,10 @@ def private_registry(rehearsal: bool = False) -> Path | None:
 
 
 def entry_path(entry: dict[str, Any]) -> Path:
-    """A registry entry's artifact directory (relative paths are under the project root)."""
-    p = Path(entry["path"])
-    return p if p.is_absolute() else PROJECT_ROOT / p
+    """A registry entry's artifact directory (``artifacts/...`` under ``Settings.artifacts_dir``)."""
+    from ffml.models.registry import resolve_path
+
+    return resolve_path(entry["path"])
 
 
 def _same_path(a: Path | str, b: Path | str) -> bool:

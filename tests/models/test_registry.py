@@ -190,3 +190,54 @@ def test_a_rejected_entry_is_terminal(env, tmp_path):
     reg.approve("v2", report(env, "v2_yes.md"))
     with pytest.raises(RegistryError, match="only candidates can be rejected"):
         reg.reject("v2", report(env, "v2_no.md", verdict="Verdict: NOT APPROVED"))
+
+
+# --------------------------------------------------------------------------- #
+# Stored paths resolve through the settings roots (pinned worktree, D-098)
+# --------------------------------------------------------------------------- #
+
+
+def test_stored_paths_use_the_settings_roots(env, tmp_path):
+    from ffml.config import PROJECT_ROOT
+
+    s = get_settings()
+    assert not s.artifacts_dir.resolve().is_relative_to(
+        PROJECT_ROOT.resolve()
+    )  # outside the checkout
+    assert (
+        reg.store_path(s.artifacts_dir / "models" / "chain_v2" / "v")
+        == "artifacts/models/chain_v2/v"
+    )
+    assert reg.store_path(s.data_dir / "livetest" / "x") == "data/livetest/x"
+    assert reg.store_path(s.reports_dir / "r.md") == "reports/r.md"
+    assert reg.store_path(PROJECT_ROOT / "ffml" / "cli.py") == "ffml/cli.py"
+    elsewhere = tmp_path / "elsewhere" / "m"
+    assert reg.store_path(elsewhere) == elsewhere.as_posix()
+    assert reg.resolve_path("artifacts/models/chain_v2/v") == s.artifacts_dir / "models/chain_v2/v"
+    assert reg.resolve_path("data/livetest/x") == s.data_dir / "livetest" / "x"
+    assert reg.resolve_path("ffml/cli.py") == PROJECT_ROOT / "ffml" / "cli.py"
+    assert reg.resolve_path(elsewhere.as_posix()) == elsewhere
+    # the chain_v1 entry's form resolves under whatever artifacts dir is configured
+    legacy = "artifacts/models/chain/chain_v1-primary-c2024w19-20261102T222634Z"
+    assert (
+        reg.resolve_path(legacy)
+        == s.artifacts_dir / "models/chain/chain_v1-primary-c2024w19-20261102T222634Z"
+    )
+    entry = reg.register_candidate("chain_v2", "v", s.artifacts_dir / "models" / "chain_v2" / "v")
+    assert entry["path"] == "artifacts/models/chain_v2/v"
+
+
+def test_default_settings_store_the_same_text_as_before(monkeypatch):
+    from ffml.config import PROJECT_ROOT
+
+    for name in ("FFML_ARTIFACTS_DIR", "FFML_DATA_DIR", "FFML_REPORTS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    reset_settings_cache()
+    path = PROJECT_ROOT / "artifacts" / "models" / "chain" / "x"
+    assert reg.store_path(path) == "artifacts/models/chain/x"
+    assert (
+        reg.resolve_path("artifacts/models/chain/x")
+        == get_settings().artifacts_dir / "models/chain/x"
+    )
+    assert reg.resolve_path("artifacts/models/chain/x").resolve() == path.resolve()
+    reset_settings_cache()
