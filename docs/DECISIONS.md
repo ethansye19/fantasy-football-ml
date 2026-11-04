@@ -103,6 +103,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-101 | 2026-11-04 | accepted | `FFML_APP_ENV`: production serves only approved live runs; private_test reads private store, then replay, then fixture; unknown values mean production |
 | D-102 | 2026-11-04 | accepted | API summaries are conditional on active; lineup values use the unconditional mean; trade value is max(0, ROS mean - replacement) |
 | D-103 | 2026-11-04 | accepted | Rest-of-season totals include the run week by default |
+| D-104 | 2026-11-04 | accepted | QB boom/bust is low confidence alongside K and DST until a live test shows otherwise; the set is read from the run manifest, default {QB, K, DST} |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -720,6 +721,15 @@ Before Gate 4, request-time calibration is required (Backend proposal P-2
 for the ML Engineer). The evaluator approves calibrated numbers, and the API
 today serves raw simulation quantiles under league scoring, with a notice
 saying so.
+
+## D-104 QB boom/bust low confidence (orchestrator, 2026-11-04)
+
+On the 2025 holdout (D-097) the chain's QB boom and bust probabilities had
+calibration slopes of 0.56 and 0.77, both outside the D-086 rule. Until a
+pre-registered test shows otherwise, the app marks QB boom/bust low
+confidence, as it already does for K and DST (D-089). The API reads
+`low_confidence_positions` from the run manifest when present and otherwise
+uses {QB, K, DST}. The model card discloses it.
 
 ## Owner answers received 2026-11-01
 
