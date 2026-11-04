@@ -678,6 +678,100 @@ def test_boom_bust_calibration_before_after():
     assert set(rel["version"].unique()) == {"before", "after"} and set(rel["kind"].unique()) == {"boom", "bust"}
 
 
+def test_seed_sensitivity_and_coverage_change():
+    rng = np.random.default_rng(5)
+    bounds = pl.DataFrame({"position": ["WR"], "pos_min": [-2.0], "pos_max": [40.0], "season": [2022]},
+                          schema_overrides={"season": pl.Int32})
+    # q05 = q10 = q25 = 0: a tied zero has PIT uniform on [0.05, 0.25], so the seed decides each draw
+    tied = _knot_frame(np.where(np.arange(400) % 3 == 0, 0.0, rng.uniform(0.25, 12.0, 400)))
+    tied = tied.with_columns(pl.lit(0.0).alias("pred_q25"))
+    frames = {"m+cal": tied.with_columns(pl.lit("m+cal").alias("model"))}
+    seeds = R.seed_sensitivity(frames, ["m+cal"], bounds, ("WR",))
+    assert seeds["seed"].to_list() == [0, 1, 2, 3, 4]
+    seed0 = seeds.filter(pl.col("seed") == 0)["coverage"][0]
+    assert seed0 == R.tie_aware_coverage(R.with_randomized_pit(frames["m+cal"], bounds, 0))  # seed 0 = acceptance
+    assert seeds.equals(R.seed_sensitivity(frames, ["m+cal"], bounds, ("WR",)))  # deterministic
+    assert seeds["coverage"].n_unique() > 1  # ties make the draw matter
+    # before/after: the earlier calibration had a wider interval, so higher coverage
+    before = frames["m+cal"].with_columns((pl.col("pred_q90") + 3.0).alias("pred_q90"),
+                                          (pl.col("pred_q95") + 3.0).alias("pred_q95"))
+    change = R.coverage_change(before, frames, ["m+cal"], bounds, ("WR",))
+    r = change.row(0, named=True)
+    assert r["tie_aware_before"] > r["tie_aware_after"] and r["closed_before"] > r["closed_after"]
+    assert r["tie_aware_after"] == seed0
+
+
+def test_load_calibrator_seed_table(tmp_path):
+    assert R.load_calibrator_seed_table(None) is None
+    assert R.load_calibrator_seed_table(tmp_path / "missing.csv") is None
+    csv = tmp_path / "seeds.csv"
+    pl.DataFrame({"model": ["chain_v1+cal"] * 2, "position": ["K", "K"], "seed": [0, 1],
+                  "coverage": [0.79, 0.80]}).write_csv(csv)
+    assert R.load_calibrator_seed_table(csv).height == 2
+    md = tmp_path / "note.md"
+    md.write_text("# note\n\ntext\n\n| position | seed | coverage |\n| --- | --- | --- |\n| K | 0 | 0.790 |\n"
+                  "| K | 1 | 0.801 |\n\nmore\n", encoding="utf-8")
+    t = R.load_calibrator_seed_table(md)
+    assert t.columns == ["position", "seed", "coverage"] and t.height == 2
+    text = R._seed_section(pl.DataFrame(), R.load_calibrator_seed_table(csv), "seeds.csv")
+    assert "from `seeds.csv`" in text and "| min | max | range |" in text
+
+
+def test_requirements_and_final_calibration_wording():
+    models = R.ModelSet("chain_v1", None, "direct_lgbm", ["rolling_median_8"])
+    stats = pl.DataFrame([
+        {"position": "K", "kind": "boom", "version": "after", "low_confidence": True},
+        {"position": "K", "kind": "bust", "version": "after", "low_confidence": True},
+        {"position": "QB", "kind": "boom", "version": "after", "low_confidence": False},
+        {"position": "DST", "kind": "bust", "version": "before", "low_confidence": True},
+    ])
+    acc = R.Acceptance([], [("QB", 0.8, 0.80, True), ("K", 0.82, 0.74, False)])
+    text = R._requirements_section(stats, acc, models, R.RULE_TIE_AWARE, final_calibration=True)
+    assert "K boom, K bust" in text and "DST" not in text.split("(D-086):")[1].split(".")[0]
+    assert "hides them or marks them low confidence" in text and "D-089" in text
+    assert "K (0.740)" in text and "Frozen as is, disclosed (D-088)." in text
+    main = R.BootResult(points={"QB": {"chain_v1": {"coverage_tie_aware": 0.78}, "chain_v1+cal": {"coverage_tie_aware": 0.80}},
+                                "K": {"chain_v1": {"coverage_tie_aware": 0.82}, "chain_v1+cal": {"coverage_tie_aware": 0.74}}})
+    acc2 = R.acceptance([], main, models, ("QB", "K"), metric="coverage_tie_aware")
+    verdict = R.render_verdict([], acc2, models, ("QB", "K"), rule=R.RULE_TIE_AWARE, final_calibration=True)
+    assert "Unchanged since D-085:** metric seed 0, the 75-85% band and the tie-aware rule" in verdict
+    assert "Last calibration change before the holdout (D-088)" in verdict
+    assert "FAIL (frozen as is, disclosed)" in verdict and "- K: **FAIL**." in verdict
+    assert verdict.count("Frozen as is, disclosed (D-088).") == 1  # only the failing position
+
+
+def test_build_report_v3_sections(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "_git", _fixed_git)
+    monkeypatch.setattr(R, "_registry_rows", lambda focus: [])
+    run = write_run(tmp_path, scorings=("ppr",))
+    pred = pl.read_parquet(run / "predictions.parquet")
+    pred.write_parquet(run / "predictions_cal_v1_pooled_isotonic.parquet")
+    wider = pred.with_columns(pl.when(pl.col("model").str.ends_with("+cal")).then(pl.col("pred_q90") + 2.0)
+                              .otherwise(pl.col("pred_q90")).alias("pred_q90"))
+    wider.write_parquet(run / "predictions_cal_v2_per_position.parquet")
+    reports = tmp_path / "r"
+    reports.mkdir()
+    (reports / "backtest_v2.md").write_text("| predictions file sha256 | `feedfacecafebeef...` |\n", encoding="utf-8")
+    seeds_csv = tmp_path / "calibrator_seeds.csv"
+    pl.DataFrame({"position": ["QB", "QB"], "seed": [0, 1], "coverage": [0.79, 0.80]}).write_csv(seeds_csv)
+    path = R.build_backtest_report(
+        run, "backtest_v3", n_boot=0, n_jobs=1, include_consensus=False, cross_check=False, reports_dir=reports,
+        data_dir=tmp_path / "d", positions=("QB", "K"), calibration_before="predictions_cal_v1_pooled_isotonic.parquet",
+        coverage_before="predictions_cal_v2_per_position.parquet", previous_report="backtest_v2",
+        previous_label="v2", calibrator_seeds=seeds_csv)
+    text = path.read_text(encoding="utf-8")
+    assert text.index("## Changes from v2") < text.index("## 1. Setup")
+    assert "(v2: `feedfacecafebeef...`)" in text and "last calibration change before the holdout" in text
+    assert "Coverage per position, v2 calibration (`predictions_cal_v2_per_position.parquet`)" in text
+    assert "Boom/bust probabilities of `chain_v1+cal` against v2: unchanged" in text
+    assert "### 5.3 Seed sensitivity of tie-aware coverage (D-088)" in text
+    assert "Acceptance stays at seed 0, as fixed in D-085" in text and "from `calibrator_seeds.csv`" in text
+    assert "Unchanged since D-085:** metric seed 0" in text
+    assert "## 13. UI and model card requirements" in text and "## 14. Files" in text
+    assert (tmp_path / "d" / "backtest_v3_seed_sensitivity.csv").exists()
+    assert (tmp_path / "d" / "backtest_v3_coverage_change.csv").exists()
+
+
 def test_coverage_paragraph_is_neutral_and_names_failing_positions():
     models = R.ModelSet("chain_v1", None, "direct_lgbm", ["rolling_median_8"])
     detail = pl.DataFrame([{"model": "chain_v1+cal", "position": "RB", "n": 100, "coverage_closed": 0.863,

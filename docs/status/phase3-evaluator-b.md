@@ -302,3 +302,24 @@ Recommendation:
 - It passes tie-aware coverage at QB, RB, WR, TE and DST and fails at K. Disclose that in the model card and the UI.
 - Hide or mark K and DST boom/bust as low confidence, as the pre-set rule requires.
 - Any fix to the K or DST calibration would be chosen after seeing these results, so it needs the owner's explicit decision before the holdout session. It must not be tuned on 2025.
+
+## Report generator v3 (D-088, D-089; code only, not run on real data)
+
+Done:
+- `--coverage-before` (the v2 file `predictions_cal_v2_per_position.parquet`) switches on the v3 content.
+  - **"Changes from v2":** tie-aware and closed coverage, v2 against v3, per position for every calibrated model, with PASS/FAIL. All models use the same canonical seed-0 PIT. The section lists any acceptance results that flipped, notes whether the focus model's boom/bust probabilities changed from v2, and gives the predictions sha against v2.
+  - **Section 5.3, metric-seed sensitivity:** tie-aware coverage per calibrated model and position for seeds 0-4, with the min-max range and any position whose PASS/FAIL would change across seeds. Acceptance stays at seed 0 (D-085).
+  - **Calibrator-seed sensitivity:** `--calibrator-seeds` loads B2's table from CSV, JSON, Parquet, or the first markdown table with a seed column, and shows it with its range. Without the file the report says it is not available.
+  - **Acceptance:** restates that seed 0, the band and the rule are unchanged, and names v3 as the last calibration change before the holdout (D-088). Each failing position reads "FAIL (frozen as is, disclosed)".
+  - **Section 13, UI and model card requirements:** lists the low-confidence boom/bust labels under the pre-set rule (hide or mark, D-089), the coverage failures (frozen as is, disclosed), the D-085/D-086/D-088 disclosure, and the section 8 rule on metric claims. Files moves to section 14.
+- The boom/bust section keeps its v2 content: v1 pooled before, current after.
+
+Evidence:
+- `pytest tests/eval -q`: `96 passed in 119.46s`; `ruff check .`: `All checks passed!`
+
+Next:
+- When resumed: run a fresh audit at HEAD, then:
+
+  ```
+  python -m ffml.eval.report_backtest --run-id default_20261102 --ablation-run-id ablations_20261103 --out backtest_2026-11-03_v3 --calibration-before predictions_cal_v1_pooled_isotonic.parquet --coverage-before predictions_cal_v2_per_position.parquet --previous-report backtest_2026-11-03_v2 --previous-label v2 --calibrator-seeds <B2 file> --audit <fresh audit>
+  ```

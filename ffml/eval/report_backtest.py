@@ -850,6 +850,97 @@ def coverage_detail(
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
+#: metric seeds for the seed-sensitivity table (acceptance stays at seed 0, D-085)
+SENSITIVITY_SEEDS: tuple[int, ...] = (0, 1, 2, 3, 4)
+
+
+def seed_sensitivity(
+    frames: Mapping[str, pl.DataFrame], labels: Sequence[str], bounds: pl.DataFrame | None,
+    positions: Sequence[str] = POSITIONS, seeds: Sequence[int] = SENSITIVITY_SEEDS,
+) -> pl.DataFrame:
+    """Tie-aware coverage per model, position and metric seed (``model, position, seed, coverage``)."""
+    rows = []
+    for label in labels:
+        if label not in frames:
+            continue
+        for seed in seeds:
+            f = with_randomized_pit(frames[label], bounds, seed)
+            for pos in positions:
+                sub = f.filter(pl.col("position") == pos)
+                if not sub.is_empty():
+                    rows.append({"model": label, "position": pos, "seed": int(seed),
+                                 "coverage": tie_aware_coverage(sub)})
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def coverage_change(
+    before: pl.DataFrame, after: Mapping[str, pl.DataFrame], labels: Sequence[str], bounds: pl.DataFrame | None,
+    positions: Sequence[str] = POSITIONS, seed: int = 0,
+) -> pl.DataFrame:
+    """Tie-aware and closed coverage per calibrated model and position, before and after a recalibration.
+
+    ``before`` holds the earlier file's rows (all models); each model is
+    restricted to the keys of its ``after`` frame and gets the same canonical
+    randomized PIT (seed ``seed``), so the two columns differ only by the
+    calibration.
+    """
+    keys = list(M.KEY_COLUMNS)
+    rows = []
+    for label in labels:
+        if label not in after:
+            continue
+        b = before.filter(pl.col("model") == label)
+        if b.is_empty():
+            continue
+        a = after[label]
+        b = with_randomized_pit(b.join(a.select(keys), on=keys, how="semi"), bounds, seed)
+        a = a if M.RAND_PIT in a.columns else with_randomized_pit(a, bounds, seed)
+        for pos in positions:
+            bs, as_ = b.filter(pl.col("position") == pos), a.filter(pl.col("position") == pos)
+            if bs.is_empty() or as_.is_empty():
+                continue
+            rows.append({
+                "model": label, "position": pos,
+                "tie_aware_before": tie_aware_coverage(bs), "tie_aware_after": tie_aware_coverage(as_),
+                "closed_before": M.interval_coverage(M.validate_frame(_slim(bs))),
+                "closed_after": M.interval_coverage(M.validate_frame(_slim(as_))),
+            })
+    return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def load_calibrator_seed_table(path: str | Path | None) -> pl.DataFrame | None:
+    """B2's calibrator-seed sensitivity, if the file exists (CSV, JSON, Parquet, or a markdown table).
+
+    Tabular files need ``position``, ``seed`` and ``coverage`` columns
+    (``model`` optional). From a markdown file the first table whose header
+    contains ``seed`` is taken as it is. Returns None when there is no file.
+    """
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    if p.suffix == ".csv":
+        return pl.read_csv(p)
+    if p.suffix == ".parquet":
+        return pl.read_parquet(p)
+    if p.suffix == ".json":
+        return pl.read_json(p)
+    if p.suffix == ".md":
+        lines = p.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("|") and "seed" in line.lower() and i + 1 < len(lines) and "---" in lines[i + 1]:
+                header = [c.strip() for c in line.strip().strip("|").split("|")]
+                body = []
+                for row in lines[i + 2:]:
+                    if not row.startswith("|"):
+                        break
+                    body.append([c.strip() for c in row.strip().strip("|").split("|")])
+                return pl.DataFrame([dict(zip(header, r, strict=False)) for r in body])
+        return None
+    raise ValueError(f"unsupported calibrator-seed file {p.name}: use .csv, .json, .parquet or .md")
+
+
 def low_confidence(slope: float, slope_hi: float, band: tuple[float, float] = LOW_CONF_SLOPE_BAND,
                    floor: float = LOW_CONF_SLOPE_FLOOR) -> bool:
     """D-086 flag, fixed before the recalibrated results were seen.
@@ -1268,6 +1359,7 @@ def render_verdict(
     rule: str = RULE_CLOSED,
     acc_closed: Acceptance | None = None,
     all_models: Sequence[tuple[str, str, float, bool]] | None = None,
+    final_calibration: bool = False,
 ) -> str:
     """Markdown for the verdict section: grids, acceptance rules, coverage and the complete list.
 
@@ -1322,21 +1414,30 @@ def render_verdict(
             "its results are in the v1 report `reports/backtest_2026-11-03.md`, which stays committed unchanged; "
             "the closed-interval columns below repeat them for reference.\n"
         )
+        if final_calibration:
+            lines.append(
+                "**Unchanged since D-085:** metric seed 0, the 75-85% band and the tie-aware rule. **Last calibration "
+                "change before the holdout (D-088):** the calibrator now uses the same randomized-PIT tie handling as "
+                "this rule. Any position that still fails is **frozen as is, disclosed** (D-088); no further "
+                "calibration change is made before the holdout.\n"
+            )
         closed = {pos: (raw, cal, ok) for pos, raw, cal, ok in (acc_closed.coverage if acc_closed else [])}
         cov_rows = []
         for pos, raw, cal, ok in acc.coverage:
             c_raw, c_cal, c_ok = closed.get(pos, (math.nan, math.nan, False))
-            cov_rows.append([pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), "PASS" if ok else "FAIL",
+            result = "PASS" if ok else ("FAIL (frozen as is, disclosed)" if final_calibration else "FAIL")
+            cov_rows.append([pos, _num(raw), "PASS" if within(raw) else "FAIL", _num(cal), result,
                              _num(c_cal), ("PASS" if c_ok else "FAIL") if pos in closed else ""])
         lines.append(_md_table(["position", "tie-aware raw", "raw result", "tie-aware calibrated",
                                 "calibrated result (acceptance, D-085)", "closed calibrated (v1 rule)",
                                 "v1 rule result (superseded)"], cov_rows))
         lines.append("")
         for pos, raw, cal, ok in acc.coverage:
+            frozen = " Frozen as is, disclosed (D-088)." if (final_calibration and not ok) else ""
             lines.append(
                 f"- {pos}: **{'PASS' if ok else 'FAIL'}**. {subject}'s calibrated tie-aware coverage is "
                 f"{_num(cal)}, {'inside' if ok else 'outside'} {band[0]:.2f}-{band[1]:.2f} (raw {_num(raw)}, "
-                f"{'inside' if within(raw) else 'outside'} the band)."
+                f"{'inside' if within(raw) else 'outside'} the band).{frozen}"
             )
     else:
         lines.append(
@@ -1753,6 +1854,138 @@ def _changes_section(previous: str | None, reports_dir: Path, rule: str, before_
     return "\n".join(f"- {i}" for i in items)
 
 
+def _within(v: float, band: tuple[float, float] = COVERAGE_BAND) -> bool:
+    return v is not None and not math.isnan(v) and band[0] <= v <= band[1]
+
+
+def _previous_sha(previous: str | None, reports_dir: Path) -> str | None:
+    if not previous:
+        return None
+    path = reports_dir / f"{previous}.md"
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("| predictions file sha256 |") and "`" in line:
+            return line.split("`")[1]
+    return None
+
+
+def _changes_v3_section(previous: str | None, label: str, reports_dir: Path, file_sha: str,
+                        change: pl.DataFrame, before_name: str, boom_bust_note: str | None) -> str:
+    """"Changes from <label>": the D-088 calibration change and coverage per position for every model."""
+    prev_sha = _previous_sha(previous, reports_dir)
+    out = [
+        "- Calibration aligned with the acceptance rule (D-088): the conformal step uses the same randomized-PIT "
+        "tie handling and seed scheme as the tie-aware coverage metric (D-085), for every position and model, "
+        "fitted walk-forward on earlier weeks only. This is the last calibration change before the holdout.",
+        f"- Predictions file sha256 `{file_sha[:16]}...`" + (f" ({label}: `{prev_sha}`)." if prev_sha else "."),
+    ]
+    if boom_bust_note:
+        out.append(f"- {boom_bust_note}")
+    out.append(
+        "- The acceptance rule, the 75-85% band and metric seed 0 are unchanged (D-085). Everything else is "
+        f"computed as in {label}." + (f" The {label} report `reports/{previous}.md` stays committed unchanged."
+                                     if previous else "")
+    )
+    if not change.is_empty():
+        order = {p: i for i, p in enumerate(POSITIONS)}
+        t = change.with_columns(pl.col("position").replace_strict(order, default=99).alias("_o")).sort(["model", "_o"])
+        rows = []
+        for r in t.iter_rows(named=True):
+            rb, ra = _within(r["tie_aware_before"]), _within(r["tie_aware_after"])
+            rows.append([f"`{r['model']}`", r["position"], _num(r["tie_aware_before"]), "PASS" if rb else "FAIL",
+                         _num(r["tie_aware_after"]), "PASS" if ra else "FAIL",
+                         _num(r["closed_before"]), _num(r["closed_after"])])
+        out.append(f"\nCoverage per position, {label} calibration (`{before_name}`) against this run, every "
+                   "calibrated model (tie-aware coverage with seed 0, acceptance band 0.75-0.85; closed-interval "
+                   "coverage for reference):\n")
+        out.append(_md_table(["model", "position", f"tie-aware {label}", f"{label} result", "tie-aware now",
+                              "result now", f"closed {label}", "closed now"], rows))
+        flips = [r for r in t.iter_rows(named=True)
+                 if _within(r["tie_aware_before"]) != _within(r["tie_aware_after"])]
+        out.append("\nAcceptance results that changed: " + (
+            "; ".join(f"`{r['model']}` {r['position']} {'FAIL -> PASS' if _within(r['tie_aware_after']) else 'PASS -> FAIL'}"
+                      for r in flips) if flips else "none") + ".")
+    return "\n".join(out)
+
+
+def _seed_section(seeds: pl.DataFrame, calib_seed: pl.DataFrame | None, calib_seed_name: str | None,
+                  band: tuple[float, float] = COVERAGE_BAND) -> str:
+    out = []
+    if seeds.is_empty():
+        out.append("Metric-seed sensitivity: not available.")
+    else:
+        seed_list = sorted(seeds["seed"].unique().to_list())
+        out.append(
+            f"Tie-aware coverage of every calibrated model per position for metric seeds {seed_list[0]}-"
+            f"{seed_list[-1]} (the seed of the randomized PIT draw). **Acceptance stays at seed 0, as fixed in "
+            "D-085**; the other seeds show how much the result depends on that draw.\n"
+        )
+        order = {p: i for i, p in enumerate(POSITIONS)}
+        rows = []
+        flips = []
+        for (model, pos), g in sorted(seeds.group_by(["model", "position"]),
+                                      key=lambda kv: (kv[0][0], order.get(kv[0][1], 99))):
+            vals = dict(zip(g["seed"].to_list(), g["coverage"].to_list(), strict=True))
+            v = [vals.get(s, math.nan) for s in seed_list]
+            finite = [x for x in v if not math.isnan(x)]
+            lo, hi = (min(finite), max(finite)) if finite else (math.nan, math.nan)
+            outcomes = {_within(x, band) for x in finite}
+            if len(outcomes) > 1:
+                flips.append(f"`{model}` {pos}")
+            rows.append([f"`{model}`", pos, *[_num(x) for x in v], _num(lo), _num(hi), _num(hi - lo)])
+        out.append(_md_table(["model", "position", *[f"seed {s}" for s in seed_list], "min", "max", "range"], rows))
+        out.append("\nPositions where the PASS/FAIL outcome would differ across seeds: "
+                   + (", ".join(flips) if flips else "none") + ".")
+    out.append("\n**Calibrator-seed sensitivity (ML Engineer B2):** " + (
+        f"from `{calib_seed_name}`.\n" if calib_seed is not None else
+        "not available; the file was not supplied or does not exist yet."))
+    if calib_seed is not None:
+        frame = calib_seed
+        if {"position", "seed", "coverage"} <= set(frame.columns):
+            idx = [c for c in ("model", "position") if c in frame.columns]
+            wide = frame.with_columns(pl.col("seed").cast(pl.String)).pivot(
+                on="seed", index=idx, values="coverage", aggregate_function="first")
+            seed_cols = [c for c in wide.columns if c not in idx]
+            wide = wide.with_columns(
+                pl.min_horizontal(seed_cols).alias("min"), pl.max_horizontal(seed_cols).alias("max"),
+            ).with_columns((pl.col("max") - pl.col("min")).alias("range"))
+            out.append(_frame_md(wide))
+        else:
+            out.append(_frame_md(frame))
+    return "\n".join(out)
+
+
+def _requirements_section(calib_stats: pl.DataFrame, acc: Acceptance, models: ModelSet, rule: str,
+                          final_calibration: bool) -> str:
+    """UI and model card requirements that follow from the pre-set rules (D-085, D-086, D-088, D-089)."""
+    items = []
+    if not calib_stats.is_empty():
+        low = calib_stats.filter((pl.col("version") == "after") & pl.col("low_confidence"))
+        if not low.is_empty():
+            labels = ", ".join(f"{r['position']} {r['kind']}" for r in low.iter_rows(named=True))
+            items.append(f"Boom/bust labels with low confidence under the pre-set rule (D-086): {labels}. The app hides "
+                         "them or marks them low confidence, and the model card says so (D-089).")
+        else:
+            items.append("No boom/bust label is low confidence under the pre-set rule (D-086).")
+    failing = [(pos, cal) for pos, _, cal, ok in acc.coverage if not ok]
+    rule_name = "tie-aware" if rule == RULE_TIE_AWARE else "closed-interval"
+    if failing:
+        tail = " Frozen as is, disclosed (D-088)." if final_calibration else ""
+        items.append(f"Coverage acceptance fails ({rule_name}, calibrated) at "
+                     + ", ".join(f"{p} ({_num(c)})" for p, c in failing)
+                     + ": the model card and the UI state it." + tail)
+    else:
+        items.append(f"Coverage acceptance ({rule_name}, calibrated) passes at every position.")
+    if rule == RULE_TIE_AWARE:
+        items.append("The model card states that the coverage rule changed after the 2022-2024 results were seen and "
+                     "before the holdout was opened (D-085), and that the calibration changed after validation "
+                     "(D-086, D-088).")
+    items.append("Every metric claim in the UI must appear in this report with the same numbers (MODELING.md "
+                 "section 8); the cells the chain does not beat (section 12) are stated plainly.")
+    return "\n".join(f"- {i}" for i in items)
+
+
 def _secondary_section(table: pl.DataFrame) -> str:
     if table.is_empty():
         return "(no rows)"
@@ -2005,6 +2238,9 @@ def build_backtest_report(
     coverage_rule: str = RULE_TIE_AWARE,
     calibration_before: str | Path | None = None,
     previous_report: str | None = None,
+    coverage_before: str | Path | None = None,
+    previous_label: str = "v1",
+    calibrator_seeds: str | Path | None = None,
 ) -> Path:
     """Write ``reports/<out_name>.md`` and ``data/reports/<out_name>_*.csv`` from one backtest run.
 
@@ -2018,7 +2254,15 @@ def build_backtest_report(
     ``calibration_before`` is a predictions file with the earlier boom/bust
     calibration (D-086 before/after section); a bare file name is looked up
     in the run directory. ``previous_report`` names the earlier report under
-    ``reports/`` for the "Changes from v1" section.
+    ``reports/`` for the "Changes from <previous_label>" section.
+
+    ``coverage_before`` (v3, D-088) is the predictions file of the previous
+    calibration: the report then shows coverage before and after per model
+    and position, metric-seed sensitivity (seeds 0-4; acceptance stays at
+    seed 0), the final-calibration statement ("frozen as is, disclosed") and
+    the UI and model card requirements. ``calibrator_seeds`` is ML Engineer
+    B2's calibrator-seed table (:func:`load_calibrator_seed_table`), shown
+    when the file exists.
     """
     if coverage_rule not in COVERAGE_RULES:
         raise ValueError(f"coverage_rule must be one of {COVERAGE_RULES}, got {coverage_rule!r}")
@@ -2154,6 +2398,36 @@ def build_backtest_report(
     coverage_text = "" if tie_rule else coverage_paragraph(detail, acc.coverage, models)
     all_models_acc = acceptance_all_models(main, [m for m in labels if m.endswith(CAL)], positions, acc_metric)
 
+    # v3 (D-088): coverage before/after the final recalibration, metric-seed sensitivity, calibrator seeds
+    final_calibration = coverage_before is not None
+    cal_labels = [m for m in labels if m.endswith(CAL)]
+    change = pl.DataFrame()
+    seeds_df = pl.DataFrame()
+    boom_bust_note: str | None = None
+    coverage_before_path: Path | None = None
+    if final_calibration:
+        coverage_before_path = Path(coverage_before)
+        if not coverage_before_path.is_absolute() and not coverage_before_path.exists():
+            coverage_before_path = run_dir / coverage_before_path
+        prev = pl.read_parquet(coverage_before_path).filter(
+            (pl.col("scoring") == "ppr") & pl.col("season").is_in(report_seasons) & pl.col("model").is_in(cal_labels))
+        change = coverage_change(prev, aligned, cal_labels, bounds, positions, seed)
+        seeds_df = seed_sensitivity(aligned, cal_labels, bounds, positions)
+        focus_cal = models.focus + CAL
+        pcols = [c for c in ("boom_prob", "bust_prob") if c in prev.columns and focus_cal in aligned
+                 and c in aligned[focus_cal].columns]
+        if pcols:
+            keys = list(M.KEY_COLUMNS)
+            both = prev.filter(pl.col("model") == focus_cal).select(*keys, *pcols).join(
+                aligned[focus_cal].select(*keys, *[pl.col(c).alias(f"{c}_now") for c in pcols]), on=keys)
+            worst = max(float((both[c] - both[f"{c}_now"]).abs().max() or 0.0) for c in pcols)
+            boom_bust_note = (
+                f"Boom/bust probabilities of `{focus_cal}` against {previous_label}: "
+                + ("unchanged" if worst <= 1e-9 else f"changed (largest absolute difference {worst:.4g})")
+                + f" on {both.height:,} rows; section 5.2 keeps the v1-to-current comparison."
+            )
+    calib_seed = load_calibrator_seed_table(calibrator_seeds)
+
     # boom/bust calibration before and after (D-086)
     calib_stats = pl.DataFrame()
     calib_rel = pl.DataFrame()
@@ -2201,14 +2475,20 @@ def build_backtest_report(
                  + (f", focus={focus!r}" if focus else "")
                  + f", coverage_rule={coverage_rule!r}"
                  + (f", calibration_before={Path(calibration_before).name!r}" if calibration_before else "")
+                 + (f", coverage_before={Path(coverage_before).name!r}" if coverage_before else "")
                  + f")`, {n_boot} bootstrap draws, seed {seed}).\n")
     lines.append(
         f"> **Holdout session pending.** The {get_settings().holdout_season} holdout season has not been "
         "evaluated. It will be evaluated once, in a single evaluator session (EV-3.4, D-049), after the owner "
         "has reviewed this report (D-084). Every number below comes from the 2022-2024 validation seasons.\n"
     )
-    if previous_report or calibration_before is not None:
-        lines.append("## Changes from v1\n")
+    if final_calibration:
+        lines.append(f"## Changes from {previous_label}\n")
+        lines.append(_changes_v3_section(previous_report, previous_label, reports_dir, file_sha, change,
+                                         coverage_before_path.name if coverage_before_path else "", boom_bust_note)
+                     + "\n")
+    elif previous_report or calibration_before is not None:
+        lines.append(f"## Changes from {previous_label}\n")
         lines.append(_changes_section(previous_report, reports_dir, coverage_rule,
                                       before_path.name if before_path else None, file_sha, quantile_note) + "\n")
     if models.draft_note:
@@ -2315,6 +2595,9 @@ def build_backtest_report(
         lines.append("\n### 5.2 Boom and bust calibration per position, before and after (D-086)\n")
         lines.append(_boom_bust_section(calib_stats, calib_rel, before_path.name if before_path else None,
                                         models.focus + CAL))
+    if final_calibration:
+        lines.append("\n### 5.3 Seed sensitivity of tie-aware coverage (D-088)\n")
+        lines.append(_seed_section(seeds_df, calib_seed, Path(calibrator_seeds).name if calibrator_seeds else None))
 
     lines.append("\n## 6. Secondary population: inactive players included (availability layer)\n")
     lines.append(
@@ -2419,9 +2702,14 @@ def build_backtest_report(
         lines.append(f"> Format check only: the focus model is `{models.focus}`, not the chain.\n")
     lines.append(render_verdict(cells, acc, models, positions, coverage_text=coverage_text,
                                 metrics=verdict_metrics, rule=coverage_rule, acc_closed=acc_closed,
-                                all_models=all_models_acc))
+                                all_models=all_models_acc, final_calibration=final_calibration))
+    files_no = 13
+    if final_calibration or calibration_before is not None:
+        lines.append("\n## 13. UI and model card requirements (D-085, D-086, D-088, D-089)\n")
+        lines.append(_requirements_section(calib_stats, acc, models, coverage_rule, final_calibration))
+        files_no = 14
 
-    lines.append("\n## 13. Files\n")
+    lines.append(f"\n## {files_no}. Files\n")
     lines.append(
         f"- `data/reports/{out_name}_per_week.csv`: every metric per model, position, season and week "
         "(headline and consensus populations; gitignored).\n"
@@ -2440,6 +2728,10 @@ def build_backtest_report(
         detail.write_csv(data_dir / f"{out_name}_coverage.csv")
     if not calib_stats.is_empty():
         calib_stats.write_csv(data_dir / f"{out_name}_boom_bust.csv")
+    if not change.is_empty():
+        change.write_csv(data_dir / f"{out_name}_coverage_change.csv")
+    if not seeds_df.is_empty():
+        seeds_df.write_csv(data_dir / f"{out_name}_seed_sensitivity.csv")
     records = [*delta_records, *lineup_records, *cons_records, *abl_records]
     records += [{"population": "verdict", "position": c.position, "form": c.form, "focus": c.delta.focus,
                  "other": c.delta.other, "metric": c.metric, "focus_value": c.delta.focus_value,
@@ -2473,12 +2765,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibration-before", default=None,
                         help="predictions file with the earlier boom/bust calibration (D-086 before/after)")
     parser.add_argument("--previous-report", default=None, help="earlier report name under reports/ (Changes)")
+    parser.add_argument("--previous-label", default="v1", help="label of the earlier report (Changes from ...)")
+    parser.add_argument("--coverage-before", default=None,
+                        help="predictions file of the previous calibration (v3: coverage before/after, D-088)")
+    parser.add_argument("--calibrator-seeds", default=None, help="calibrator-seed sensitivity table from B2")
     args = parser.parse_args(argv)
     path = build_backtest_report(
         args.run_id, args.out, args.ablation_run_id, n_boot=args.n_boot, seed=args.seed, n_jobs=args.n_jobs,
         focus=args.focus, include_consensus=not args.no_consensus, audit_name=args.audit,
         coverage_rule=args.coverage_rule, calibration_before=args.calibration_before,
-        previous_report=args.previous_report,
+        previous_report=args.previous_report, previous_label=args.previous_label,
+        coverage_before=args.coverage_before, calibrator_seeds=args.calibrator_seeds,
     )
     print(f"wrote {path}")
     return 0
@@ -2516,8 +2813,12 @@ __all__ = [
     "ci_status",
     "consensus_population",
     "consensus_sentences",
+    "SENSITIVITY_SEEDS",
     "consensus_status",
+    "coverage_change",
     "coverage_detail",
+    "load_calibrator_seed_table",
+    "seed_sensitivity",
     "coverage_paragraph",
     "headline_frames",
     "knot_columns",
