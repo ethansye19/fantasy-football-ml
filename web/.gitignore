@@ -1,0 +1,16 @@
+# dependencies and build output
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# test output
+playwright-report/
+test-results/
+blob-report/
+coverage/
+.e2e-data/
+
+# local env
+.env*.local
