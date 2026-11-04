@@ -96,6 +96,10 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-094 | 2026-11-04 | accepted (owner) | If 2025 passes but the 2026 forward check misses the same rules, stop before publishing projections and show the owner |
 | D-095 | 2026-11-04 | accepted | Holdout and forward-check calibration is FIXED: each model's calibrator is frozen on 2022-2024 and never updated from 2025 or 2026 weeks |
 | D-096 | 2026-11-04 | accepted | The 2026 forward check covers weeks 1-7, the weeks fully final in the frozen data snapshot (week 8 had 2 of 14 games unfinished) |
+| D-097 | 2026-11-04 | accepted | Holdout outcome: chain_v1 NOT APPROVED (QB coverage 0.739); Gate 3 fails; no release as approval, no Week 9 projections |
+| D-098 | 2026-11-04 | accepted (owner) | chain_v2 = chain_v1 + 2025 in training + walk-forward calibrator; pass-probability estimate before freezing; live test from Week 10 with hashed pre-kickoff projections |
+| D-099 | 2026-11-04 | accepted (owner) | Phase 4 and 5 start as an exception; the real app shows no projections until a model passes; private tests labeled "not approved" |
+| D-100 | 2026-11-04 | accepted | Approval gate in `ffml predict`: live needs the registry live version; private tests are candidates only, in a private store, labeled; `rejected` status |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -416,6 +420,14 @@ then calls `ffml.holdout.release_holdout(model_version, report)`, which writes
 release, production models are refit through 2025 and 2026 to date, and the
 weekly predictions use 2025 history. Accesses after release are still logged.
 
+*Amended 2026-11-04 (D-098, D-100):*
+- The release no longer depends on approval. It follows the single holdout
+  session whatever its verdict.
+- It records `approved` (false for chain_v1) and a `note`.
+- Approval is recorded only in the model registry.
+- Releasing 2025 makes it training data and history. It approves nothing,
+  and live predictions still need an approved, live registry version (D-100).
+
 ## D-059 to D-062 Feature build (proposed by the Feature Engineer, rulings by the orchestrator)
 
 **D-059 (rejected).** Legacy weekly depth charts carry a synthetic timestamp
@@ -649,6 +661,34 @@ failed. The limits:
 - **Gate 4** stays open until an approved model is connected and tested end
   to end.
 - **Phase 5** continues under the same limits.
+
+## D-100 Approval gate for predictions (ML Engineer proposal, accepted by the orchestrator, 2026-11-04)
+
+`ffml predict` has three modes, and every mode check runs before anything
+is read or written.
+
+- **Live, the default.**
+  - Runs only `registry.get_live()`, which must carry an evaluator report.
+  - Refuses `model_dir`, `model`, `model_version` and `chain_root`, and has
+    no newest-artifact fallback.
+  - With no live version it raises `NoApprovedModel` and the CLI exits 2.
+  - Writes manifest `environment: "live"`, `approval_status: "approved"`.
+- **Private test.**
+  - Registry candidates only.
+  - Writes only to `Settings.private_predictions_dir`, default
+    `data/predictions_private`.
+  - Labeled `approval_status: "not approved"`, `label: "not approved"`
+    in the manifest, the private LATEST and an `approval_status` column.
+- **Replay.**
+  - Labeled `environment: "replay"`.
+  - Never moves LATEST.
+
+The registry gains a terminal `rejected` status, set by `reject()` from a
+report carrying the exact line `Verdict: NOT APPROVED`. The API's production
+gate (docs/API.md section 3, v1.1) serves only a LATEST run that meets all
+of these:
+- `environment` is "live" and the run is approved;
+- its `model_version` equals the registry live version.
 
 ## Owner answers received 2026-11-01
 
