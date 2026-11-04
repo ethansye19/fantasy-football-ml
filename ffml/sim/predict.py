@@ -15,6 +15,16 @@ Modes (approval gate, D-097 to D-099)
   ``environment="private_test"``, ``approval_status="not approved"``,
   ``label="not approved"``; ``player_summary`` and ``ros_summary`` carry an
   ``approval_status`` column.
+
+  - ``rehearsal=True`` (``ffml livetest build-week --rehearsal``) moves the
+    private test into the sandbox :func:`rehearsal_dir`
+    (``data/livetest/rehearsal``): the candidate comes from the sandbox
+    registry ``REGISTRY.json`` there and the run goes to its
+    ``predictions_private`` store, never the private store the app reads;
+    the manifest and that store's ``LATEST`` carry ``rehearsal: true``.
+  - ``calibrator`` (a callable on the protocol frame) calibrates
+    ``player_summary``; the raw frame is kept as ``player_summary_raw``
+    and ``calibration_info`` goes to the manifest. Private tests only.
 - **Replay** (``replay=True``). As before (any model, never moves ``LATEST``);
   manifest ``environment="replay"`` and ``approval_status="not approved"``
   unless the model is the live approved version.
@@ -94,6 +104,8 @@ SLEEPER_CAPS: dict[str, float] = {
     "Doubtful": 0.15,
 }
 SLEEPER_WINDOW_DAYS = 7
+#: raw protocol frame of a calibrated private test (``player_summary`` is calibrated)
+RAW_SUMMARY_FILE = "player_summary_raw.parquet"
 LINE_COLS = ("ctx__spread", "ctx__total_line", "ctx__implied_team_total", "ctx__implied_opp_total")
 HEALTHY_RESET = {
     "attr__games_missed__l5": 0.0,
@@ -192,6 +204,23 @@ def resolve_model_dir(
     return newest, {"kind": "newest_artifact", "path": str(newest)}
 
 
+def rehearsal_dir() -> Path:
+    """Sandbox of live-test rehearsals: ``<data_dir>/livetest/rehearsal`` (registry and store)."""
+    return get_settings().data_dir / "livetest" / "rehearsal"
+
+
+def private_store(rehearsal: bool = False) -> Path:
+    """Where a private test writes: the private store, or the rehearsal sandbox store."""
+    if rehearsal:
+        return rehearsal_dir() / "predictions_private"
+    return get_settings().private_predictions_dir
+
+
+def private_registry(rehearsal: bool = False) -> Path | None:
+    """Registry of private-test candidates (``None`` = the real registry)."""
+    return rehearsal_dir() / "REGISTRY.json" if rehearsal else None
+
+
 def entry_path(entry: dict[str, Any]) -> Path:
     """A registry entry's artifact directory (relative paths are under the project root)."""
     p = Path(entry["path"])
@@ -216,14 +245,19 @@ def live_model_entry() -> dict[str, Any]:
     return live
 
 
-def private_test_entry(model_version: str | None) -> dict[str, Any]:
-    """The registry candidate for a private test; any other status is refused."""
+def private_test_entry(
+    model_version: str | None, registry_file: Path | str | None = None
+) -> dict[str, Any]:
+    """The registry candidate for a private test; any other status is refused.
+
+    ``registry_file`` is the rehearsal sandbox registry (default: the real one).
+    """
     from ffml.models import registry
 
     if not model_version:
         raise PredictionRefused("a private test needs model_version, a registry candidate")
     try:
-        entry = registry.get(model_version)
+        entry = registry.get(model_version, path=registry_file)
     except registry.RegistryError as exc:
         raise PredictionRefused(f"private test refused: {exc}") from None
     status = entry["status"]
@@ -248,8 +282,14 @@ def _gate(
     model_version: str | None,
     root: Path | str | None,
     update_latest: bool | None,
+    rehearsal: bool = False,
+    calibrator: Any = None,
 ) -> dict[str, Any] | None:
     """Mode checks before anything is read; the registry entry for live and private runs."""
+    if environment != "private_test" and rehearsal:
+        raise PredictionRefused("rehearsal is a private test (private_test=True) only")
+    if environment != "private_test" and calibrator is not None:
+        raise PredictionRefused("a calibrator is accepted for private tests only")
     if environment == "replay":
         if model_version is not None:
             raise PredictionRefused("model_version is for private tests; a replay takes model_dir")
@@ -271,12 +311,11 @@ def _gate(
         )
     if environment == "live":
         return live_model_entry()
-    private = get_settings().private_predictions_dir
+    private = private_store(rehearsal)
     if root is not None and not _same_path(root, private):
-        raise PredictionRefused(
-            f"a private test writes only to Settings.private_predictions_dir ({private})"
-        )
-    entry = private_test_entry(model_version)
+        where = "the rehearsal sandbox store" if rehearsal else "Settings.private_predictions_dir"
+        raise PredictionRefused(f"a private test writes only to {where} ({private})")
+    entry = private_test_entry(model_version, private_registry(rehearsal))
     if model_dir is not None and not _same_path(model_dir, entry_path(entry)):
         raise PredictionRefused(
             f"model_dir {model_dir} is not the registry path of {model_version!r} "
@@ -616,6 +655,9 @@ def run_predict(
     update_latest: bool | None = None,
     private_test: bool = False,
     model_version: str | None = None,
+    rehearsal: bool = False,
+    calibrator: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
+    calibration_info: dict[str, Any] | None = None,
 ) -> PredictResult | None:
     """Predict a week (and the rest of the season) and write a snapshot; see the module docstring.
 
@@ -626,7 +668,10 @@ def run_predict(
     source recorded as ``object``), ``data`` (a ChainData for the loaded
     model), ``ctx`` (a FeatureContext for live rows), ``chain_root`` (replay
     artifact search path) and ``update_latest`` (default: live and private
-    runs, each in its own store; never for replays).
+    runs, each in its own store; never for replays). Private tests only:
+    ``rehearsal`` (the sandbox registry and store of :func:`rehearsal_dir`)
+    and ``calibrator`` with ``calibration_info`` (calibrated
+    ``player_summary``, raw rows in ``player_summary_raw``).
     """
     t0 = time.perf_counter()
     now = _now(now)
@@ -643,9 +688,11 @@ def run_predict(
         model_version=model_version,
         root=root,
         update_latest=update_latest,
+        rehearsal=rehearsal,
+        calibrator=calibrator,
     )
     if environment == "private_test":
-        root = get_settings().private_predictions_dir
+        root = private_store(rehearsal)
     if replay:
         if season is None or week is None:
             raise ValueError("replay needs an explicit season and week")
@@ -834,8 +881,17 @@ def run_predict(
     version = source.get("version") or model.name
     labels: dict[str, str] = {"environment": environment, "approval_status": approval}
     summary = pred.frame
+    calibration_meta: dict[str, Any] | None = None
     if environment == "private_test":
         labels["label"] = NOT_APPROVED
+        if rehearsal:
+            labels["rehearsal"] = True
+        if calibrator is not None:
+            raw = summary.with_columns(pl.lit(NOT_APPROVED).alias("approval_status"))
+            extra[RAW_SUMMARY_FILE] = raw
+            summary = calibrator(summary)
+            calibration_meta = {"applied": True, "raw_file": RAW_SUMMARY_FILE}
+            calibration_meta.update(calibration_info or {})
         summary = summary.with_columns(pl.lit(NOT_APPROVED).alias("approval_status"))
         if ROS_SUMMARY_FILE in extra:
             extra[ROS_SUMMARY_FILE] = extra[ROS_SUMMARY_FILE].with_columns(
@@ -872,6 +928,8 @@ def run_predict(
         "rest_of_season": ros_info,
         "timings": {k: round(v, 2) for k, v in timings.items()},
     }
+    if calibration_meta is not None:
+        meta["calibration"] = calibration_meta
     if update_latest is None:
         update_latest = not replay  # live: public LATEST; private test: the private one
     path = write_predictions_snapshot(
@@ -923,7 +981,10 @@ __all__ = [
     "blocked_message",
     "entry_path",
     "live_model_entry",
+    "private_registry",
+    "private_store",
     "private_test_entry",
+    "rehearsal_dir",
     "replay_approval_status",
     "resolve_model_dir",
     "run_predict",

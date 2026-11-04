@@ -11,10 +11,11 @@ Layout::
         _manifest.json           model_version, seeds, n_sims, inputs, file hashes
     data/predictions/LATEST      json: season, week, run_id, model_version, path
 
-The approval labels ``environment``, ``approval_status`` and ``label``
-(:data:`LABEL_KEYS`), when given in ``meta``, are written at the top level of
-the manifest and of ``LATEST`` (D-099). Private test runs use the same layout
-under ``Settings.private_predictions_dir``.
+The approval labels ``environment``, ``approval_status`` and ``label``, and
+the live-test flag ``rehearsal`` (:data:`LABEL_KEYS`), when given in ``meta``,
+are written at the top level of the manifest and of ``LATEST`` (D-099).
+Private test runs use the same layout under
+``Settings.private_predictions_dir``.
 
 A run directory is written into a hidden staging directory and renamed into
 place in one step, then ``LATEST`` is replaced through a temporary file, so a
@@ -45,7 +46,7 @@ SIMS_FILE = "player_sims.parquet"
 SUMMARY_FILE = "player_summary.parquet"
 TEAM_ENV_FILE = "team_env.parquet"
 REQUIRED_META: tuple[str, ...] = ("model_version", "seeds", "n_sims", "inputs")
-LABEL_KEYS: tuple[str, ...] = ("environment", "approval_status", "label")
+LABEL_KEYS: tuple[str, ...] = ("environment", "approval_status", "label", "rehearsal")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EXTRA_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}\.parquet$")
 ROS_SIMS_FILE = "ros_sims.parquet"
