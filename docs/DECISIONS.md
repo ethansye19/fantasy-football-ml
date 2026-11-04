@@ -100,6 +100,9 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-098 | 2026-11-04 | accepted (owner) | chain_v2 = chain_v1 + 2025 in training + walk-forward calibrator; pass-probability estimate before freezing; live test from Week 10 with hashed pre-kickoff projections |
 | D-099 | 2026-11-04 | accepted (owner) | Phase 4 and 5 start as an exception; the real app shows no projections until a model passes; private tests labeled "not approved" |
 | D-100 | 2026-11-04 | accepted | Approval gate in `ffml predict`: live needs the registry live version; private tests are candidates only, in a private store, labeled; `rejected` status |
+| D-101 | 2026-11-04 | accepted | `FFML_APP_ENV`: production serves only approved live runs; private_test reads private store, then replay, then fixture; unknown values mean production |
+| D-102 | 2026-11-04 | accepted | API summaries are conditional on active; lineup values use the unconditional mean; trade value is max(0, ROS mean - replacement) |
+| D-103 | 2026-11-04 | accepted | Rest-of-season totals include the run week by default |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -689,6 +692,34 @@ gate (docs/API.md section 3, v1.1) serves only a LATEST run that meets all
 of these:
 - `environment` is "live" and the run is approved;
 - its `model_version` equals the registry live version.
+
+## D-101 to D-103 API conventions (Backend Engineer proposals, accepted by the orchestrator, 2026-11-04)
+
+**D-101.** `FFML_APP_ENV` takes two values.
+- `production`, also used for any unrecognised value: gated routes serve only
+  under the D-100 conditions.
+- `private_test`: gated routes serve the first source available, in this
+  order:
+  1. the private store;
+  2. a replay;
+  3. fixtures.
+  Every response is labeled "not approved".
+
+The gate runs before the request is parsed, so a gated route gives the same
+answer whatever the request contains.
+
+**D-102.** Request-time summaries follow the chain's convention: quantiles
+and boom/bust are conditional on the player being active. Lineup and
+replacement calculations use the unconditional mean. A player's trade value
+is `max(0, ROS mean - replacement level)`.
+
+**D-103.** Rest-of-season totals include the run week unless the request
+says otherwise. Simulation i of the week is added to ROS simulation i.
+
+Before Gate 4, request-time calibration is required (Backend proposal P-2
+for the ML Engineer). The evaluator approves calibrated numbers, and the API
+today serves raw simulation quantiles under league scoring, with a notice
+saying so.
 
 ## Owner answers received 2026-11-01
 
