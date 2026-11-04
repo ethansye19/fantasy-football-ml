@@ -434,6 +434,11 @@ def test_calibration_version_and_sources_on_recombine(tmp_settings, tmp_path):
         assert raw[col].null_count() == raw.height
     assert set(cal["calibration_version"]) == {CALIBRATION_VERSION}
     assert set(cal["cal_boom_source"]) <= {"identity", "pooled", "position"}
+    assert set(cal["cal_q_source"]) <= {"identity", "pooled", "position"}
+    assert "position" in set(cal["cal_q_source"])
+    assert raw["cal_q_source"].null_count() == raw.height
+    # the PIT bounds are written for every row with an earlier season
+    assert first.filter(pl.col("season") == 2022)["pos_min"].null_count() == 0
     assert set(
         cal.filter((pl.col("season") == 2021) & (pl.col("week") == 1))["cal_boom_source"]
     ) == {"identity"}

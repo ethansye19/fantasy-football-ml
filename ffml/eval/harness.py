@@ -49,12 +49,16 @@ From :func:`ffml.scoring.actuals.actual_statlines` scored with each
     the mid-point of the jump is used;
 ``kickoff_utc`` / ``week_cutoff``
     the row's game kickoff and the first kickoff of its week (D-046), used by
-    the calibrators to keep later games out of the calibration window.
+    the calibrators to keep later games out of the calibration window;
+``pos_min`` / ``pos_max``
+    the PIT bounds of the row (position extremes under its scoring in seasons
+    before its season), also used by the v3 quantile calibrator.
 
 Calibration
 ===========
-After the walk-forward, :class:`~ffml.models.calibration.OnlineConformal`
-(and :class:`~ffml.models.calibration.OnlineIsotonic` for ``boom_prob`` and
+After the walk-forward, :class:`~ffml.models.calibration.OnlinePITQuantile`
+(calibration v3, seed 0, aimed at the tie-aware coverage rule of D-085) and
+:class:`~ffml.models.calibration.OnlineIsotonic` (``boom_prob`` and
 ``bust_prob`` when present) produce a calibrated copy of every model's rows
 named ``<model>+cal``, each week using only earlier weeks of the run. The
 first run season warms the calibration up; ``report_seasons`` (recorded in the
@@ -106,6 +110,7 @@ from ffml.models.calibration import (
     PROB_PAIRS,
     OnlineConformal,
     OnlineIsotonic,
+    OnlinePITQuantile,
     source_column,
 )
 from ffml.models.protocol import (
@@ -131,6 +136,8 @@ OUTCOME_COLUMNS: tuple[str, ...] = (
     "pred_cdf_at_actual",
     "kickoff_utc",
     "week_cutoff",
+    "pos_min",
+    "pos_max",
 )
 STRING_COLUMNS: tuple[str, ...] = ("entity_id", "position", "team", "game_id", "scoring", "model")
 FLOAT_OPTIONAL: tuple[str, ...] = (
@@ -394,6 +401,71 @@ def outcome_table(
     return pl.concat(frames, how="vertical_relaxed")
 
 
+def position_bounds(
+    actuals: pl.DataFrame, seasons: Sequence[int], scorings: Mapping[str, ScoringRules]
+) -> pl.DataFrame:
+    """``season, scoring, position, pos_min, pos_max`` from played rows of seasons before each season.
+
+    The same bounds :func:`outcome_table` joins to every row (and the PIT and
+    the v3 calibrator use); for a season without rows yet (the holdout or a
+    live season) they are the extremes of every season in ``actuals``
+    before it.
+    """
+    played = actuals.filter(pl.col("played").fill_null(False))
+    out = []
+    for name, rules in scorings.items():
+        scored = played.select(
+            "position", pl.col("season").cast(pl.Int32), rules.score(played).alias("actual")
+        )
+        for season in sorted({int(s) for s in seasons}):
+            past = scored.filter(pl.col("season") < season)
+            if past.height == 0:
+                continue
+            out.append(
+                past.group_by("position")
+                .agg(
+                    pl.col("actual").min().alias("pos_min"), pl.col("actual").max().alias("pos_max")
+                )
+                .with_columns(
+                    pl.lit(season, dtype=pl.Int32).alias("season"), pl.lit(name).alias("scoring")
+                )
+                .select("season", "scoring", "position", "pos_min", "pos_max")
+            )
+    if not out:
+        return pl.DataFrame(
+            schema={
+                "season": pl.Int32,
+                "scoring": pl.String,
+                "position": pl.String,
+                "pos_min": pl.Float64,
+                "pos_max": pl.Float64,
+            }
+        )
+    return pl.concat(out, how="vertical_relaxed").sort(["season", "scoring", "position"])
+
+
+def fill_bounds(joined: pl.DataFrame, bounds: pl.DataFrame) -> pl.DataFrame:
+    """Fill ``pos_min`` / ``pos_max`` where the row has no outcome row, from the position table.
+
+    Rows with an outcome keep the bounds joined through :func:`outcome_table`
+    (unchanged, so the raw PIT is unchanged); rows without one (no stat line
+    that week) get the bounds of their predicted position, which the v3
+    calibrator needs to recalibrate their quantiles.
+    """
+    b = bounds.select(
+        pl.col("season").cast(pl.Int32),
+        pl.col("scoring").cast(pl.String),
+        pl.col("position").cast(pl.String),
+        pl.col("pos_min").alias("_bmin"),
+        pl.col("pos_max").alias("_bmax"),
+    )
+    out = joined.join(b, on=["season", "scoring", "position"], how="left", maintain_order="left")
+    return out.with_columns(
+        pl.coalesce("pos_min", "_bmin").alias("pos_min"),
+        pl.coalesce("pos_max", "_bmax").alias("pos_max"),
+    ).drop("_bmin", "_bmax")
+
+
 def pit_values(
     actual: np.ndarray, quantiles: np.ndarray, lower: np.ndarray, upper: np.ndarray
 ) -> np.ndarray:
@@ -602,23 +674,42 @@ def combine_parts(run_dir: Path, keys: Sequence[str]) -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed")
 
 
+#: seed of the calibrator's randomized PIT draws (D-088: seed 0 is the frozen choice)
+CALIBRATION_SEED = 0
+
+
+def default_quantile_calibrator(seed: int = CALIBRATION_SEED) -> OnlinePITQuantile:
+    return OnlinePITQuantile(seed=seed)
+
+
 def calibrated_rows(
     joined: pl.DataFrame,
-    conformal: OnlineConformal | None = None,
+    quantiles: OnlinePITQuantile | OnlineConformal | None = None,
     isotonic: OnlineIsotonic | None = None,
+    *,
+    version: str = CALIBRATION_VERSION,
 ) -> pl.DataFrame:
-    """``<model>+cal`` rows from raw rows with outcomes (each week uses earlier weeks only)."""
-    conformal = conformal or OnlineConformal()
+    """``<model>+cal`` rows from raw rows with outcomes (each week uses earlier weeks only).
+
+    The default is calibration v3: :class:`OnlinePITQuantile` with seed 0 for
+    the quantiles (bounds ``pos_min`` / ``pos_max``) and per-position
+    :class:`OnlineIsotonic` for boom and bust.
+    """
+    quantiles = quantiles or default_quantile_calibrator()
     isotonic = isotonic or OnlineIsotonic()
-    cal = conformal.transform(joined, lower_bound="pos_min")
+    if isinstance(quantiles, OnlinePITQuantile):
+        cal = quantiles.transform(joined, lower_bound="pos_min", upper_bound="pos_max")
+    else:
+        cal = quantiles.transform(joined, lower_bound="pos_min")
     cal = isotonic.transform(cal)
-    cal = cal.with_columns(pl.lit(CALIBRATION_VERSION).alias("calibration_version"))
+    cal = cal.with_columns(pl.lit(version).alias("calibration_version"))
     return with_pit(cal)
 
 
 #: calibration bookkeeping columns (null on raw rows)
 CAL_COLUMNS: tuple[str, ...] = (
     "cal_n",
+    "cal_q_source",
     *(source_column(p) for p, _ in PROB_PAIRS),
     "calibration_version",
 )
@@ -732,7 +823,10 @@ def run_walk_forward(
     t_comb = time.perf_counter()
     raw = combine_parts(run_dir, keys)
     outcomes = outcome_table(actuals, seasons, rules)
-    joined = with_pit(join_outcomes(raw, outcomes, cutoffs))
+    joined = fill_bounds(
+        join_outcomes(raw, outcomes, cutoffs), position_bounds(actuals, seasons, rules)
+    )
+    joined = with_pit(joined)
     frames = [joined]
     if calibrate and joined.height:
         frames.append(calibrated_rows(joined))
@@ -771,7 +865,9 @@ def run_walk_forward(
             "applied": bool(calibrate),
             "version": CALIBRATION_VERSION,
             "suffix": CAL_SUFFIX,
-            "conformal": repr(OnlineConformal()),
+            "quantiles": repr(default_quantile_calibrator()),
+            "seed": CALIBRATION_SEED,
+            "pit_bounds": "pos_min / pos_max: the position's played-score extremes in seasons before the row's",
             "isotonic": repr(OnlineIsotonic()),
             "window": "expanding over earlier weeks of the run, games before the week's first kickoff",
         },
@@ -958,6 +1054,7 @@ __all__ = [
     "model_key",
     "outcome_table",
     "pit_values",
+    "position_bounds",
     "read_manifest",
     "refit_points",
     "resolve_scorings",

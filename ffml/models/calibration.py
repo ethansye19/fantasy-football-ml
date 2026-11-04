@@ -1,9 +1,25 @@
 """Post-hoc calibration of prediction frames (MODELING.md section 6).
 
-Two online calibrators run inside the walk-forward harness as a
-post-processing step, and each can be frozen for the holdout and live use.
+Online calibrators run inside the walk-forward harness as a post-processing
+step, and each can be frozen for the holdout and live use. Versions
+(``CALIBRATION_VERSION``, written to manifests, calibrated rows and frozen
+files): ``v1-pooled-isotonic`` and ``v2-per-position-isotonic`` used
+:class:`OnlineConformal` for the quantiles; ``v3-tie-aware-quantile``
+(current, D-088) uses :class:`OnlinePITQuantile`. All versions use
+:class:`OnlineIsotonic` per position (from v2) for boom and bust.
 
-:class:`OnlineConformal`
+:class:`OnlinePITQuantile` (v3)
+    Recalibration in probability space, aimed at the acceptance rule (D-085):
+    the randomized PIT of each earlier row is drawn with the metric's own
+    :func:`ffml.eval.metrics.randomized_pit` (knots at the quantiles plus the
+    prior-season position minimum and maximum, one seeded generator over the
+    partition's rows in season, week, position, entity order), and the
+    level-``tau`` quantile becomes the raw quantile function at
+    ``G^-1(tau)``, where ``G`` is the empirical CDF of earlier weeks' PITs for
+    the position (pooled, then identity, below ``min_count``). Ties at
+    discrete scores are therefore treated exactly as the metric treats them.
+
+:class:`OnlineConformal` (v1, v2)
     Per-level quantile offsets (conformalized quantile regression). For a
     level ``tau`` with predicted quantile ``q_tau`` the conformity score of a
     row is ``actual - q_tau`` and the offset is the empirical ``tau``-quantile
@@ -65,6 +81,7 @@ import numpy as np
 import polars as pl
 from sklearn.isotonic import IsotonicRegression
 
+from ffml.eval.metrics import cdf_limits, randomized_pit  # the metric's tie handling (D-088)
 from ffml.models.protocol import QUANTILE_LEVELS
 
 CAL_SUFFIX = "+cal"
@@ -73,11 +90,14 @@ PROB_PAIRS: tuple[tuple[str, str], ...] = (
     ("boom_prob", "boom_actual"),
     ("bust_prob", "bust_actual"),
 )
-CALIBRATION_FORMAT = "ffml.calibration/2"
+CALIBRATION_FORMAT = "ffml.calibration/3"
 #: older frozen files that still load (v1 isotonic maps were pooled, without fallbacks)
-READABLE_FORMATS: tuple[str, ...] = ("ffml.calibration/1",)
-#: written to the backtest manifest, the calibrated rows and every frozen file (D-086)
-CALIBRATION_VERSION = "v2-per-position-isotonic"
+READABLE_FORMATS: tuple[str, ...] = ("ffml.calibration/1", "ffml.calibration/2")
+#: written to the backtest manifest, the calibrated rows and every frozen file.
+#: v1 pooled isotonic, v2 per-position isotonic (D-086), v3 tie-aware quantiles (D-088)
+CALIBRATION_VERSION = "v3-tie-aware-quantile"
+#: the offset-based quantile calibrator of v2 (OnlineConformal.fit_final writes it)
+CALIBRATION_V2 = "v2-per-position-isotonic"
 
 
 def quantile_column(level: float) -> str:
@@ -270,7 +290,7 @@ class OnlineConformal:
         table = rows.group_by(keys).agg(aggs).sort(keys) if keys else rows.select(aggs)
         iso = isotonic.fit_final(frame) if isotonic is not None else {}
         info = {
-            "calibration_version": CALIBRATION_VERSION,
+            "calibration_version": CALIBRATION_V2,
             "conformal": repr(self),
             "isotonic": repr(isotonic) if isotonic is not None else None,
             "fitted_at": datetime.now(UTC).isoformat(),
@@ -289,6 +309,382 @@ class OnlineConformal:
             offsets=table.to_dicts(),
             isotonic=iso,
             meta=info,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Tie-aware quantile recalibration (calibration v3, D-088)
+# --------------------------------------------------------------------------- #
+
+PIT_METHOD = "pit_quantile"
+OFFSET_METHOD = "conformal_offsets"
+#: row order of the randomized PIT draws, the metric's seed scheme (one generator per frame)
+PIT_SORT_KEYS: tuple[str, ...] = ("season", "week", "position", "entity_id")
+
+
+def _knot_matrix(
+    frame: pl.DataFrame, columns: Sequence[str], lower: str | None, upper: str | None
+) -> np.ndarray:
+    """``(n, k + 2)`` knots ``lower, q_1..q_k, upper`` with the metric's convention.
+
+    ``lower = min(lower, q_1)`` and ``upper = max(upper, q_k)``; a missing
+    bound drops that tail (the bound becomes ``q_1`` or ``q_k``), exactly as
+    :func:`ffml.eval.metrics.cdf_limits`.
+    """
+    q = frame.select(columns).cast(pl.Float64).to_numpy()
+    n = q.shape[0]
+    lo = (
+        frame[lower].cast(pl.Float64).to_numpy()
+        if lower and lower in frame.columns
+        else np.full(n, np.nan)
+    )
+    hi = (
+        frame[upper].cast(pl.Float64).to_numpy()
+        if upper and upper in frame.columns
+        else np.full(n, np.nan)
+    )
+    lo = np.where(np.isnan(lo), q[:, 0], np.minimum(lo, q[:, 0]))
+    hi = np.where(np.isnan(hi), q[:, -1], np.maximum(hi, q[:, -1]))
+    return np.column_stack([lo, q, hi])
+
+
+def quantile_at(knots: np.ndarray, levels: Sequence[float], p: np.ndarray) -> np.ndarray:
+    """The raw predictive quantile function at probabilities ``p`` (inverse of the piecewise-linear CDF).
+
+    ``knots`` is ``(n, k + 2)`` from :func:`_knot_matrix` at levels
+    ``0, levels..., 1``; ``p`` is ``(n, m)`` or ``(m,)``. Linear between knots
+    and out to the bounds; inside a point mass (tied knots) the tied value.
+    """
+    full = np.array([0.0, *levels, 1.0])
+    p = np.clip(np.asarray(p, dtype=float), 0.0, 1.0)
+    if p.ndim == 1:
+        p = np.broadcast_to(p, (knots.shape[0], p.size))
+    j = np.clip(np.searchsorted(full, p, side="right") - 1, 0, full.size - 2)
+    t = (p - full[j]) / (full[j + 1] - full[j])
+    rows = np.arange(knots.shape[0])[:, None]
+    x0, x1 = knots[rows, j], knots[rows, j + 1]
+    return x0 + t * (x1 - x0)
+
+
+def pit_limits(
+    frame: pl.DataFrame,
+    columns: Sequence[str] = tuple(quantile_column(q) for q in QUANTILE_LEVELS),
+    lower: str | None = "pos_min",
+    upper: str | None = "pos_max",
+    levels: Sequence[float] = QUANTILE_LEVELS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``F(y-)`` and ``F(y)`` per row from :func:`ffml.eval.metrics.cdf_limits` (same knots and bounds)."""
+    knots = _knot_matrix(frame, columns, lower, upper)
+    return cdf_limits(
+        frame["actual"].cast(pl.Float64).to_numpy(),
+        knots[:, 1:-1],
+        knots[:, 0],
+        knots[:, -1],
+        levels,
+    )
+
+
+class OnlinePITQuantile:
+    """Walk-forward recalibration of the quantiles in probability space, per position (v3, D-088).
+
+    The acceptance rule (D-085) measures the randomized PIT: ``U`` uniform on
+    ``[F(y-), F(y)]`` of the model's piecewise-linear CDF (knots at the
+    quantiles plus the prior-season position minimum and maximum). This
+    calibrator computes exactly that quantity with the metric's own functions
+    (:func:`ffml.eval.metrics.randomized_pit`; the eligible rows of a
+    ``(model, scoring)`` partition are ordered by season, week, position and
+    entity and drawn from one generator seeded with ``seed``). For each
+    predicted week, ``G`` is the empirical CDF of the randomized PITs of
+    earlier weeks (games before the week's first kickoff) for the row's
+    position, or for all positions of the partition when the position has
+    fewer than ``min_count`` rows, or the identity when that is also short.
+    The calibrated level-``tau`` quantile is the raw quantile function at
+    ``G^-1(tau)`` (linear between knots and to the bounds), so under
+    calibration the randomized PIT becomes uniform, ties included. The levels
+    used are recorded per row in ``cal_q_source`` (``position``, ``pooled``,
+    ``identity``) and ``cal_n``. ``pred_mean`` is unchanged; quantiles are
+    monotone because ``G^-1`` and the quantile function are.
+
+    Atoms (``atoms="nearest"``, the default). An integer score that lands
+    exactly on an untied knot has a PIT exactly equal to that knot's level,
+    so the earlier PITs pile up at the knot levels, and the rule's open
+    interval ``(0.1, 0.9)`` counts such a row as outside on both tails. When
+    ``G^-1(tau)`` falls on an atom ``a``, the knot is placed on the atom
+    (``p = a``) or just off it (``a - eps`` below the median, ``a + eps``
+    above), whichever brings the outside share closest to its target.
+    Outside means ``U <= tau`` for lower levels and ``U >= tau`` for upper
+    levels. ``atoms="plain"`` is the plain ``G^-1``.
+    """
+
+    #: probability step used to place a knot just off an atom
+    ATOM_EPS = 1e-6
+    #: PITs closer than this count as one atom
+    ATOM_TOL = 1e-12
+
+    def __init__(
+        self,
+        levels: Iterable[float] = QUANTILE_LEVELS,
+        by: Iterable[str] = ("position",),
+        min_count: int = 50,
+        seed: int = 0,
+        suffix: str = CAL_SUFFIX,
+        atoms: str = "nearest",
+    ) -> None:
+        if atoms not in ("nearest", "plain"):
+            raise ValueError("atoms must be 'nearest' or 'plain'")
+        self.levels = tuple(float(q) for q in levels)
+        self.by = tuple(by)
+        self.min_count = int(min_count)
+        self.seed = int(seed)
+        self.suffix = suffix
+        self.atoms = atoms
+        self.columns = tuple(quantile_column(q) for q in self.levels)
+
+    def __repr__(self) -> str:
+        return (
+            f"OnlinePITQuantile(levels={self.levels}, by={self.by}, min_count={self.min_count}, "
+            f"seed={self.seed}, atoms={self.atoms!r})"
+        )
+
+    @property
+    def group_source(self) -> str:
+        return "+".join(self.by) if self.by else "pooled"
+
+    def pits(
+        self, part: pl.DataFrame, lower: str | None = "pos_min", upper: str | None = "pos_max"
+    ) -> np.ndarray:
+        """Randomized PIT per row of ``part`` (NaN outside the evaluation population), metric scheme."""
+        n = part.height
+        out = np.full(n, np.nan)
+        cond = pl.col("actual").is_not_null() & pl.all_horizontal(
+            [pl.col(c).is_not_null() for c in self.columns]
+        )
+        if "active" in part.columns:
+            cond = cond & pl.col("active").fill_null(False)
+        idx = part.with_row_index("_ri").filter(cond)
+        if idx.height == 0:
+            return out
+        keys = [k for k in PIT_SORT_KEYS if k in idx.columns]
+        idx = idx.sort(keys)
+        knots = _knot_matrix(idx, self.columns, lower, upper)
+        u = randomized_pit(
+            idx["actual"].cast(pl.Float64).to_numpy(),
+            knots[:, 1:-1],
+            knots[:, 0],
+            knots[:, -1],
+            seed=self.seed,
+            levels=self.levels,
+        )
+        out[idx["_ri"].to_numpy()] = u
+        return out
+
+    def level_map(self, u: np.ndarray) -> np.ndarray:
+        """``G^-1(tau)`` for every level from the history PITs, with the atom rule (class docstring)."""
+        u = np.sort(np.asarray(u, dtype=float))
+        p = np.quantile(u, self.levels, method="linear")
+        if self.atoms == "plain" or u.size == 0:
+            return p
+        n = u.size
+        for k, tau in enumerate(self.levels):
+            a = p[k]
+            below = np.searchsorted(u, a - self.ATOM_TOL, side="left") / n  # G(a-)
+            at = np.searchsorted(u, a + self.ATOM_TOL, side="right") / n  # G(a)
+            if at - below < 1.0 / n + 1e-15:  # no repeated value at a: not an atom
+                continue
+            # the atom's own rows sit at U = a; tau is the outside share at or below (or above) the knot
+            if tau <= 0.5:
+                p[k] = a if abs(at - tau) <= abs(below - tau) else a - self.ATOM_EPS
+            else:
+                p[k] = a if abs(tau - below) <= abs(tau - at) else a + self.ATOM_EPS
+        return np.clip(p, 0.0, 1.0)
+
+    def _recalibrate(
+        self,
+        rows: pl.DataFrame,
+        plevels: np.ndarray,
+        lower: str | None,
+        upper: str | None,
+        source: np.ndarray,
+        counts: np.ndarray,
+    ) -> pl.DataFrame:
+        """New quantiles ``Q_raw(plevels)`` per row (``plevels`` is ``(n, k)``)."""
+        if rows.height == 0:
+            return rows
+        knots = _knot_matrix(rows, self.columns, lower, upper)
+        ok = ~np.isnan(knots).any(axis=1)
+        new = rows.select(self.columns).cast(pl.Float64).to_numpy().copy()
+        if ok.any():
+            vals = quantile_at(knots[ok], self.levels, plevels[ok])
+            new[ok] = np.sort(vals, axis=1)
+        return rows.with_columns(
+            *[
+                pl.Series(c, new[:, i], dtype=pl.Float64).fill_nan(None)
+                for i, c in enumerate(self.columns)
+            ],
+            pl.Series("cal_q_source", source.tolist(), dtype=pl.String),
+            pl.Series("cal_n", counts, dtype=pl.Int64),
+        )
+
+    def _week_levels(
+        self, rows: pl.DataFrame, history: pl.DataFrame
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Per-row levels, sources and history counts for one predicted week."""
+        n = rows.height
+        identity = np.array(self.levels)
+        plevels = np.tile(identity, (n, 1))
+        source = np.full(n, "identity", dtype=object)
+        counts = np.zeros(n, dtype=np.int64)
+        hist = history.filter(pl.col("_u").is_not_null() & ~pl.col("_u").is_nan())
+        pooled = self.level_map(hist["_u"].to_numpy()) if hist.height >= self.min_count else None
+        if pooled is not None:
+            plevels[:] = pooled
+            source[:] = "pooled"
+            counts[:] = hist.height
+        if self.by:
+            row_keys = rows.select(list(self.by)).rows()
+            groups = hist.group_by(list(self.by)).agg(pl.col("_u"))
+            for rec in groups.iter_rows(named=True):
+                key = tuple(rec[c] for c in self.by)
+                values = np.asarray(rec["_u"], dtype=float)
+                if values.size < self.min_count:
+                    continue
+                mask = np.array([k == key for k in row_keys], dtype=bool)
+                if not mask.any():
+                    continue
+                plevels[mask] = self.level_map(values)
+                source[mask] = self.group_source
+                counts[mask] = values.size
+        return plevels, source, counts
+
+    def transform(
+        self,
+        frame: pl.DataFrame,
+        *,
+        partition: Sequence[str] = PARTITION,
+        lower_bound: str | None = "pos_min",
+        upper_bound: str | None = "pos_max",
+        rename: bool = True,
+    ) -> pl.DataFrame:
+        """Calibrated copy of every row; week ``w`` uses only randomized PITs of earlier weeks."""
+        missing = [
+            c
+            for c in ("season", "week", "actual", *self.columns, *self.by)
+            if c not in frame.columns
+        ]
+        if missing:
+            raise ValueError(f"frame is missing columns {missing}")
+        out = []
+        for part in _partitions(frame, partition):
+            part = part.drop("cal_n", "cal_q_source", strict=False).with_columns(
+                pl.Series("_u", self.pits(part, lower_bound, upper_bound), dtype=pl.Float64)
+            )
+            for season, week in _weeks(part):
+                rows = part.filter((pl.col("season") == season) & (pl.col("week") == week))
+                history = _earlier(part, season, week, _week_cutoff(rows))
+                plevels, source, counts = self._week_levels(rows, history)
+                out.append(
+                    self._recalibrate(rows, plevels, lower_bound, upper_bound, source, counts).drop(
+                        "_u"
+                    )
+                )
+        if not out:
+            return frame.clear()
+        result = pl.concat(out, how="vertical_relaxed")
+        if rename and "model" in result.columns:
+            result = result.with_columns((pl.col("model") + self.suffix).alias("model"))
+        return result
+
+    def fit_final(
+        self,
+        frame: pl.DataFrame,
+        isotonic: OnlineIsotonic | None = None,
+        meta: dict[str, Any] | None = None,
+        *,
+        lower_bound: str | None = "pos_min",
+        upper_bound: str | None = "pos_max",
+        bounds: pl.DataFrame | None = None,
+    ) -> FrozenCalibration:
+        """Frozen ``G^-1`` levels per ``(scoring, position)`` plus pooled per scoring, from every row.
+
+        ``bounds`` (``scoring, position, pos_min, pos_max``) are stored for
+        applying the calibrator to frames that carry no bound columns
+        (the holdout and live weeks: extremes of every season before them).
+        """
+        if "model" in frame.columns and frame["model"].n_unique() > 1:
+            raise ValueError("fit_final takes the rows of one model; filter the frame first")
+        part_keys = [c for c in ("scoring",) if c in frame.columns]
+        maps, pooled = [], []
+        parts = frame.group_by(part_keys, maintain_order=True) if part_keys else [((), frame)]
+        n_rows = 0
+        for pkey, part in parts:
+            pgroup = dict(zip(part_keys, [str(v) for v in pkey], strict=True))
+            u = self.pits(part, lower_bound, upper_bound)
+            part = part.with_columns(pl.Series("_u", u, dtype=pl.Float64)).filter(
+                ~pl.col("_u").is_nan()
+            )
+            n_rows += part.height
+            if part.height >= self.min_count:
+                pooled.append(
+                    {
+                        "group": pgroup,
+                        "levels": self.level_map(part["_u"].to_numpy()).tolist(),
+                        "n": part.height,
+                    }
+                )
+            for key, sub in part.group_by(list(self.by), maintain_order=True) if self.by else []:
+                if sub.height < self.min_count:
+                    continue
+                group = {**pgroup, **dict(zip(self.by, [str(v) for v in key], strict=True))}
+                maps.append(
+                    {
+                        "group": group,
+                        "levels": self.level_map(sub["_u"].to_numpy()).tolist(),
+                        "n": sub.height,
+                    }
+                )
+        iso = isotonic.fit_final(frame) if isotonic is not None else {}
+        info = {
+            "calibration_version": CALIBRATION_VERSION,
+            "quantile_calibrator": repr(self),
+            "isotonic": repr(isotonic) if isotonic is not None else None,
+            "fitted_at": datetime.now(UTC).isoformat(),
+            "rows": n_rows,
+            "seasons": sorted({int(s) for s in frame["season"].unique().to_list()})
+            if "season" in frame.columns
+            else [],
+            "model": frame["model"][0] if "model" in frame.columns and frame.height else None,
+        }
+        info.update(meta or {})
+        stored_bounds = (
+            bounds.select(
+                *[
+                    pl.col(c).cast(pl.String)
+                    for c in ("scoring", "position")
+                    if c in bounds.columns
+                ],
+                pl.col("pos_min").cast(pl.Float64),
+                pl.col("pos_max").cast(pl.Float64),
+            ).to_dicts()
+            if bounds is not None
+            else []
+        )
+        return FrozenCalibration(
+            levels=self.levels,
+            by=self.by,
+            keys=tuple([*part_keys, *self.by]),
+            min_count=self.min_count,
+            offsets=[],
+            isotonic=iso,
+            meta=info,
+            quantile_method=PIT_METHOD,
+            quantile_maps={
+                "keys": [*part_keys, *self.by],
+                "pooled_keys": part_keys,
+                "maps": maps,
+                "pooled": pooled,
+                "seed": self.seed,
+            },
+            bounds=stored_bounds,
         )
 
 
@@ -477,6 +873,12 @@ class FrozenCalibration:
     offsets: list[dict[str, Any]]
     isotonic: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
+    #: ``conformal_offsets`` (v1, v2) or ``pit_quantile`` (v3)
+    quantile_method: str = OFFSET_METHOD
+    #: v3: ``G^-1`` levels per group plus pooled per scoring
+    quantile_maps: dict[str, Any] = field(default_factory=dict)
+    #: v3: position bounds for frames without bound columns
+    bounds: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def columns(self) -> tuple[str, ...]:
@@ -495,15 +897,103 @@ class FrozenCalibration:
         frame: pl.DataFrame,
         *,
         lower_bound: str | None = None,
+        upper_bound: str | None = None,
         rename: bool = False,
         suffix: str = CAL_SUFFIX,
         use_scoring: str | None = None,
     ) -> pl.DataFrame:
         """Calibrated copy of ``frame``; rows whose group is not in the table keep their quantiles.
 
-        ``use_scoring`` applies the offsets fitted under that scoring to every
-        row (for a league scoring without its own backtest).
+        ``use_scoring`` applies the calibration fitted under that scoring to
+        every row (for a league scoring without its own backtest). For v3,
+        ``lower_bound`` / ``upper_bound`` name the frame's position-bound
+        columns; when absent the stored bounds are used.
         """
+        if self.quantile_method == PIT_METHOD:
+            out = self._apply_pit_levels(frame, lower_bound, upper_bound, use_scoring)
+        else:
+            out = self._apply_offsets(frame, lower_bound, use_scoring)
+        for prob, spec in self.isotonic.items():
+            if prob not in out.columns:
+                continue
+            out = self._apply_isotonic(out, prob, spec, use_scoring=use_scoring)
+        out = out.with_columns(
+            pl.lit(self.meta.get("calibration_version", CALIBRATION_VERSION)).alias(
+                "calibration_version"
+            )
+        )
+        if rename and "model" in out.columns:
+            out = out.with_columns((pl.col("model") + suffix).alias("model"))
+        return out
+
+    def _apply_pit_levels(
+        self,
+        frame: pl.DataFrame,
+        lower_bound: str | None,
+        upper_bound: str | None,
+        use_scoring: str | None,
+    ) -> pl.DataFrame:
+        """v3: ``Q_raw(G^-1(tau))`` with the row's group levels, else pooled, else identity."""
+        spec = self.quantile_maps
+        keys = list(spec.get("keys", []))
+        pooled_keys = list(spec.get("pooled_keys", []))
+        base = frame.drop("cal_n", "cal_q_source", strict=False)
+        lo_col, hi_col = lower_bound, upper_bound
+        if (lo_col is None or lo_col not in base.columns) and self.bounds:
+            b = pl.DataFrame(self.bounds)
+            on = [c for c in ("scoring", "position") if c in b.columns and c in base.columns]
+            if use_scoring is not None and "scoring" in on:
+                b = b.filter(pl.col("scoring") == use_scoring).drop("scoring")
+                on.remove("scoring")
+            base = base.with_columns(pl.col(c).cast(pl.String) for c in on).join(
+                b.rename({"pos_min": "_lo", "pos_max": "_hi"}),
+                on=on,
+                how="left",
+                maintain_order="left",
+            )
+            lo_col, hi_col = "_lo", "_hi"
+        n = base.height
+
+        def key_values(cols: list[str]) -> list[tuple]:
+            vals = []
+            for c in cols:
+                if c == "scoring" and use_scoring is not None:
+                    vals.append([use_scoring] * n)
+                elif c in base.columns:
+                    vals.append(base[c].cast(pl.String).to_list())
+                else:
+                    vals.append([None] * n)
+            return list(zip(*vals, strict=True)) if vals else [()] * n
+
+        plevels = np.tile(np.array(self.levels), (n, 1))
+        source = np.full(n, "identity", dtype=object)
+        counts = np.zeros(n, dtype=np.int64)
+        done = np.zeros(n, dtype=bool)
+        group_source = "+".join(self.by) or "pooled"
+        for entries, cols, label in (
+            (spec.get("maps", []), keys, group_source),
+            (spec.get("pooled", []), pooled_keys, "pooled"),
+        ):
+            if not entries:
+                continue
+            row_keys = key_values(cols)
+            for entry in entries:
+                ekey = tuple(entry["group"].get(c) for c in cols)
+                mask = ~done & np.array([k == ekey for k in row_keys], dtype=bool)
+                if not mask.any():
+                    continue
+                plevels[mask] = entry["levels"]
+                source[mask] = label
+                counts[mask] = entry["n"]
+                done |= mask
+        calibrator = OnlinePITQuantile(levels=self.levels, by=self.by, min_count=self.min_count)
+        out = calibrator._recalibrate(base, plevels, lo_col, hi_col, source, counts)
+        return out.drop("_lo", "_hi", strict=False)
+
+    def _apply_offsets(
+        self, frame: pl.DataFrame, lower_bound: str | None, use_scoring: str | None
+    ) -> pl.DataFrame:
+        """v1/v2: per-level conformal offsets."""
         table = self.offset_table()
         off_cols = [_offset_column(q) for q in self.levels]
         usable = table.with_columns(
@@ -535,19 +1025,7 @@ class FrozenCalibration:
             (pl.col(c) + pl.col(o)).alias(c) for c, o in zip(self.columns, off_cols, strict=True)
         ).drop(off_cols)
         out = sort_quantiles(out, self.columns)
-        out = _clip_lower(out, self.columns, lower_bound)
-        for prob, spec in self.isotonic.items():
-            if prob not in out.columns:
-                continue
-            out = self._apply_isotonic(out, prob, spec, use_scoring=use_scoring)
-        out = out.with_columns(
-            pl.lit(self.meta.get("calibration_version", CALIBRATION_VERSION)).alias(
-                "calibration_version"
-            )
-        )
-        if rename and "model" in out.columns:
-            out = out.with_columns((pl.col("model") + suffix).alias("model"))
-        return out
+        return _clip_lower(out, self.columns, lower_bound)
 
     @staticmethod
     def _apply_isotonic(
@@ -613,6 +1091,9 @@ class FrozenCalibration:
             "keys": list(self.keys),
             "min_count": self.min_count,
             "offsets": [{k: clean(v) for k, v in row.items()} for row in self.offsets],
+            "quantile_method": self.quantile_method,
+            "quantile_maps": self.quantile_maps,
+            "bounds": [{k: clean(v) for k, v in row.items()} for row in self.bounds],
             "isotonic": self.isotonic,
             "meta": self.meta,
         }
@@ -629,6 +1110,9 @@ class FrozenCalibration:
             offsets=list(payload["offsets"]),
             isotonic=dict(payload.get("isotonic", {})),
             meta=dict(payload.get("meta", {})),
+            quantile_method=str(payload.get("quantile_method", OFFSET_METHOD)),
+            quantile_maps=dict(payload.get("quantile_maps", {})),
+            bounds=list(payload.get("bounds", [])),
         )
 
     def save(self, path: Path | str) -> Path:
@@ -658,11 +1142,16 @@ def save_next_to(frozen: FrozenCalibration, artifact: Path | str) -> Path:
 
 
 __all__ = [
+    "CALIBRATION_V2",
     "CALIBRATION_VERSION",
     "CAL_SUFFIX",
+    "PIT_METHOD",
     "FrozenCalibration",
     "OnlineConformal",
     "OnlineIsotonic",
+    "OnlinePITQuantile",
+    "pit_limits",
+    "quantile_at",
     "calibration_path_for",
     "quantile_column",
     "save_next_to",

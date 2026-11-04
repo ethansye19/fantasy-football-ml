@@ -10,11 +10,15 @@ import pytest
 
 from ffml.models.calibration import (
     CAL_SUFFIX,
+    CALIBRATION_V2,
     CALIBRATION_VERSION,
     FrozenCalibration,
     OnlineConformal,
     OnlineIsotonic,
+    OnlinePITQuantile,
     calibration_path_for,
+    pit_limits,
+    quantile_at,
     save_next_to,
     sort_quantiles,
     source_column,
@@ -424,7 +428,7 @@ def test_frozen_per_position_round_trip(tmp_path):
     frame = base.with_columns(**qcols)
     iso = OnlineIsotonic(min_count=100)
     frozen = OnlineConformal().fit_final(frame, isotonic=iso, meta={"run": "unit"})
-    assert frozen.meta["calibration_version"] == CALIBRATION_VERSION
+    assert frozen.meta["calibration_version"] == CALIBRATION_V2  # offsets: v2
     spec = frozen.isotonic["boom_prob"]
     assert spec["keys"] == ["scoring", "position"] and spec["pooled_keys"] == ["scoring"]
     assert {e["group"]["position"] for e in spec["maps"]} == {"WR", "K"}  # TE has 60 rows
@@ -445,7 +449,7 @@ def test_frozen_per_position_round_trip(tmp_path):
     )
     new = new.with_columns(**qcols)
     out = loaded.apply(new)
-    assert set(out["calibration_version"]) == {CALIBRATION_VERSION}
+    assert set(out["calibration_version"]) == {CALIBRATION_V2}
     sources = dict(out.group_by("position").agg(pl.col("cal_boom_source").first()).iter_rows())
     assert sources == {"WR": "position", "K": "position", "TE": "pooled"}
     # each position matches a direct isotonic fit on that position's rows
@@ -478,3 +482,313 @@ def test_frozen_per_position_round_trip(tmp_path):
     }
     v1 = FrozenCalibration.from_dict(legacy).apply(new)
     assert set(v1["cal_boom_source"]) == {"pooled"}
+
+
+# --------------------------------------------------------------------------- #
+# Tie-aware quantile recalibration (calibration v3, D-088)
+# --------------------------------------------------------------------------- #
+
+LEVELS = np.array(QUANTILE_LEVELS)
+
+
+def discrete_frame(
+    seed: int = 0,
+    shrink: float = 0.55,
+    seasons=(2021, 2022),
+    weeks=range(1, 9),
+    sizes=None,
+    shift: float = 0.0,
+) -> pl.DataFrame:
+    """Kicker-like integer scores with ties at the knots; quantiles too narrow by ``shrink``.
+
+    ``y ~ Poisson(mu)``; the model's quantiles are the true Poisson quantiles
+    pulled toward the median by ``shrink`` (1.0 = calibrated) and rounded to
+    integers, so several knots share a value and actuals land exactly on them.
+    """
+    from scipy.stats import poisson
+
+    sizes = sizes or {"K": 120, "DST": 60}
+    rng = np.random.default_rng(seed)
+    rows = []
+    for season in seasons:
+        for week in weeks:
+            for pos, n in sizes.items():
+                mu = rng.uniform(4, 10, size=n)
+                y = rng.poisson(mu)
+                true_q = poisson.ppf(LEVELS[None, :], mu[:, None])
+                med = poisson.ppf(0.5, mu)[:, None]
+                q = np.round(med + shrink * (true_q - med) + shift)
+                q = np.maximum.accumulate(q, axis=1)
+                for i in range(n):
+                    row = {
+                        "entity_id": f"{pos}{i:03d}",
+                        "position": pos,
+                        "season": season,
+                        "week": week,
+                        "model": "m",
+                        "scoring": "ppr",
+                        "pred_mean": float(mu[i]),
+                        "actual": float(y[i]),
+                        "active": True,
+                        "pos_min": 0.0,
+                        "pos_max": 30.0,
+                        "kickoff_utc": week_start(season, week),
+                        "week_cutoff": week_start(season, week),
+                    }
+                    row.update({c: float(q[i, j]) for j, c in enumerate(QCOLS)})
+                    rows.append(row)
+    return pl.DataFrame(rows).with_columns(
+        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
+    )
+
+
+def metric_pits(f: pl.DataFrame, seed: int = 0) -> np.ndarray:
+    """The acceptance metric's randomized PIT (seed 0, rows in season-week-position-entity order)."""
+    from ffml.eval.metrics import randomized_pit
+
+    g = f.sort(["season", "week", "position", "entity_id"])
+    return randomized_pit(
+        g["actual"].to_numpy(),
+        g.select(QCOLS).to_numpy(),
+        g["pos_min"].to_numpy(),
+        g["pos_max"].to_numpy(),
+        seed=seed,
+    )
+
+
+def tie_aware(f: pl.DataFrame) -> float:
+    u = metric_pits(f)
+    return float(((u > 0.1) & (u < 0.9)).mean())
+
+
+def zero_mass_frame(seed: int = 0, width: float = 0.5, weeks=range(1, 10)) -> pl.DataFrame:
+    """RB/WR-like scores: 0.1-point resolution with a point mass at zero, quantiles too narrow.
+
+    The truth is ``max(0, N(mu, 6))`` rounded to 0.1. The model's level-tau
+    quantile is the true quantile at ``h(tau) = 0.5 + width * (tau - 0.5)``
+    (too narrow in probability space), so its knots tie at 0 wherever
+    ``h(tau)`` is below the zero mass: a tie the randomized PIT spreads.
+    """
+    from scipy.stats import norm
+
+    rng = np.random.default_rng(seed)
+    rows = []
+    for season in (2021, 2022):
+        for week in weeks:
+            mu = rng.uniform(1, 14, size=200)
+            y = np.round(np.maximum(0.0, rng.normal(mu, 6.0)), 1)
+            h = 0.5 + width * (LEVELS - 0.5)
+            q = np.maximum(0.0, mu[:, None] + 6.0 * norm.ppf(h)[None, :])
+            for i in range(200):
+                row = {
+                    "entity_id": f"R{i:03d}",
+                    "position": "RB",
+                    "season": season,
+                    "week": week,
+                    "model": "m",
+                    "scoring": "ppr",
+                    "pred_mean": float(mu[i]),
+                    "actual": float(y[i]),
+                    "active": True,
+                    "pos_min": 0.0,
+                    "pos_max": 50.0,
+                    "kickoff_utc": week_start(season, week),
+                    "week_cutoff": week_start(season, week),
+                }
+                row.update({c: float(q[i, j]) for j, c in enumerate(QCOLS)})
+                rows.append(row)
+    return pl.DataFrame(rows).with_columns(
+        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
+    )
+
+
+def test_v3_randomized_pits_become_uniform_with_a_point_mass_out_of_sample():
+    # too wide in probability space, with a large point mass at zero (q05 = q10 = 0 in most rows)
+    base = zero_mass_frame(width=1.1)
+    later = pl.col("season") == 2022
+    raw = base.filter(later)
+    tied = raw.filter(pl.col("pred_q05") == pl.col("pred_q10"))
+    assert tied.height / raw.height > 0.5 and (tied["actual"] == 0).mean() > 0.15
+    cal = OnlinePITQuantile(min_count=100).transform(base).filter(later)
+    assert set(cal["model"]) == {"m" + CAL_SUFFIX}
+    raw_hist = np.histogram(metric_pits(raw), bins=10, range=(0, 1))[0] / raw.height
+    cal_hist = np.histogram(metric_pits(cal), bins=10, range=(0, 1))[0] / cal.height
+    assert np.abs(raw_hist - 0.1).max() > 0.03
+    assert np.abs(cal_hist - 0.1).max() < 0.025, cal_hist
+    assert tie_aware(raw) > 0.82 and abs(tie_aware(cal) - 0.8) < 0.015
+    # quantiles stay monotone and floored at the bound, the mean is untouched
+    q = cal.select(QCOLS).to_numpy()
+    assert np.all(np.diff(q, axis=1) >= -1e-12) and q.min() >= 0.0
+    key = ["entity_id", "week"]
+    assert cal.sort(key)["pred_mean"].equals(raw.sort(key)["pred_mean"])
+
+
+@pytest.mark.parametrize("shrink", [0.55, 1.6])
+def test_v3_integer_scores_meet_the_rule_at_the_knot_levels(shrink):
+    """Kicker-like integers: PITs pile up at knot levels (atoms); the atom rule handles them.
+
+    With only seven knots an integer score cannot reach every PIT value, so the
+    test checks what the acceptance rule measures: the outside shares
+    ``U <= tau`` (lower levels) and ``U >= tau`` (upper levels) and the
+    tie-aware coverage, against the plain ``G^-1``.
+    """
+    base = discrete_frame(shrink=shrink)
+    later = pl.col("season") == 2022
+    raw = base.filter(later)
+    ties = (raw.select([(pl.col(c) == pl.col("actual")) for c in QCOLS]).to_numpy()).any(axis=1)
+    assert ties.mean() > 0.3  # actuals sit exactly on a knot in many rows
+    near = OnlinePITQuantile(min_count=100).transform(base).filter(later)
+    plain = OnlinePITQuantile(min_count=100, atoms="plain").transform(base).filter(later)
+    gap = {
+        name: abs(tie_aware(f) - 0.8)
+        for name, f in (("raw", raw), ("near", near), ("plain", plain))
+    }
+    assert gap["near"] < gap["plain"] and gap["near"] < gap["raw"]
+    assert gap["near"] < 0.045  # bounded by about half an integer's probability mass
+    if shrink == 0.55:
+        u = metric_pits(near)
+        lower = [abs((u <= t).mean() - t) for t in LEVELS[:3]]
+        upper = [abs((u >= t).mean() - (1 - t)) for t in LEVELS[4:]]
+        assert max(lower + upper) < 0.035 and gap["near"] < 0.02
+
+
+@pytest.mark.parametrize("target", [(2021, 3), (2022, 1), (2022, 6)])
+def test_v3_week_w_uses_only_earlier_weeks(target):
+    base = discrete_frame(seed=2)
+    season, week = target
+    later = (pl.col("season") > season) | ((pl.col("season") == season) & (pl.col("week") >= week))
+    bumped = base.with_columns(
+        pl.when(later).then(pl.col("actual") + 7).otherwise(pl.col("actual")).alias("actual")
+    )
+    cal = OnlinePITQuantile(min_count=50)
+    a, b = cal.transform(base), cal.transform(bumped)
+    cols = ["entity_id", *QCOLS, "cal_n", "cal_q_source"]
+    assert week_rows(a, season, week).select(cols).equals(week_rows(b, season, week).select(cols))
+    nxt = (season, week + 1)
+    assert not week_rows(a, *nxt).select(QCOLS).equals(week_rows(b, *nxt).select(QCOLS))
+
+
+def test_v3_identity_when_already_calibrated_and_without_history():
+    # continuous, exactly calibrated normal quantiles: G is close to the identity
+    from scipy.stats import norm
+
+    rng = np.random.default_rng(5)
+    rows = []
+    for week in range(1, 13):
+        mu = rng.uniform(5, 15, size=300)
+        y = rng.normal(mu, 3.0)
+        for i in range(300):
+            row = {
+                "entity_id": f"W{i}",
+                "position": "WR",
+                "season": 2022,
+                "week": week,
+                "model": "m",
+                "scoring": "ppr",
+                "pred_mean": float(mu[i]),
+                "actual": float(y[i]),
+                "active": True,
+                "pos_min": -20.0,
+                "pos_max": 50.0,
+                "kickoff_utc": week_start(2022, week),
+                "week_cutoff": week_start(2022, week),
+            }
+            row.update(
+                {c: float(mu[i] + 3.0 * norm.ppf(q)) for c, q in zip(QCOLS, LEVELS, strict=True)}
+            )
+            rows.append(row)
+    base = pl.DataFrame(rows).with_columns(
+        pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32)
+    )
+    out = OnlinePITQuantile(min_count=200).transform(base)
+    # week 1: no history, identity exactly
+    w1 = week_rows(out, 2022, 1)
+    assert set(w1["cal_q_source"]) == {"identity"}
+    assert w1.select(QCOLS).equals(week_rows(base, 2022, 1).select(QCOLS))
+    # later weeks move the quantiles by a small fraction of the spread only
+    late = out.filter(pl.col("week") >= 6).sort(["week", "entity_id"])
+    raw = base.filter(pl.col("week") >= 6).sort(["week", "entity_id"])
+    diff = np.abs(late.select(QCOLS).to_numpy() - raw.select(QCOLS).to_numpy())
+    assert diff.max() < 0.5 and diff.mean() < 0.2  # sd is 3 points
+    assert abs(tie_aware(late) - 0.8) < 0.03
+
+
+def test_v3_fallbacks_and_sources():
+    base = discrete_frame(sizes={"K": 120, "DST": 30}, weeks=range(1, 5), seasons=(2022,))
+    out = OnlinePITQuantile(min_count=100).transform(base)
+    src = dict(
+        week_rows(out, 2022, 2).group_by("position").agg(pl.col("cal_q_source").first()).iter_rows()
+    )
+    assert src == {"K": "position", "DST": "pooled"}  # DST has 30 earlier rows, pooled 150
+    assert set(week_rows(out, 2022, 1)["cal_q_source"]) == {"identity"}
+    w4 = dict(
+        week_rows(out, 2022, 4).group_by("position").agg(pl.col("cal_q_source").first()).iter_rows()
+    )
+    assert w4 == {"K": "position", "DST": "pooled"}  # 90 DST rows < 100
+
+
+def test_v3_frozen_round_trip(tmp_path):
+    base = discrete_frame(seed=7, sizes={"K": 120, "DST": 20})
+    cal = OnlinePITQuantile(min_count=100)
+    bounds = pl.DataFrame(
+        {
+            "scoring": ["ppr", "ppr"],
+            "position": ["K", "DST"],
+            "pos_min": [0.0, -2.0],
+            "pos_max": [30.0, 35.0],
+        }
+    )
+    frozen = cal.fit_final(base, isotonic=OnlineIsotonic(), meta={"run": "unit"}, bounds=bounds)
+    assert frozen.quantile_method == "pit_quantile"
+    assert frozen.meta["calibration_version"] == CALIBRATION_VERSION == "v3-tie-aware-quantile"
+    groups = {(e["group"]["scoring"], e["group"]["position"]) for e in frozen.quantile_maps["maps"]}
+    assert groups == {("ppr", "K"), ("ppr", "DST")}  # both have at least 100 rows (DST 16 x 20)
+    path = save_next_to(frozen, tmp_path / "artifact")
+    loaded = FrozenCalibration.load(path)
+    assert loaded.to_dict() == frozen.to_dict()
+    new = discrete_frame(seed=8, sizes={"K": 50, "DST": 50, "TE": 10}, seasons=(2023,), weeks=(1,))
+    applied = loaded.apply(new, lower_bound="pos_min", upper_bound="pos_max")
+    # each row's quantiles are Q_raw at the stored levels of its position
+    k_levels = next(
+        e["levels"] for e in loaded.quantile_maps["maps"] if e["group"]["position"] == "K"
+    )
+    k_rows = new.filter(pl.col("position") == "K")
+    knots = np.column_stack(
+        [
+            np.minimum(k_rows["pos_min"].to_numpy(), k_rows["pred_q05"].to_numpy()),
+            k_rows.select(QCOLS).to_numpy(),
+            np.maximum(k_rows["pos_max"].to_numpy(), k_rows["pred_q95"].to_numpy()),
+        ]
+    )
+    expect = np.sort(quantile_at(knots, QUANTILE_LEVELS, np.array(k_levels)), axis=1)
+    got = applied.filter(pl.col("position") == "K").select(QCOLS).to_numpy()
+    assert got == pytest.approx(expect)
+    sources = dict(applied.group_by("position").agg(pl.col("cal_q_source").first()).iter_rows())
+    assert sources["K"] == "position" and sources["TE"] == "pooled"
+    assert set(applied["calibration_version"]) == {CALIBRATION_VERSION}
+    # without bound columns the stored bounds are used (live and holdout frames)
+    no_bounds = loaded.apply(new.drop("pos_min", "pos_max").filter(pl.col("position") == "K"))
+    assert no_bounds.select(QCOLS).to_numpy() == pytest.approx(got)
+    # an unknown scoring is identity unless mapped
+    other = new.with_columns(pl.lit("league_x").alias("scoring"))
+    ident = loaded.apply(other, lower_bound="pos_min", upper_bound="pos_max")
+    assert set(ident["cal_q_source"]) == {"identity"}
+    assert ident.select(QCOLS).to_numpy() == pytest.approx(
+        np.sort(other.select(QCOLS).to_numpy(), axis=1)
+    )
+    mapped = loaded.apply(other, lower_bound="pos_min", upper_bound="pos_max", use_scoring="ppr")
+    assert mapped.select(QCOLS).equals(applied.select(QCOLS))
+    # a v2 file (offsets) still loads and applies offsets
+    v2 = OnlineConformal(min_count=10).fit_final(base)
+    assert FrozenCalibration.from_dict(v2.to_dict()).quantile_method == "conformal_offsets"
+
+
+def test_pit_limits_match_the_metric():
+    from ffml.eval.metrics import cdf_limits
+
+    f = discrete_frame(seasons=(2022,), weeks=(1,))
+    left, right = pit_limits(f)
+    q = f.select(QCOLS).to_numpy()
+    l2, r2 = cdf_limits(f["actual"].to_numpy(), q, f["pos_min"].to_numpy(), f["pos_max"].to_numpy())
+    assert np.array_equal(left, l2) and np.array_equal(right, r2)
+    assert (right - left > 0).mean() > 0.15  # point masses at the actual
