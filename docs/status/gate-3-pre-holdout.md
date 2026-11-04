@@ -38,6 +38,25 @@ calibrator SHA-256 `860af892...a21da19` matches).
 | Verdict cells changed from v1 | 27 of 400, all coverage-gap cells (definition change); no MAE, pinball, Spearman or start/sit cell moved |
 | Holdout | untouched; waits for the owner (D-087) |
 
+## Update after calibration v3 (report v3, D-088 to D-090)
+
+`reports/backtest_2026-11-03_v3.md`, audit `reports/evaluator_audit_2026-11-03_gate3c.md`
+(PASS, HEAD 34937b6; one registry entry, candidate only; v3 calibrator
+`calibration.json` SHA-256 `3c77725c4e6cf21cd2fc26acaeeea2b3aff22991087614bf35dcd9da280bcd39`,
+v2 kept as `calibration_v2.json`, `860af892...`).
+
+| Item | Result |
+| --- | --- |
+| Tie-aware coverage, `chain_v1+cal`, seed 0 | QB 0.779, RB 0.785, WR 0.786, TE 0.793, K 0.807, DST 0.820: all pass |
+| Same rule, every other calibrated model | all pass (0.785-0.813) |
+| Metric seeds 0-4 | widest chain range TE 0.792-0.799; no PASS/FAIL change for any model |
+| Calibrator seeds 0-4 (evaluator recomputation) | at most 0.002 range; agrees with the ML Engineer's numbers |
+| Atom rule dependence | without it K 0.772, DST 0.763; no PASS/FAIL depends on it |
+| Section 8 accuracy and start/sit lines | all 16 PASS |
+| Verdict cells changed from v2 | 15 calibrated cells (9 coverage-gap cells to tie; RB now beats the challenger on MAE and q50, WR no longer does; two consensus q10 cells to tie); raw cells unchanged |
+| Boom/bust | K and DST low confidence (hide or mark in the UI, D-089) |
+| Holdout | untouched; waits for the owner's go-ahead (D-090) |
+
 ## Timing (D-083)
 
 Chain timing test with the budget enforced, run after both backtests finished
