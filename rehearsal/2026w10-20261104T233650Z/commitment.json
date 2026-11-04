@@ -1,0 +1,40 @@
+{
+  "format": "ffml.livetest.commitment/1",
+  "stub": true,
+  "label": "STUB output for runner tests - not a model projection - not approved",
+  "approval_status": "not approved",
+  "season": 2026,
+  "week": 10,
+  "rehearsal": true,
+  "model_version": "stub-not-a-model",
+  "model_hash": "62510fb8fc5abdd9cc2e61d83f3245bdde30b10d8a2847d050fd58abfbcf48a8",
+  "calibrator_hash": "4bdb9a6b958dd3e95a1f10f9e5154ed24260fe58794fde30ea4342d31599b704",
+  "snapshots": {
+    "processed/dim_game": "20261104T233034Z"
+  },
+  "code": {
+    "commit": "e43e349020f404f5758ddb0272ab118df651b4bb",
+    "clean": true
+  },
+  "created_at": "2026-11-04T23:36:50.802412+00:00",
+  "first_kickoff": "2026-11-13T01:15:00+00:00",
+  "outputs": [
+    {
+      "path": "C:/Users/Ethan/AppData/Local/Temp/claude/C--Users-Ethan-fantasy-football-ml/158e5e92-cc7f-4418-b8bd-c51ff62bc5de/scratchpad/rehearsal_data/livetest/rehearsal/2026w10/stub_outputs/player_summary.parquet",
+      "role": "stub",
+      "sha256": "e0712a578a1d147a7929fe41f59a3d963f8d9877f3fad594c181a3e8b34b7d13",
+      "bytes": 2683
+    },
+    {
+      "path": "C:/Users/Ethan/AppData/Local/Temp/claude/C--Users-Ethan-fantasy-football-ml/158e5e92-cc7f-4418-b8bd-c51ff62bc5de/scratchpad/rehearsal_data/livetest/rehearsal/2026w10/stub_outputs/STUB_README.txt",
+      "role": "stub",
+      "sha256": "1b25bcbb078b7623b14bf75050888db52ad6f4a755fdd27a9916151144d2d307",
+      "bytes": 69
+    }
+  ],
+  "digest": {
+    "algorithm": "sha256",
+    "of": "canonical JSON of every other top-level field",
+    "value": "8956fd604f7882b93476a2eadf5f78e462fcd0afac221837ff283f4e00283b87"
+  }
+}
