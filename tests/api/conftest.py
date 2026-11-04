@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.settings import ApiSettings, reset_api_settings_cache
+
+
+def reset_schema(url: str) -> None:
+    """Drop every app table (Alembic downgrade to base) on a shared test database."""
+    from alembic import command
+
+    from api.db.session import Database, alembic_config
+
+    database = Database(url)
+    try:
+        with database.engine.begin() as conn:
+            cfg = alembic_config(url)
+            cfg.attributes["connection"] = conn
+            command.downgrade(cfg, "base")
+    finally:
+        database.dispose()
 
 
 @pytest.fixture
@@ -47,10 +64,15 @@ def make_client(api_dirs: dict[str, Path]) -> Iterator[Callable[..., TestClient]
     clients: list[TestClient] = []
 
     def factory(app_env: str = "production", **overrides: Any) -> TestClient:
+        url = os.environ.get("FFML_TEST_DATABASE_URL")
+        if url:  # CI PostgreSQL service: start every client from an empty schema
+            reset_schema(url)
+        else:
+            url = f"sqlite:///{(api_dirs['data'] / 'app.db').as_posix()}"
         values: dict[str, Any] = {
             "app_env": app_env,
             "approval_ttl_seconds": 0,
-            "database_url": f"sqlite:///{(api_dirs['data'] / 'app.db').as_posix()}",
+            "database_url": url,
         }
         values.update(overrides)
         client = TestClient(create_app(ApiSettings(**values)))

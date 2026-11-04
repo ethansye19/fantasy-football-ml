@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api import __version__
 from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
+from api.db.session import Database
 from api.errors import install_error_handlers
 from api.settings import ApiSettings, get_api_settings
 from ffml.config import ensure_utf8
@@ -36,7 +37,12 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("ffml api %s starting in %s mode", __version__, settings.app_env)
-        yield
+        if settings.db_auto_migrate:
+            app.state.db.migrate()
+        try:
+            yield
+        finally:
+            app.state.db.dispose()
 
     app = FastAPI(
         title="ffml API",
@@ -46,6 +52,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.gate = ApprovalGate(settings)
+    app.state.db = Database(settings.resolved_database_url)
 
     install_error_handlers(app)
     app.add_middleware(
