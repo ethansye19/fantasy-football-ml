@@ -60,12 +60,9 @@ const PAIRS: [string, string, number][] = [
   ["bust", "bust-bg", 4.5],
   ["boom", "surface", 4.5],
   ["bust", "surface", 4.5],
-  ["pos-qb", "surface", 4.5],
-  ["pos-rb", "surface", 4.5],
-  ["pos-wr", "surface", 4.5],
-  ["pos-te", "surface", 4.5],
-  ["pos-k", "surface", 4.5],
-  ["pos-dst", "surface", 4.5],
+  // --pos-* are categorical marker colors, always shown next to the position
+  // text; they come from a validated categorical palette (CVD and normal-vision
+  // separation checked with the dataviz validator), so they are not text pairs.
   // non-text UI parts: 3:1
   ["border-strong", "surface", 3],
   ["warn-border", "warn-bg", 3],

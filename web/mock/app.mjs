@@ -142,7 +142,7 @@ export function createMockApi(options = {}) {
       const s = scale(p);
       const row = playerRow(p, league ? (idx.get(p.player_id) ?? null) : undefined);
       if (!league) delete row.roster;
-      for (const k of ["floor", "median", "ceiling", "mean"]) row[k] = Math.round(row[k] * s * 10) / 10;
+      for (const k of ["floor", "median", "ceiling", "mean", "expected"]) row[k] = row[k] == null ? null : Math.round(row[k] * s * 10) / 10;
       return row;
     });
   }
@@ -249,7 +249,9 @@ export function createMockApi(options = {}) {
 
   function sortRows(rows, sort) {
     const key = { median: "median", mean: "mean", ceiling: "ceiling", floor: "floor", boom: "boom_prob", bust: "bust_prob" }[sort] ?? "median";
-    return [...rows].sort((a, b) => b[key] - a[key]);
+    // v1.2: bust sorts ascending (safest first); nulls last
+    const dir = sort === "bust" ? 1 : -1;
+    return [...rows].sort((a, b) => (a[key] == null) - (b[key] == null) || dir * ((a[key] ?? 0) - (b[key] ?? 0)));
   }
 
   function page(rows, q, maxLimit = 500, defLimit = 100) {
@@ -265,11 +267,21 @@ export function createMockApi(options = {}) {
     }
     const rows = scoredRows(league, scoringName);
     const filtered = sortRows(filterRows(rows, q, league), q.get("sort"));
-    const scoring = league ? { hash: league.scoring.hash, unsupported_keys: league.scoring.unsupported_keys, preset_like: league.scoring.preset_like } : normalizeScoring({ preset: scoringName ?? "ppr" });
-    if (!league) delete scoring.settings;
+    const scoring = scoringRef(league, scoringName);
     return {
       status: 200,
       body: envelope({ ...(league ? { league_id: league.id } : {}), season: FIXTURE_RUN.season, week: FIXTURE_RUN.week, scoring, ...page(filtered, q) }),
+    };
+  }
+
+  function scoringRef(league, scoringName) {
+    const base = league ? league.scoring : normalizeScoring({ preset: scoringName ?? "ppr" });
+    return {
+      hash: base.hash,
+      unsupported_keys: base.unsupported_keys,
+      preset_like: base.preset_like,
+      drivers_reference: "ppr",
+      quantiles: "Ranges are raw simulation quantiles under this scoring; the model's calibration is fitted on reference scorings.",
     };
   }
 
@@ -293,7 +305,7 @@ export function createMockApi(options = {}) {
     if (new Set(ids).size !== ids.length) {
       return err(422, "validation_error", "The request is not valid.", [{ loc: ["body", "player_ids"], msg: "Value error, player ids must be distinct", type: "value_error" }]);
     }
-    const rows = scoredRows(league);
+    const rows = scoredRows(league).filter((r) => r.mean != null);
     const chosen = ids.map((id) => rows.find((r) => r.player_id === id));
     const missing = ids.filter((_, i) => !chosen[i]);
     if (missing.length) return err(404, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
@@ -355,7 +367,7 @@ export function createMockApi(options = {}) {
     const mineIds = new Set(team.players.map((p) => p.player_id));
     const mine = rows.filter((r) => mineIds.has(r.player_id));
     const position = q.get("position");
-    const fas = rows.filter((r) => !r.roster && (!position || r.position === position)).sort((a, b) => b.mean - a.mean);
+    const fas = rows.filter((r) => !r.roster && r.mean != null && (!position || r.position === position)).sort((a, b) => b.mean - a.mean);
     const drops = [...mine].sort((a, b) => a.mean - b.mean).slice(0, 4).map((r, i) => ({ player_id: r.player_id, name: r.name, position: r.position, team: r.team, lineup_loss: Math.round((0.2 + i * 0.6) * 10) / 10 }));
     const limit = Math.max(1, Math.min(100, Number(q.get("limit") ?? 25) || 25));
     const options = fas.slice(0, limit).map((add, i) => {
@@ -369,15 +381,16 @@ export function createMockApi(options = {}) {
         gain_next_week: gainNext,
         gain_rest_of_season: gainRos,
         score: Math.round((gainNext + gainRos) * 10) / 10,
+        starts: weeksStarted,
         reason:
           weeksStarted > 0
             ? `Would start in ${weeksStarted} of ${REMAINING_WEEKS.length} remaining weeks; adds ${gainRos.toFixed(1)} expected lineup points.`
             : "Would rarely crack your lineup; depth only.",
       };
-    }).sort((a, b) => b.score - a.score);
+    }).filter((o) => o.score > 0).sort((a, b) => b.score - a.score);
     return {
       status: 200,
-      body: envelope({ league_team_id: teamId, week: FIXTURE_RUN.week, weeks: REMAINING_WEEKS, options, drop_candidates: drops, disclaimer: NO_GUARANTEES }),
+      body: envelope({ league_id: league.id, scoring: scoringRef(league), league_team_id: teamId, week: FIXTURE_RUN.week, weeks: REMAINING_WEEKS, open_roster_spot: false, options, drop_candidates: drops, disclaimer: NO_GUARANTEES }),
     };
   }
 
@@ -391,6 +404,11 @@ export function createMockApi(options = {}) {
     }
     const myId = body.league_team_id ?? league.my_team_id;
     if (!myId) return err(409, "no_team_selected", "Choose your team first, or pass league_team_id.");
+    if (give.some((id) => receive.includes(id))) return err(422, "invalid_trade", "A player cannot be on both sides of a trade.");
+    const mine = league.teams.find((t) => t.id === myId);
+    if (mine && give.some((id) => !mine.players.some((p) => p.player_id === id))) return err(422, "invalid_trade", "Every player you give must be on your roster.");
+    const partner = body.partner_team_id ? league.teams.find((t) => t.id === body.partner_team_id) : league.teams.find((t) => t.players.some((p) => p.player_id === receive[0]));
+    if (!partner || receive.some((id) => !partner.players.some((p) => p.player_id === id))) return err(422, "invalid_trade", "The players you receive must all be on one other roster.");
     const rows = scoredRows(league);
     const side = (ids) => ids.map((id) => rows.find((r) => r.player_id === id));
     const g = side(give);
@@ -399,7 +417,8 @@ export function createMockApi(options = {}) {
     if (missing.length) return err(404, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
     const val = (r) => {
       const ros = Math.round(r.mean * 8.4 * 10) / 10;
-      return { player: r, ros_mean: ros, value_over_replacement: Math.round((ros - (REPLACEMENT[r.position] ?? 70)) * 10) / 10 };
+      const vor = Math.round((ros - (REPLACEMENT[r.position] ?? 70)) * 10) / 10;
+      return { player: r, ros_mean: ros, value_over_replacement: vor, trade_value: Math.max(0, vor) };
     };
     const gv = g.map(val);
     const rv = rcv.map(val);
@@ -417,6 +436,11 @@ export function createMockApi(options = {}) {
     return {
       status: 200,
       body: envelope({
+        league_id: league.id,
+        scoring: scoringRef(league),
+        league_team_id: myId,
+        partner_team_id: partner.id,
+        verdict_text: `${text} Your best weekly lineups would ${change >= 0 ? "gain" : "lose"} ${Math.abs(change).toFixed(1)} points over weeks ${REMAINING_WEEKS[0]}-${REMAINING_WEEKS.at(-1)}.`,
         weeks: REMAINING_WEEKS,
         give: gv,
         receive: rv,
@@ -440,8 +464,10 @@ export function createMockApi(options = {}) {
       const games = REMAINING_WEEKS.filter((w) => w !== p.bye_week).length;
       const m = Math.round(r.mean * games * 10) / 10;
       const spread = Math.sqrt(games) * (r.ceiling - r.floor) * 0.39;
+      if (r.mean == null) return null;
       const out = {
         player_id: r.player_id,
+        sleeper_id: r.sleeper_id,
         name: r.name,
         position: r.position,
         team: r.team,
@@ -457,7 +483,7 @@ export function createMockApi(options = {}) {
       };
       if (league) out.roster = idx.get(r.player_id) ?? null;
       return out;
-    });
+    }).filter(Boolean);
     list.sort((a, b) => b.value_over_replacement - a.value_over_replacement);
     list.forEach((r, i) => (r.overall_rank = i + 1));
     const byPos = {};
@@ -471,7 +497,7 @@ export function createMockApi(options = {}) {
       if (availability === "mine") list = list.filter((r) => r.roster?.is_mine);
     }
     const { total, players } = page(list, q);
-    return { status: 200, body: envelope({ first_week: REMAINING_WEEKS[0], last_week: REMAINING_WEEKS.at(-1), total, players }) };
+    return { status: 200, body: envelope({ ...(league ? { league_id: league.id } : {}), scoring: scoringRef(league, scoringName), first_week: REMAINING_WEEKS[0], last_week: REMAINING_WEEKS.at(-1), replacement_level: REPLACEMENT, total, players }) };
   }
 
   function seasonBody() {

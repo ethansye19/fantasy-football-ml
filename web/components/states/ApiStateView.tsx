@@ -2,7 +2,15 @@
 
 import type { ReactNode } from "react";
 import type { ApiResult } from "@/lib/api/result";
-import { ErrorState, LoadingState, NoApprovedModelState, NoPrivateSnapshotState, UnreachableState } from "./States";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  NeedsTeamState,
+  NoApprovedModelState,
+  NoPrivateSnapshotState,
+  UnreachableState,
+} from "./States";
 
 export interface ApiStateViewProps<T> {
   result: ApiResult<T> | null;
@@ -33,6 +41,16 @@ export function ApiStateView<T>({ result, loading, onRetry, feature, loadingLabe
     case "error": {
       const custom = renderError?.(result);
       if (custom !== undefined) return <>{custom}</>;
+      // Expected states, shown calmly rather than as failures.
+      if (result.code === "offseason") {
+        return (
+          <EmptyState title="No games left this season">
+            <p>{result.message}</p>
+            <p>Weekly views return when the next season&apos;s schedule is out. Rest-of-season rankings stay available.</p>
+          </EmptyState>
+        );
+      }
+      if (result.code === "no_team_selected") return <NeedsTeamState feature={feature ?? "This view"} />;
       return <ErrorState code={result.code} status={result.status} message={result.message} onRetry={onRetry} />;
     }
   }

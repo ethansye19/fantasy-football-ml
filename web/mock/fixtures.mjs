@@ -173,6 +173,8 @@ function buildPlayers() {
         // K and DST are low confidence (D-089); the fixture flags QB too (D-097).
         boom_bust_confidence: pos === "K" || pos === "DST" || pos === "QB" ? "low" : "normal",
         position_rank: i + 1,
+        expected: round1(mean * (questionable ? 0.78 : 0.99)),
+        low_sample: false,
         drivers,
         injury_status: questionable ? "Questionable" : null,
         bye_week: 5 + ((n * 3) % 10),
@@ -183,11 +185,22 @@ function buildPlayers() {
   return players;
 }
 
-export const PLAYERS = buildPlayers();
+function withSampleCases(players) {
+  // Contract v1.2: the deepest RB is active in fewer than 20 simulations
+  // (conditional fields null); the next one in fewer than 100 (low_sample).
+  const rbs = players.filter((p) => p.position === "RB");
+  const none = rbs[rbs.length - 1];
+  const few = rbs[rbs.length - 2];
+  if (none) Object.assign(none, { active_prob: 0.006, floor: null, median: null, ceiling: null, mean: null, low_sample: true, injury_status: "Out", expected: 0.1, drivers: [{ group: "availability", points: -6.2, text: "Ruled out; plays in almost none of the simulations (-6.2 pts)." }] });
+  if (few) Object.assign(few, { active_prob: 0.04, low_sample: true, injury_status: "Doubtful", expected: Math.round((few.mean ?? 0) * 0.04 * 10) / 10 });
+  return players;
+}
+
+export const PLAYERS = withSampleCases(buildPlayers());
 
 /** Public PlayerRow (contract shape) without internal fields. */
 export function playerRow(p, roster = null) {
-  const { injury_status: _i, bye_week: _b, _boomN, ...row } = p;
+  const { bye_week: _b, _boomN, ...row } = p;
   return { ...row, roster };
 }
 
