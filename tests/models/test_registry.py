@@ -124,3 +124,23 @@ def test_candidate_records_its_frozen_calibration(env, tmp_path):
     assert entry["status"] == "candidate" and entry["evaluator_report"] is None
     with pytest.raises(RegistryError, match="does not exist"):
         reg.register_candidate("chain", "c-missing", artifact, calibration=artifact / "nope.json")
+
+
+def test_candidate_calibration_can_be_replaced_until_approved(env, tmp_path):
+    import hashlib
+
+    artifact = tmp_path / "chain_v1"
+    artifact.mkdir()
+    old = artifact / "calibration_v2.json"
+    new = artifact / "calibration.json"
+    old.write_text(json.dumps({"meta": {"calibration_version": "v2"}}), encoding="utf-8")
+    new.write_text(json.dumps({"meta": {"calibration_version": "v3"}}), encoding="utf-8")
+    reg.register_candidate("chain", "c1", artifact, "run_1", calibration=old)
+    entry = reg.update_calibration("c1", new)
+    assert entry["calibration"]["sha256"] == hashlib.sha256(new.read_bytes()).hexdigest()
+    assert entry["calibration"]["calibration_version"] == "v3"
+    assert [h["calibration_version"] for h in entry["calibration_history"]] == ["v2"]
+    assert reg.get("c1")["calibration"]["path"].endswith("calibration.json")
+    reg.approve("c1", report(env, "c1.md"))
+    with pytest.raises(RegistryError, match="only a candidate"):
+        reg.update_calibration("c1", old)

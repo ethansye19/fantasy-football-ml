@@ -150,17 +150,44 @@ def register_candidate(
         "history": [],
     }
     if calibration is not None:
-        cal = Path(calibration)
-        if not cal.is_file():
-            raise RegistryError(f"calibration file {cal} does not exist")
-        meta = json.loads(cal.read_text(encoding="utf-8")).get("meta", {})
-        entry["calibration"] = {
-            "path": _relative(cal),
-            "sha256": hashlib.sha256(cal.read_bytes()).hexdigest(),
-            "calibration_version": meta.get("calibration_version"),
-        }
+        entry["calibration"] = _calibration_record(Path(calibration))
     _transition(entry, "candidate")
     payload["models"].append(entry)
+    _save(payload, registry)
+    return entry
+
+
+def _calibration_record(cal: Path) -> dict[str, Any]:
+    if not cal.is_file():
+        raise RegistryError(f"calibration file {cal} does not exist")
+    meta = json.loads(cal.read_text(encoding="utf-8")).get("meta", {})
+    return {
+        "path": _relative(cal),
+        "sha256": hashlib.sha256(cal.read_bytes()).hexdigest(),
+        "calibration_version": meta.get("calibration_version"),
+    }
+
+
+def update_calibration(
+    version: str, calibration: Path | str, *, registry: Path | str | None = None
+) -> dict[str, Any]:
+    """Point a candidate at a new frozen calibration file (path, SHA-256, version).
+
+    Allowed only while the entry is a candidate: an approved or live model's
+    calibration is part of what the evaluator signed. The previous record is
+    kept in ``calibration_history``.
+    """
+    payload = load_registry(registry)
+    entry = _find(payload, version)
+    if entry["status"] != "candidate":
+        raise RegistryError(
+            f"only a candidate's calibration can change; {version!r} is {entry['status']}"
+        )
+    record = _calibration_record(Path(calibration))
+    if entry.get("calibration"):
+        previous = dict(entry["calibration"], replaced_at=_now())
+        entry.setdefault("calibration_history", []).append(previous)
+    entry["calibration"] = record
     _save(payload, registry)
     return entry
 
@@ -252,4 +279,5 @@ __all__ = [
     "registry_path",
     "retire",
     "set_live",
+    "update_calibration",
 ]
