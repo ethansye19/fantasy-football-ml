@@ -206,6 +206,78 @@ def predict(
         raise typer.Exit(code=2) from None
 
 
+livetest_app = typer.Typer(
+    name="livetest",
+    help="chain_v2 live test (D-098): weekly builds hashed before kickoff, private and "
+    "labeled not approved.",
+    no_args_is_help=True,
+)
+app.add_typer(livetest_app, name="livetest")
+
+
+@livetest_app.command("build-week")
+def livetest_build_week(
+    season: int = typer.Option(..., "--season", help="Season, e.g. 2026"),
+    week: int = typer.Option(..., "--week", help="Regular-season week to project"),
+    rehearsal: bool = typer.Option(
+        False,
+        "--rehearsal",
+        help="Rehearsal: allowed after kickoff, labeled rehearsal, written only under "
+        "data/livetest/rehearsal/ (sandbox registry and store)",
+    ),
+) -> None:
+    """Refit chain_v2, build its calibrator, predict the week (private test) and commit hashes.
+
+    Exit codes: 0 committed; 1 failure; 2 blocked (approval gate, or the week is not
+    in dim_game); 3 the
+    week's first kickoff has passed (without --rehearsal; nothing written); 4
+    the week is already committed. Commitment:
+    data/livetest/{S}w{WW}/commitment.json.
+    """
+    from ffml.sim.livetest import (
+        EXIT_ALREADY_COMMITTED,
+        EXIT_DEADLINE,
+        EXIT_REFUSED,
+        AlreadyCommitted,
+        DeadlinePassed,
+        WeekNotScheduled,
+        build_week,
+    )
+    from ffml.sim.predict import LivePredictionBlocked, PredictionRefused
+
+    try:
+        res = build_week(season, week, rehearsal=rehearsal)
+    except DeadlinePassed as exc:
+        typer.echo(f"deadline passed: {exc}")
+        raise typer.Exit(code=EXIT_DEADLINE) from None
+    except AlreadyCommitted as exc:
+        typer.echo(f"already committed: {exc}")
+        raise typer.Exit(code=EXIT_ALREADY_COMMITTED) from None
+    except (PredictionRefused, LivePredictionBlocked) as exc:
+        typer.echo(f"prediction refused: {exc}")
+        raise typer.Exit(code=EXIT_REFUSED) from None
+    except WeekNotScheduled as exc:
+        typer.echo(f"blocked: {exc}")
+        raise typer.Exit(code=EXIT_REFUSED) from None
+    typer.echo(
+        f"committed {res.model_version} {season} week {week}"
+        f"{' (rehearsal)' if res.rehearsal else ''}: {res.commitment} digest {res.digest} "
+        f"in {res.seconds:.0f}s, peak memory {res.peak_memory_mb} MiB"
+    )
+
+
+@livetest_app.command("verify")
+def livetest_verify(path: str = typer.Argument(..., help="Path to a commitment.json")) -> None:
+    """Check a commitment: its digest and the SHA-256 of every file it lists (exit 1 on a problem)."""
+    from ffml.sim.livetest import verify_commitment
+
+    problems = verify_commitment(path)
+    for line in problems:
+        typer.echo(line)
+    typer.echo("intact" if not problems else f"{len(problems)} problem(s)")
+    raise typer.Exit(code=0 if not problems else 1)
+
+
 @app.command()
 def refresh(step: str = typer.Option("all", help="all | data | injuries | retrain-check | predict")) -> None:
     """Scheduled refresh entry point used by the scheduler and CI."""
