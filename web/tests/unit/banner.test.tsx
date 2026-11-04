@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ApprovalBanner } from "@/components/status/ApprovalBanner";
 import { SeasonBanner } from "@/components/status/SeasonBanner";
 import { StatusProvider } from "@/components/status/StatusProvider";
-import { POSITIVE_APPROVAL, PRIVATE_APPROVAL, PRODUCTION_APPROVAL, stubApi } from "./helpers";
+import { claimsApproval, PRIVATE_APPROVAL, PRODUCTION_APPROVAL, stubApi, visibleText } from "./helpers";
 
 function renderBanners() {
   return render(
@@ -22,7 +22,7 @@ describe("ApprovalBanner", () => {
     expect(banner).toHaveAttribute("data-state", "no-approved-model");
     expect(banner).toHaveTextContent("No approved model.");
     expect(banner).toHaveTextContent("pre-registered test");
-    expect(banner.textContent ?? "").not.toMatch(POSITIVE_APPROVAL);
+    expect(claimsApproval(visibleText(banner))).toBe(false);
   });
 
   it("shows the 'not approved' label and private-test wording in private_test", async () => {
@@ -34,7 +34,7 @@ describe("ApprovalBanner", () => {
     expect(banner).toHaveAttribute("data-state", "not-approved");
     expect(screen.getByTestId("not-approved-label")).toHaveTextContent(/not approved/i);
     expect(banner).toHaveTextContent("Private test environment only, not a recommendation.");
-    expect(banner.textContent ?? "").not.toMatch(POSITIVE_APPROVAL);
+    expect(claimsApproval(visibleText(banner))).toBe(false);
   });
 
   it("shows nothing when the API reports an approved live model", async () => {
@@ -75,6 +75,29 @@ describe("SeasonBanner", () => {
     });
     renderBanners();
     expect(await screen.findByTestId("season-banner")).toHaveTextContent(/offseason/i);
+  });
+
+  it("keys on mode: 'unknown' shows a neutral note, not an offseason banner", async () => {
+    stubApi({
+      "/api/meta/approval": { status: 200, body: PRODUCTION_APPROVAL },
+      "/api/meta/season": {
+        status: 200,
+        body: {
+          season: null,
+          mode: "unknown",
+          projection_week: null,
+          week_in_progress: false,
+          offseason: true,
+          banner: "The schedule is not available yet, so the current week cannot be determined.",
+          as_of: "x",
+        },
+      },
+    });
+    renderBanners();
+    const banner = await screen.findByTestId("season-banner");
+    expect(banner).toHaveAttribute("data-mode", "unknown");
+    expect(banner).toHaveTextContent("Season status unknown.");
+    expect(banner).not.toHaveTextContent(/offseason/i);
   });
 
   it("falls back to no banner when /meta/season is missing", async () => {

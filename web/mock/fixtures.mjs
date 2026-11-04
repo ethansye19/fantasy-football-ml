@@ -218,6 +218,7 @@ export const ATTRIBUTION = {
       url: "https://github.com/nflverse/nflverse-data",
       in_use: true,
       text: "Data from nflverse (github.com/nflverse/nflverse-data), CC-BY-4.0. Modified: aggregated and modeled by this project.",
+      used_for: "Play-by-play, player and team stats, schedules, rosters, injuries, depth charts, snap counts, Next Gen Stats.",
       notes: [
         "Next Gen Stats originate from NFL Next Gen Stats and are redistributed via nflverse.",
         "Snap counts come from Pro Football Reference and are redistributed via nflverse.",
@@ -252,25 +253,30 @@ export const ATTRIBUTION = {
     },
   ],
   usage: "Personal, non-commercial use (D-013).",
+  independence: "An original project. Not affiliated with or endorsed by the NFL, nflverse, FTN, Sleeper or any fantasy football company.",
   not_displayed: "Expert ranking data used only in private model evaluation is never shown in this app.",
 };
 
 export const MODEL_CARD = {
-  model_name: "chain_v2",
-  model_version: "chain_v2-fixture",
-  registry_status: "candidate",
-  verdict: "NOT APPROVED",
-  verdict_report: "reports/evaluator_release_chain_v1-primary-c2024w19-20261102T222634Z.md",
-  predicts: [
-    "Team plays and pass/run mix, then each player's share of the opportunities, efficiency and touchdowns.",
-    "Fantasy points are computed from simulated stat lines under your league's scoring at request time.",
+  title: "Fixture projection chain (test data)",
+  what_it_predicts:
+    "Fixture model card used to test the page layout. Distributions of player stat lines are simulated, then each league’s scoring is applied.",
+  method: [
+    "Team plays and pass/run mix, then opportunity shares, efficiency and touchdowns, then fantasy points.",
+    "Monte Carlo simulation with shared game draws.",
   ],
-  evaluation_summary: [
-    "Fixture model card for testing the page layout.",
-  ],
+  status_summary:
+    "Fixture: no model is approved. The first candidate failed its pre-registered holdout test on quarterback interval coverage.",
+  definitions: {
+    floor: "10th percentile of simulated points under your scoring.",
+    median: "50th percentile.",
+    ceiling: "90th percentile.",
+    boom: "Chance of a top finish at the position that week.",
+    bust: "Chance of finishing outside the startable range.",
+  },
   limitations: [
-    "K and DST boom/bust probabilities are low confidence (D-089).",
-    "The chain_v1 candidate failed its pre-registered 2025 test on QB interval coverage (D-097).",
+    "Kicker and defense boom/bust probabilities are low confidence (D-089).",
+    "Quarterback boom/bust probabilities were miscalibrated on the 2025 holdout (D-097).",
   ],
-  reports: [{ title: "Holdout release report", path: "reports/evaluator_release_chain_v1-primary-c2024w19-20261102T222634Z.md" }],
+  documentation: ["docs/MODELING.md", "docs/DECISIONS.md (D-097 to D-099)"],
 };

@@ -55,6 +55,7 @@ describe("UI wording", () => {
     const ALLOWED = [
       /not[\s-]approved/gi,
       /\bno approved\b/gi,
+      /\bno model is approved\b/gi,
       /NotApproved\w*/g,
       /["'`]approved["'`]/g,
       /\.approved\b/g,

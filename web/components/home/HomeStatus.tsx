@@ -71,12 +71,13 @@ export function StatusSummary() {
 
   let seasonText = "Season status unavailable.";
   if (season) {
+    const year = season.season ? `${season.season} ` : "";
     if (season.mode === "regular" && season.projection_week) {
-      seasonText = `${season.season} season, week ${season.projection_week}${season.week_in_progress ? " (in progress)" : ""}.`;
-    } else if (season.mode === "unknown") {
-      seasonText = `${season.season} season, schedule not loaded.`;
+      seasonText = `${year}season, week ${season.projection_week}${season.week_in_progress ? " (in progress)" : ""}.`;
+    } else if (season.mode === "unknown" || season.mode === "regular") {
+      seasonText = "Schedule not loaded yet.";
     } else {
-      seasonText = `${season.season} ${season.mode}.`;
+      seasonText = `${year}${season.mode}.`;
     }
   }
 

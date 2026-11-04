@@ -4,30 +4,39 @@ import { useStatus } from "./StatusProvider";
 
 const DEFAULT_TEXT: Record<string, string> = {
   offseason:
-    "Offseason: no regular-season games remain. Weekly features are paused and rankings are season-level until the next schedule is out.",
+    "No regular-season games remain. Weekly features are paused and rankings are season-level until next season.",
   postseason:
-    "Postseason: the fantasy regular season is over. Weekly features are paused and rankings are season-level.",
+    "The regular season is over. Weekly projections, start/sit and waivers are paused; rankings are season-level until next season.",
+  unknown: "The schedule is not available yet, so the current week cannot be determined.",
+};
+
+const TITLES: Record<string, string> = {
+  offseason: "Offseason.",
+  postseason: "Postseason.",
+  unknown: "Season status unknown.",
 };
 
 /**
- * Offseason and postseason notice from /meta/season. When that endpoint is
- * missing or fails, the app treats the mode as unknown and shows nothing.
+ * Season notice from /meta/season, keyed on `mode` (the API's `offseason`
+ * flag is true for every non-regular mode, including "unknown"). When the
+ * endpoint is missing or fails, nothing is shown.
  */
 export function SeasonBanner() {
   const { season } = useStatus();
   if (!season) return null;
-  const mode = season.offseason ? "offseason" : season.mode;
-  if (mode !== "offseason" && mode !== "postseason") return null;
-  const text = season.banner?.trim() || DEFAULT_TEXT[mode];
+  const mode = season.mode;
+  if (mode !== "offseason" && mode !== "postseason" && mode !== "unknown") return null;
+  const text = (season.banner?.trim() || DEFAULT_TEXT[mode] || "").replace(/^(Offseason|Postseason):\s*/i, "");
   return (
     <div
       role="region"
       aria-label="Season status"
       data-testid="season-banner"
+      data-mode={mode}
       className="border-b border-line bg-surface-2 text-ink"
     >
       <p className="mx-auto max-w-6xl px-4 py-2 text-sm">
-        <strong className="capitalize">{mode}.</strong> {text?.replace(/^(Offseason|Postseason):\s*/i, "")}
+        <strong>{TITLES[mode]}</strong> {text}
       </p>
     </div>
   );

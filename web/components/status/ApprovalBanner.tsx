@@ -31,13 +31,18 @@ export function ApprovalBanner() {
       >
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
           <NotApprovedPill label={approval.label} />
-          <p className="min-w-0 flex-1">
+          <p className="order-3 basis-full sm:order-2 sm:min-w-0 sm:flex-1 sm:basis-0">
             <strong>Private test environment only, not a recommendation.</strong>{" "}
-            {approval.serving
-              ? "These numbers come from a model that has not passed its pre-registered test."
-              : approval.message}
+            <span className={approval.serving ? "hidden sm:inline" : undefined}>
+              {approval.serving
+                ? "These numbers come from a model that has not passed its pre-registered test."
+                : approval.message}
+            </span>
           </p>
-          <Link href="/about/model-card" className="font-semibold underline underline-offset-2">
+          <Link
+            href="/about/model-card"
+            className="order-2 ml-auto font-semibold underline underline-offset-2 sm:order-3 sm:ml-0"
+          >
             Model status
           </Link>
         </div>

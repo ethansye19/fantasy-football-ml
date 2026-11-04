@@ -55,5 +55,22 @@ export const GATE_503 = {
   headers: { "X-FFML-Approval": "none" },
 };
 
-/** Text that claims approval: "approved" not preceded by "not " or "no ". */
-export const POSITIVE_APPROVAL = /(?<!\bnot\s)(?<!\bno\s)\bapproved\b/i;
+/**
+ * True when text claims approval: "approved" outside the negations
+ * "not approved", "no approved ..." and "no model is approved".
+ */
+export function claimsApproval(text: string): boolean {
+  const rest = text
+    .replace(/\bnot[\s-]+approved\b/gi, "")
+    .replace(/\bno approved\b/gi, "")
+    .replace(/\bno model is approved\b/gi, "");
+  return /\bapproved\b/i.test(rest);
+}
+
+/** Visible text with a space between text nodes (jsdom has no innerText). */
+export function visibleText(root: Node = document.body): string {
+  const parts: string[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) parts.push(n.textContent ?? "");
+  return parts.join(" ").replace(/\s+/g, " ");
+}

@@ -96,6 +96,7 @@ export interface AttributionSource {
   url?: string;
   in_use: boolean;
   text: string;
+  used_for?: string;
   notes?: string[];
 }
 
@@ -103,24 +104,33 @@ export interface AttributionResponse {
   sources: AttributionSource[];
   usage?: string;
   not_displayed?: string;
+  independence?: string;
 }
 
-/**
- * GET /meta/model-card (planned). The contract describes the content but not
- * the field names yet, so every field is optional and the page renders what
- * it finds.
- */
+export interface RegistryModel {
+  name: string | null;
+  version: string | null;
+  registry_status: string | null;
+  created_at: string | null;
+}
+
+/** GET /meta/model-card (api/services/meta_content.py and api/routers/meta.py). */
 export interface ModelCardResponse {
-  model_name?: string;
-  model_version?: string | null;
-  registry_status?: string;
-  verdict?: string | null;
-  verdict_report?: string | null;
-  predicts?: string | string[];
-  evaluation_summary?: string | string[];
+  title?: string;
+  what_it_predicts?: string;
+  method?: string[];
+  status_summary?: string;
+  definitions?: Record<string, string>;
   limitations?: string[];
-  reports?: { title: string; path?: string; url?: string }[];
-  [key: string]: unknown;
+  documentation?: string[];
+  environment?: Environment;
+  approval_status?: ApprovalStatus;
+  label?: string;
+  serving?: boolean;
+  /** Production only: registry entries. */
+  models?: RegistryModel[];
+  /** Private test only. */
+  notice?: string;
 }
 
 export interface RunInfoResponse {
@@ -135,10 +145,13 @@ export interface RunInfoResponse {
 export type SeasonMode = "regular" | "postseason" | "offseason" | "unknown";
 
 export interface SeasonResponse {
-  season: number;
+  season: number | null;
   mode: SeasonMode;
   projection_week: number | null;
   week_in_progress: boolean;
+  last_completed_week?: number | null;
+  next_kickoff_utc?: string | null;
+  /** True for every mode other than "regular" (including "unknown"). */
   offseason: boolean;
   banner: string | null;
   as_of: string;
@@ -268,15 +281,25 @@ export interface PlayerRow {
   team: string | null;
   opponent: string | null;
   game_id: string | null;
-  floor: number;
-  median: number;
-  ceiling: number;
-  mean: number;
-  boom_prob: number;
-  bust_prob: number;
+  /**
+   * Quantiles and mean of simulated points over the simulations in which the
+   * player is active (D-067). Null when the player is active in fewer than 20
+   * simulations (v1.2).
+   */
+  floor: number | null;
+  median: number | null;
+  ceiling: number | null;
+  mean: number | null;
+  /** Mean including games missed (v1.2): the value used for lineups, waivers and trades. */
+  expected?: number | null;
+  boom_prob: number | null;
+  bust_prob: number | null;
   active_prob: number;
   boom_bust_confidence: "normal" | "low" | string;
+  /** Active in fewer than 100 simulations (v1.2). */
+  low_sample?: boolean;
   position_rank: number | null;
+  injury_status?: string | null;
   drivers: Driver[];
   roster?: RosterRef | null;
 }
@@ -285,6 +308,10 @@ export interface ScoringRef {
   hash: string;
   unsupported_keys: string[];
   preset_like: string | null;
+  /** Scoring the plain-language drivers are computed under (v1.2). */
+  drivers_reference?: string;
+  /** Note on how quantiles are computed under this scoring (v1.2). */
+  quantiles?: string;
 }
 
 export type Availability = "all" | "rostered" | "free_agents" | "mine";
@@ -336,10 +363,13 @@ export interface DropRef {
 
 export interface WaiverOption {
   add: PlayerRow;
+  /** Null when the roster has an open spot (v1.2). */
   drop: DropRef | null;
   gain_next_week: number;
   gain_rest_of_season: number;
   score: number;
+  /** Weeks the added player would start (v1.2). */
+  starts?: number;
   reason: string;
 }
 
@@ -350,6 +380,9 @@ export interface WaiversQuery {
 }
 
 export interface WaiversResponse extends Envelope {
+  league_id?: string;
+  scoring?: ScoringRef;
+  open_roster_spot?: boolean;
   league_team_id: string;
   week: number;
   weeks: number[];
@@ -369,6 +402,8 @@ export interface TradeSide {
   player: PlayerRow;
   ros_mean: number;
   value_over_replacement: number;
+  /** max(0, value_over_replacement) (v1.2). */
+  trade_value?: number;
 }
 
 export type FairnessBand =
@@ -379,6 +414,11 @@ export type FairnessBand =
   | "lopsided_for_partner";
 
 export interface TradeResponse extends Envelope {
+  league_id?: string;
+  scoring?: ScoringRef;
+  league_team_id?: string;
+  partner_team_id?: string;
+  verdict_text?: string;
   weeks: number[];
   give: TradeSide[];
   receive: TradeSide[];
@@ -394,6 +434,7 @@ export interface TradeResponse extends Envelope {
 
 export interface RosRow {
   player_id: string;
+  sleeper_id?: string | null;
   name: string;
   position: Position | string;
   team: string | null;
@@ -418,8 +459,11 @@ export interface RosQuery {
 }
 
 export interface RosResponse extends Envelope {
+  league_id?: string;
+  scoring?: ScoringRef;
   first_week: number;
   last_week: number;
+  replacement_level?: Record<string, number>;
   total?: number;
   players: RosRow[];
 }

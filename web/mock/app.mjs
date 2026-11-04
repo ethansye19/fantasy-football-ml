@@ -477,11 +477,13 @@ export function createMockApi(options = {}) {
   function seasonBody() {
     const m = opts.seasonMode;
     return {
-      season: 2026,
+      season: m === "unknown" ? null : 2026,
       mode: m,
       projection_week: m === "regular" ? 10 : null,
       week_in_progress: false,
-      offseason: m === "offseason",
+      last_completed_week: m === "regular" ? 9 : null,
+      next_kickoff_utc: m === "regular" ? "2026-11-13T01:15:00Z" : null,
+      offseason: m !== "regular",
       banner: m === "regular" ? null : m === "offseason" ? "Offseason: weekly features are paused; rankings are season-level." : "Postseason: weekly features are paused; rankings are season-level.",
       as_of: new Date().toISOString(),
     };
@@ -519,7 +521,12 @@ export function createMockApi(options = {}) {
       if (b === "approval") return { status: 200, body: approvalBody() };
       if (b === "season" && opts.seasonEndpoint) return { status: 200, body: seasonBody() };
       if (b === "attribution" && opts.planned) return { status: 200, body: ATTRIBUTION };
-      if (b === "model-card" && opts.planned) return { status: 200, body: MODEL_CARD };
+      if (b === "model-card" && opts.planned) {
+        const card = { ...MODEL_CARD, environment: mode, approval_status: "not approved", label: "not approved", serving };
+        if (privateTest) Object.assign(card, { models: [], notice: "Private test environment: numbers shown here are labeled not approved, whatever the model registry says." });
+        else card.models = [{ name: "chain_v1", version: "chain_v1-fixture", registry_status: "rejected", created_at: "2026-11-02T22:26:34Z" }, { name: "chain_v2", version: "chain_v2-fixture", registry_status: "candidate", created_at: "2026-11-05T00:00:00Z" }];
+        return { status: 200, body: card };
+      }
       if (b === "run-info" && opts.planned) {
         const ap = approvalBody();
         return { status: 200, body: { environment: mode, serving, approval_status: "not approved", label: "not approved", run: serving ? { ...FIXTURE_RUN, seeds: [1, 2], as_of: FIXTURE_RUN.written_at, rest_of_season_weeks: REMAINING_WEEKS } : null, message: ap.message } };
