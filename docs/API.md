@@ -1,9 +1,8 @@
 # API contract (Phase 4)
 
 Owner: Backend Engineer. Consumers: the web app (`web/`), Playwright tests, QA.
-Status: contract v1, 2026-11-04. Endpoints marked *planned* are specified here
-and land in later Phase 4 commits with exactly these shapes; anything that
-changes is recorded in the changelog at the end.
+Status: contract v1.2, 2026-11-04. Every endpoint below is implemented and
+tested (tests/api). Changes are recorded in the changelog at the end.
 
 Code: `api/` (FastAPI, Pydantic v2, SQLAlchemy 2). Run locally:
 
@@ -169,6 +168,7 @@ All errors other than the gate's 503 use one envelope:
 | 409 | `no_team_selected` | waivers or trades without a "my team" choice or `league_team_id` |
 | 409 | `not_a_sleeper_league` | sync on a manual league |
 | 409 | `offseason` | start/sit or weekly projections when no regular-season game remains (live runs only) |
+| 422 | `invalid_trade` | trade sides overlap or players are not on the stated rosters |
 | 422 | `validation_error` | invalid input; `details` is a list of `{loc, msg, type}` |
 | 422 | `invalid_scoring`, `invalid_roster_positions` | settings that cannot be normalized |
 | 502 | `sleeper_unavailable` | Sleeper failed after retries |
@@ -208,7 +208,7 @@ errors. `checks.projections` is `serving` or `off`.
 `live_model_version` is present in production only. `run` is the envelope's
 `run` object when serving, else null.
 
-### GET /meta/attribution *(planned, BE-4.8)*
+### GET /meta/attribution
 
 ```json
 {"sources": [
@@ -227,7 +227,7 @@ errors. `checks.projections` is `serving` or `off`.
 FantasyPros is not listed as a displayed source. FTN wording is always
 present, with `in_use` showing whether FTN features are on (D-009).
 
-### GET /meta/model-card *(planned)*
+### GET /meta/model-card
 
 Structured summary for the about page: model name and version, registry
 status, the latest evaluator verdict, what the model predicts (football chain,
@@ -235,7 +235,7 @@ scoring applied at request time), evaluation summary, known limitations (K
 and DST boom/bust are low confidence, D-089; the chain_v1 holdout failure,
 D-097), and links to the committed reports. No consensus comparison rows.
 
-### GET /meta/run-info *(planned)*
+### GET /meta/run-info
 
 ```json
 {"environment": "production", "serving": false, "approval_status": "not approved",
@@ -245,7 +245,7 @@ D-097), and links to the committed reports. No consensus comparison rows.
 When serving, `run` is the envelope's run object plus `seeds`, `as_of`,
 `availability_config` and `rest_of_season_weeks` from the manifest.
 
-### GET /meta/season *(planned)*
+### GET /meta/season
 
 ```json
 {"season": 2026, "mode": "regular", "projection_week": 10, "week_in_progress": false,
@@ -362,10 +362,10 @@ Results are cached in memory per run and scoring hash.
 {
   "player_id": "00-0036322", "sleeper_id": "6794", "name": "Justin Jefferson",
   "position": "WR", "team": "MIN", "opponent": "JAX", "game_id": "2024_10_MIN_JAX",
-  "floor": 8.1, "median": 15.2, "ceiling": 25.3, "mean": 16.0,
+  "floor": 8.1, "median": 15.2, "ceiling": 25.3, "mean": 16.0, "expected": 15.7,
   "boom_prob": 0.31, "bust_prob": 0.05, "active_prob": 0.98,
-  "boom_bust_confidence": "normal",
-  "position_rank": 3,
+  "boom_bust_confidence": "normal", "low_sample": false,
+  "position_rank": 3, "injury_status": null,
   "drivers": [
     {"group": "opportunity", "points": 10.1,
      "text": "Gets a large share of his team's targets and carries (+10.1 pts vs an average WR)."}
@@ -375,7 +375,14 @@ Results are cached in memory per run and scoring hash.
 ```
 
 `floor` is the 10th percentile, `median` the 50th and `ceiling` the 90th of
-simulated points under the league scoring. `boom_prob` is the chance of a
+simulated points under the league scoring, and `mean` their average, all over
+the simulations in which the player is active (D-067); `active_prob` is the
+share of those simulations and `expected` the mean including games missed
+(the value used for lineups, waivers and trades). `low_sample` marks players
+active in fewer than 100 simulations; below 20 their conditional fields are
+null. Quantiles are raw simulation quantiles under the league scoring (the
+model's calibration is fitted on reference scorings and is not applied at
+request time; `scoring.quantiles` says so). `boom_prob` is the chance of a
 top-N positional finish within the simulation and `bust_prob` the chance of
 finishing outside the startable range (QB 6/18, RB 12/36, WR 12/48, TE 6/18,
 K and DST 6/20; D-017). `boom_bust_confidence` is `low` for K and DST
@@ -384,7 +391,7 @@ relative to a position-average player (groups: opportunity, efficiency,
 matchup, environment, availability), largest first. `roster` is null for free
 agents and on preset routes.
 
-### GET /leagues/{league_id}/projections *(planned, BE-4.3)*
+### GET /leagues/{league_id}/projections (BE-4.3)
 
 Query: `week` (default: the run's week; another week gives 404
 `week_not_available` with `details.available_weeks`), `position`
@@ -395,14 +402,19 @@ default 100), `offset`.
 
 ```json
 {...envelope, "league_id": "...", "season": 2024, "week": 10,
- "scoring": {"hash": "...", "unsupported_keys": [], "preset_like": "ppr"},
+ "scoring": {"hash": "...", "unsupported_keys": [], "preset_like": "ppr",
+             "drivers_reference": "ppr", "quantiles": "Raw simulation quantiles ..."},
  "total": 512, "players": [PlayerRow, ...]}
+
+`sort=bust` sorts ascending (safest first); every other sort is descending.
+In offseason or postseason mode, weekly projections and start/sit return 409
+`offseason` for live runs (replays and fixtures are historical and exempt).
 ```
 
 `GET /projections?scoring=ppr` has the same shape without `league_id` and
 `roster`.
 
-### POST /leagues/{league_id}/start-sit *(planned, BE-4.4)*
+### POST /leagues/{league_id}/start-sit (BE-4.4)
 
 Body: `{"player_ids": ["00-0036322", "00-0035676"], "week": 10}` (2-4 distinct
 ids; `week` optional).
@@ -422,16 +434,17 @@ ids; `week` optional).
 `clear` (above 0.70). Probabilities come from paired simulations, so
 teammates and opponents keep their correlation.
 
-### GET /leagues/{league_id}/waivers *(planned, BE-4.5)*
+### GET /leagues/{league_id}/waivers (BE-4.5)
 
 Query: `league_team_id` (default: my team; 409 `no_team_selected` without
 either), `position`, `limit` (1-100, default 25).
 
 ```json
-{...envelope, "league_team_id": "...", "week": 10, "weeks": [10, 11, 12, 13, 14, 15, 16, 17, 18],
+{...envelope, "league_id": "...", "scoring": {...}, "league_team_id": "...", "week": 10,
+ "weeks": [10, 11, 12, 13, 14, 15, 16, 17, 18], "open_roster_spot": false,
  "options": [
    {"add": PlayerRow, "drop": {"player_id": "...", "name": "...", "position": "TE", "team": "...", "lineup_loss": 0.4},
-    "gain_next_week": 1.2, "gain_rest_of_season": 8.4, "score": 9.6,
+    "gain_next_week": 1.2, "gain_rest_of_season": 8.4, "score": 9.6, "starts": 6,
     "reason": "Would start at FLEX in 6 of 9 remaining weeks; adds 8.4 expected lineup points."}
  ],
  "drop_candidates": [{"player_id": "...", "name": "...", "position": "...", "team": "...", "lineup_loss": 0.4}],
@@ -441,51 +454,73 @@ either), `position`, `limit` (1-100, default 25).
 Free agents are players with projections who are on no roster in the league.
 Gains are changes in the roster's optimal starting lineup (league slots and
 flex eligibility) per week, summed over the remaining weeks, after dropping
-the suggested player.
+the suggested player (the best of the three lowest-loss players, or none when
+the roster has an open spot). `score` = `gain_rest_of_season` (which includes
+this week) + `gain_next_week`, so immediate help ranks higher. Options with no
+gain are left out.
 
-### POST /leagues/{league_id}/trades/evaluate *(planned, BE-4.6)*
+### POST /leagues/{league_id}/trades/evaluate (BE-4.6)
 
 Body: `{"give": ["00-..."], "receive": ["00-..."], "league_team_id": "...", "partner_team_id": "..."}`
 (`league_team_id` defaults to my team; `partner_team_id` defaults to the
 roster that holds the `receive` players).
 
 ```json
-{...envelope, "weeks": [10, 11, 12, 13, 14, 15, 16, 17, 18],
- "give": [{"player": PlayerRow, "ros_mean": 120.4, "value_over_replacement": 31.2}],
- "receive": [{"player": PlayerRow, "ros_mean": 131.0, "value_over_replacement": 40.8}],
+{...envelope, "league_id": "...", "scoring": {...},
+ "league_team_id": "...", "partner_team_id": "...",
+ "weeks": [10, 11, 12, 13, 14, 15, 16, 17, 18],
+ "give": [{"player": PlayerRow, "ros_mean": 120.4, "value_over_replacement": 31.2, "trade_value": 31.2}],
+ "receive": [{"player": PlayerRow, "ros_mean": 131.0, "value_over_replacement": 40.8, "trade_value": 40.8}],
  "value": {"give": 31.2, "receive": 40.8, "net": 9.6},
  "roster_fit": {"mine": {"before": 1040.2, "after": 1052.9, "change": 12.7},
                 "partner": {"before": 990.1, "after": 985.0, "change": -5.1}},
  "replacement_level": {"QB": 160.2, "RB": 80.1, "WR": 85.3, "TE": 60.0, "K": 70.2, "DST": 65.1},
  "fairness": {"band": "favors_you", "difference": 9.6,
               "text": "This trade favors you by about 10 rest-of-season points over replacement."},
+ "verdict_text": "This trade favors you ... Your best weekly lineups would gain 12.7 points over weeks 10-18.",
  "disclaimer": "No guarantees: ..."}
 ```
 
 `band` is `fair`, `favors_you`, `favors_partner`, `lopsided_for_you` or
 `lopsided_for_partner`. Rest-of-season value is points over the league's
 replacement level at the position (the best free agent, or the rank implied
-by league size and starting slots when no roster data exists).
+by league size and starting slots when no roster data exists). `value` sums
+`trade_value` = max(0, value over replacement) per side, because a player
+below replacement can be replaced from free agency at no cost; `fairness`
+compares the two sums (fair when the gap is under 5 points or 10% of the
+larger side, lopsided above 35%). 422 `invalid_trade` when a player is on both
+sides, the received players are not all on one other roster, or a player is
+not on the stated roster.
 
-### GET /leagues/{league_id}/ros *(planned, BE-4.7)*
+### GET /leagues/{league_id}/ros (BE-4.7)
 
 Query: `position`, `availability`, `limit` (1-500), `offset`,
 `include_current_week` (default `true`).
 
 ```json
-{...envelope, "first_week": 10, "last_week": 18,
- "players": [{"player_id": "...", "name": "...", "position": "WR", "team": "MIN",
+{...envelope, "league_id": "...", "scoring": {...}, "first_week": 10, "last_week": 18,
+ "replacement_level": {"QB": 160.2, "...": 0}, "total": 512,
+ "players": [{"player_id": "...", "sleeper_id": "...", "name": "...", "position": "WR", "team": "MIN",
               "ros_mean": 140.2, "ros_floor": 101.3, "ros_median": 139.0, "ros_ceiling": 178.5,
               "games_remaining": 9, "bye_weeks": [], "value_over_replacement": 50.1,
               "overall_rank": 4, "position_rank": 2, "roster": null}]}
 ```
 
-`GET /ros?scoring=ppr` has the same shape without `roster`. Rankings update
+Totals cover the run week (when `include_current_week`) plus the rest-of-season
+simulation weeks; week totals of simulation i are added to rest-of-season
+simulation i. `GET /ros?scoring=ppr` has the same shape without `roster`, with
+replacement ranks for a 12-team 1QB/2RB/2WR/1TE/1FLEX/K/DST league. Rankings update
 whenever a new run is published (weekly).
 
 ## Changelog
 
 - v1 (2026-11-04): first contract; gate, meta health and approval implemented.
+- v1.2 (2026-11-04): all endpoints implemented. Added fields: player row `expected`,
+  `low_sample`, `injury_status`; `scoring.drivers_reference` and `scoring.quantiles`;
+  waivers `open_roster_spot`, option `starts`; trade `league_team_id`, `partner_team_id`,
+  per-player `trade_value`, `verdict_text`; ROS `replacement_level`, `total`, `sleeper_id`.
+  Error code `invalid_trade`. Gated routes now set `X-FFML-Approval` on their error
+  responses too.
 - v1.1 (2026-11-04): section 3.2 condition 2 corrected: the manifest `environment` is the
   prediction mode; production requires `"live"` (missing accepted for older manifests) and
   refuses `"private_test"` and `"replay"`. Reason code `snapshot_not_production` renamed

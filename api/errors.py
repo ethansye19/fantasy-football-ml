@@ -58,30 +58,38 @@ _HTTP_CODES = {
 }
 
 
+def render_api_error(exc: ApiError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=jsonable_encoder(error_body(exc.code, exc.message, exc.details)),
+    )
+
+
+def render_validation_error(exc: RequestValidationError) -> JSONResponse:
+    details = [
+        {
+            "loc": list(err.get("loc", ())),
+            "msg": err.get("msg"),
+            "type": err.get("type"),
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder(
+            error_body("validation_error", "The request is not valid.", details)
+        ),
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=jsonable_encoder(error_body(exc.code, exc.message, exc.details)),
-        )
+        return render_api_error(exc)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
-        details = [
-            {
-                "loc": list(err.get("loc", ())),
-                "msg": err.get("msg"),
-                "type": err.get("type"),
-            }
-            for err in exc.errors()
-        ]
-        return JSONResponse(
-            status_code=422,
-            content=jsonable_encoder(
-                error_body("validation_error", "The request is not valid.", details)
-            ),
-        )
+        return render_validation_error(exc)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -102,4 +110,10 @@ def install_error_handlers(app: FastAPI) -> None:
         )
 
 
-__all__ = ["ApiError", "error_body", "install_error_handlers"]
+__all__ = [
+    "ApiError",
+    "error_body",
+    "install_error_handlers",
+    "render_api_error",
+    "render_validation_error",
+]

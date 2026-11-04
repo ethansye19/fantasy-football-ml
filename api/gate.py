@@ -13,10 +13,12 @@ from collections.abc import Callable, Coroutine
 from typing import Annotated, Any
 
 from fastapi import Depends, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from api.approval import HEADER, ApprovalGate, ApprovalState
+from api.errors import ApiError, render_api_error, render_validation_error
 
 
 def gate_of(request: Request) -> ApprovalGate:
@@ -42,7 +44,12 @@ class GatedRoute(APIRoute):
             if not state.serving or state.source is None:
                 return blocked_response(state)
             request.state.approval = state
-            response = await original(request)
+            try:
+                response = await original(request)
+            except ApiError as exc:
+                response = render_api_error(exc)
+            except RequestValidationError as exc:
+                response = render_validation_error(exc)
             response.headers[HEADER] = state.header_value
             return response
 

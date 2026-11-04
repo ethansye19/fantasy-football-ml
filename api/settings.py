@@ -56,7 +56,7 @@ class ApiSettings(BaseSettings):
     # seconds an approval/source resolution is reused (0 disables the cache)
     approval_ttl_seconds: float = 5.0
     # in-memory scored-run cache entries (run x scoring hash)
-    scoring_cache_size: int = 16
+    scoring_cache_size: int = 8
     # FTN charting features (D-009); attribution lists FTN either way
     ftn_features_enabled: bool = False
 

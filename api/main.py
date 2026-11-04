@@ -24,6 +24,7 @@ from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
 from api.db.session import Database
 from api.errors import install_error_handlers
 from api.services.players import DirectoryHolder
+from api.services.projection import ProjectionService
 from api.services.season import SeasonService
 from api.settings import ApiSettings, get_api_settings
 from ffml.config import ensure_utf8
@@ -59,6 +60,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.players = DirectoryHolder(settings.processed_dir)
     app.state.sleeper_factory = SleeperClient
     app.state.season = SeasonService(settings.raw_dir)
+    app.state.projections = ProjectionService(settings.scoring_cache_size)
 
     install_error_handlers(app)
     app.add_middleware(
