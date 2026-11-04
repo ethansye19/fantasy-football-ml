@@ -69,6 +69,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
   "network: test downloads data from nflverse or Sleeper (skipped when FFML_OFFLINE=1)",
