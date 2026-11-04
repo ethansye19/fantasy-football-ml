@@ -69,9 +69,13 @@ A gated route serves data only when **all** of these hold:
    (`ffml.models.registry.get_live()`) with an evaluator report;
 2. `data/predictions/LATEST` points at a readable run whose `_manifest.json`
    has `approval_status == "approved"` (top level, or under `extra` for older
-   manifests), is not a replay, and has no `environment` other than
-   `production`; if `LATEST` itself carries `approval_status` or
-   `model_version`, they must agree;
+   manifests) and `environment == "live"`. The manifest `environment` key is
+   the prediction mode written by `ffml predict` (`"live"`, `"private_test"`
+   or `"replay"`), not the app environment; `"private_test"` and `"replay"`
+   runs are refused, and a missing key is accepted only for older manifests,
+   together with all the other conditions (a run whose `mode` is `replay` is
+   refused either way). If `LATEST` itself carries `approval_status`,
+   `environment` or `model_version`, they must agree;
 3. that manifest's `model_version` equals the live version.
 
 Anything missing, unreadable or malformed means no serving: a missing
@@ -198,7 +202,7 @@ errors. `checks.projections` is `serving` or `off`.
 `latest_malformed`, `pointer_malformed`, `manifest_missing`,
 `manifest_malformed`, `manifest_mismatch`, `snapshot_unreadable`,
 `snapshot_incomplete`, `snapshot_not_approved`, `pointer_not_approved`,
-`model_version_mismatch`, `snapshot_not_production`, `snapshot_is_replay`,
+`model_version_mismatch`, `snapshot_not_live`, `snapshot_is_replay`,
 `approved_live_model`. private_test: `private_test_private_test`,
 `private_test_replay`, `private_test_fixture`, `no_private_test_snapshot`.
 `live_model_version` is present in production only. `run` is the envelope's
@@ -482,3 +486,7 @@ whenever a new run is published (weekly).
 ## Changelog
 
 - v1 (2026-11-04): first contract; gate, meta health and approval implemented.
+- v1.1 (2026-11-04): section 3.2 condition 2 corrected: the manifest `environment` is the
+  prediction mode; production requires `"live"` (missing accepted for older manifests) and
+  refuses `"private_test"` and `"replay"`. Reason code `snapshot_not_production` renamed
+  `snapshot_not_live`.

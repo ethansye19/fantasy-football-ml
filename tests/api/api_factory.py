@@ -227,7 +227,7 @@ def live_entry(version: str = "chain_v2-test", status: str = "live") -> dict[str
     }
 
 
-APPROVED_LABELS = {"environment": "production", "approval_status": "approved", "label": "approved"}
+APPROVED_LABELS = {"environment": "live", "approval_status": "approved", "label": "approved"}
 PRIVATE_LABELS = {
     "environment": "private_test",
     "approval_status": "not approved",

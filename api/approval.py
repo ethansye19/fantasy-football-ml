@@ -10,8 +10,9 @@ production
     1. the model registry has a live version (``ffml.models.registry.get_live``)
        with an evaluator report;
     2. ``data/predictions/LATEST`` points at a readable run whose manifest has
-       ``approval_status == "approved"`` (top level or under ``extra``) and is
-       not a private-test or replay run;
+       ``approval_status == "approved"`` (top level or under ``extra``) and
+       ``environment == "live"`` (the prediction mode; a missing key is accepted
+       for older manifests), not ``"private_test"`` or ``"replay"``;
     3. that manifest's ``model_version`` equals the live version.
 
     Anything missing, unreadable or malformed means no serving. Nothing else
@@ -70,6 +71,9 @@ LATEST_NAME = "LATEST"
 SIMS_FILE = "player_sims.parquet"
 SUMMARY_FILE = "player_summary.parquet"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: Manifest ``environment`` (prediction mode) of an approved live run.
+LIVE_ENVIRONMENT = "live"
 
 SOURCE_PUBLISHED = "published"
 SOURCE_PRIVATE = "private_test"
@@ -343,9 +347,14 @@ def _production(settings: ApiSettings) -> ApprovalState:
         return blocked("model_version_mismatch", version)
     if "model_version" in pointer and pointer.get("model_version") != version:
         return blocked("model_version_mismatch", version)
+    # ``environment`` is the prediction mode written by ``ffml predict``: "live",
+    # "private_test" or "replay". Only "live" serves; a missing key is accepted for
+    # older manifests because every other condition must still hold.
     environment = manifest_field(src.manifest, "environment")
-    if environment is not None and environment != PRODUCTION:
-        return blocked("snapshot_not_production", version)
+    if environment is not None and environment != LIVE_ENVIRONMENT:
+        return blocked("snapshot_not_live", version)
+    if "environment" in pointer and pointer.get("environment") != LIVE_ENVIRONMENT:
+        return blocked("snapshot_not_live", version)
     if src.is_replay:
         return blocked("snapshot_is_replay", version)
     return ApprovalState(

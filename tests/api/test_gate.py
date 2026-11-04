@@ -173,6 +173,59 @@ def test_production_approval_in_extra_is_read(make_client, api_dirs):
     assert client.get("/meta/approval").json()["serving"] is True
 
 
+def test_production_serves_live_environment_manifest(make_client, api_dirs):
+    """environment "live" + approval_status "approved" + the live model_version is served."""
+    write_registry(api_dirs["artifacts"], [live_entry("chain_v2-live")])
+    run = _published(
+        api_dirs,
+        version="chain_v2-live",
+        labels={"environment": "live", "approval_status": "approved", "label": "approved"},
+    )
+    manifest = json.loads((run / "_manifest.json").read_text(encoding="utf-8"))
+    assert (manifest["environment"], manifest["approval_status"]) == ("live", "approved")
+    client = make_client()
+    meta = client.get("/meta/approval").json()
+    assert (meta["serving"], meta["reason"]) == (True, "approved_live_model")
+    for method, template in ROUTES:
+        r = call(client, method, template)
+        assert r.status_code != 503, (template, r.text)
+        assert r.headers["X-FFML-Approval"] == "approved"
+
+
+def test_production_accepts_missing_environment_on_older_manifest(make_client, api_dirs):
+    write_registry(api_dirs["artifacts"], [live_entry()])
+    _published(api_dirs, labels={"approval_status": "approved"})
+    client = make_client()
+    assert client.get("/meta/approval").json()["serving"] is True
+
+
+@pytest.mark.parametrize("environment", ["private_test", "replay", "production", "", "LIVE"])
+def test_production_refuses_non_live_environment(make_client, api_dirs, environment):
+    """Approved status and matching version are not enough unless environment is "live"."""
+    write_registry(api_dirs["artifacts"], [live_entry()])
+    _published(
+        api_dirs,
+        labels={"environment": environment, "approval_status": "approved", "label": "approved"},
+    )
+    client = make_client()
+    meta = client.get("/meta/approval").json()
+    assert (meta["serving"], meta["reason"]) == (False, "snapshot_not_live")
+    for method, template in ROUTES:
+        _assert_blocked(call(client, method, template))
+
+
+def test_production_refuses_pointer_environment_mismatch(make_client, api_dirs):
+    write_registry(api_dirs["artifacts"], [live_entry()])
+    _published(api_dirs)
+    pointer = api_dirs["predictions"] / "LATEST"
+    latest = json.loads(pointer.read_text(encoding="utf-8"))
+    latest["environment"] = "private_test"
+    pointer.write_text(json.dumps(latest), encoding="utf-8")
+    client = make_client()
+    assert client.get("/meta/approval").json()["reason"] == "snapshot_not_live"
+    _assert_blocked(client.get("/projections"))
+
+
 # --------------------------------------------------------------------------- private_test
 
 
