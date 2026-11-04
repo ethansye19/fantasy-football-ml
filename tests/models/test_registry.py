@@ -144,3 +144,49 @@ def test_candidate_calibration_can_be_replaced_until_approved(env, tmp_path):
     reg.approve("c1", report(env, "c1.md"))
     with pytest.raises(RegistryError, match="only a candidate"):
         reg.update_calibration("c1", old)
+
+
+def test_reject_requires_a_report_with_the_not_approved_line(env, tmp_path):
+    reg.register_candidate("chain", "v1", tmp_path / "v1")
+    with pytest.raises(RegistryError, match="does not exist"):
+        reg.reject("v1", env.reports_dir / "missing.md")
+    with pytest.raises(RegistryError, match="Verdict: NOT APPROVED"):
+        reg.reject("v1", report(env, "approved.md"))  # an approval report cannot reject
+    with pytest.raises(RegistryError, match="Verdict: NOT APPROVED"):
+        reg.reject("v1", report(env, "inline.md", verdict="Is it Verdict: NOT APPROVED?"))
+    outside = tmp_path / "evaluator_v1.md"
+    outside.write_text("Verdict: NOT APPROVED\n", encoding="utf-8")
+    with pytest.raises(RegistryError, match="not under"):
+        reg.reject("v1", outside)
+    assert reg.get("v1")["status"] == "candidate"
+    entry = reg.reject("v1", report(env, "release_v1.md", verdict="Verdict: NOT APPROVED"))
+    assert entry["status"] == "rejected" and entry["rejected_at"]
+    assert entry["evaluator_report"].endswith("release_v1.md")
+    assert [h["status"] for h in entry["history"]] == ["candidate", "rejected"]
+    assert [m["version"] for m in reg.list_models("rejected")] == ["v1"]
+    assert reg.get_live() is None
+
+
+def test_a_rejected_entry_is_terminal(env, tmp_path):
+    artifact = tmp_path / "v1"
+    artifact.mkdir()
+    cal = artifact / "calibration.json"
+    cal.write_text(json.dumps({"meta": {"calibration_version": "v3"}}), encoding="utf-8")
+    reg.register_candidate("chain", "v1", artifact, calibration=cal)
+    reg.reject("v1", report(env, "v1_no.md", verdict="Verdict: NOT APPROVED"))
+    with pytest.raises(RegistryError, match="only candidates can be approved"):
+        reg.approve("v1", report(env, "v1_yes.md"))
+    with pytest.raises(RegistryError, match="only approved"):
+        reg.set_live("v1")
+    with pytest.raises(RegistryError, match="only a candidate"):
+        reg.update_calibration("v1", cal)
+    with pytest.raises(RegistryError, match="only candidates can be rejected"):
+        reg.reject("v1", report(env, "v1_no2.md", verdict="Verdict: NOT APPROVED"))
+    with pytest.raises(RegistryError, match="rejected"):
+        reg.retire("v1")
+    assert reg.get("v1")["status"] == "rejected" and reg.get_live() is None
+    # only candidates can be rejected: an approved version is not
+    reg.register_candidate("chain", "v2", tmp_path / "v2")
+    reg.approve("v2", report(env, "v2_yes.md"))
+    with pytest.raises(RegistryError, match="only candidates can be rejected"):
+        reg.reject("v2", report(env, "v2_no.md", verdict="Verdict: NOT APPROVED"))

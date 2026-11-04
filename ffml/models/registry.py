@@ -1,6 +1,7 @@
 """Model registry ``artifacts/models/REGISTRY.json`` (MODELING.md section 10).
 
-Every model version moves through ``candidate -> approved -> live -> retired``:
+Every model version moves through ``candidate -> approved -> live -> retired``,
+or ``candidate -> rejected``:
 
 - :func:`register_candidate` adds a version as ``candidate`` with its
   artifact path, git sha and the backtest run that produced its numbers.
@@ -9,12 +10,18 @@ Every model version moves through ``candidate -> approved -> live -> retired``:
   directory (``reports/`` by default) and only when the report contains the
   line ``Verdict: APPROVED`` (exact text on its own line, surrounding spaces
   ignored).
+- :func:`reject` mirrors :func:`approve` for a failed pre-registered test: a
+  candidate becomes ``rejected`` when the report carries the line
+  ``Verdict: NOT APPROVED``. ``rejected`` is terminal: the entry cannot be
+  approved, set live, retired or have its calibration changed.
 - :func:`set_live` promotes an approved version; the previously live version
   becomes ``retired``. Exactly one version is live at a time.
-- :func:`get_live` returns the live entry (or ``None``).
+- :func:`get_live` returns the live entry (or ``None``). It is the only
+  source of approval for live predictions (D-099); a holdout release is not
+  an approval (D-098).
 
 Entry fields: ``name, version, path, status, created_at, git, backtest_run_id,
-evaluator_report`` (null until approved) and ``history`` (one
+evaluator_report`` (null until approved or rejected) and ``history`` (one
 ``{status, at}`` record per transition). Versions are unique across names.
 Writes go through a temporary file and an atomic rename.
 """
@@ -33,8 +40,9 @@ from ffml.config import PROJECT_ROOT, get_settings
 
 REGISTRY_FILE = "REGISTRY.json"
 REGISTRY_FORMAT = "ffml.registry/1"
-STATUSES: tuple[str, ...] = ("candidate", "approved", "live", "retired")
+STATUSES: tuple[str, ...] = ("candidate", "approved", "live", "retired", "rejected")
 VERDICT_LINE = "Verdict: APPROVED"
+REJECT_VERDICT_LINE = "Verdict: NOT APPROVED"
 
 
 class RegistryError(ValueError):
@@ -192,8 +200,12 @@ def update_calibration(
     return entry
 
 
-def check_report(evaluator_report: Path | str) -> Path:
-    """The report path if it exists under the reports directory and carries the approval line."""
+def check_report(evaluator_report: Path | str, *, verdict_line: str = VERDICT_LINE) -> Path:
+    """The report path if it exists under the reports directory and carries ``verdict_line``.
+
+    ``verdict_line`` is the approval line by default; :func:`reject` passes
+    :data:`REJECT_VERDICT_LINE`.
+    """
     reports = get_settings().reports_dir.resolve()
     report = Path(evaluator_report)
     if not report.is_absolute():
@@ -207,8 +219,8 @@ def check_report(evaluator_report: Path | str) -> Path:
     if not report.is_file():
         raise RegistryError(f"evaluator report {report} does not exist")
     lines = report.read_text(encoding="utf-8").splitlines()
-    if not any(line.strip() == VERDICT_LINE for line in lines):
-        raise RegistryError(f"evaluator report {report} has no line {VERDICT_LINE!r}")
+    if not any(line.strip() == verdict_line for line in lines):
+        raise RegistryError(f"evaluator report {report} has no line {verdict_line!r}")
     return report
 
 
@@ -224,6 +236,27 @@ def approve(
     entry["evaluator_report"] = _relative(report)
     entry["approved_at"] = _now()
     _transition(entry, "approved")
+    _save(payload, registry)
+    return entry
+
+
+def reject(
+    version: str, evaluator_report: Path | str, *, registry: Path | str | None = None
+) -> dict[str, Any]:
+    """Mark a candidate rejected by the evaluator's report (line ``Verdict: NOT APPROVED``).
+
+    Mirrors :func:`approve`: only a candidate, only a report under the reports
+    directory, only with the exact verdict line. Records ``evaluator_report``
+    and ``rejected_at``. A rejected entry is terminal.
+    """
+    payload = load_registry(registry)
+    entry = _find(payload, version)
+    if entry["status"] != "candidate":
+        raise RegistryError(f"only candidates can be rejected; {version!r} is {entry['status']}")
+    report = check_report(evaluator_report, verdict_line=REJECT_VERDICT_LINE)
+    entry["evaluator_report"] = _relative(report)
+    entry["rejected_at"] = _now()
+    _transition(entry, "rejected")
     _save(payload, registry)
     return entry
 
@@ -247,11 +280,13 @@ def set_live(version: str, *, registry: Path | str | None = None) -> dict[str, A
 
 
 def retire(version: str, *, registry: Path | str | None = None) -> dict[str, Any]:
-    """Retire any version (a live version leaves the app without a live model)."""
+    """Retire a version that is not rejected (retiring the live one leaves no live model)."""
     payload = load_registry(registry)
     entry = _find(payload, version)
     if entry["status"] == "retired":
         raise RegistryError(f"{version!r} is already retired")
+    if entry["status"] == "rejected":
+        raise RegistryError(f"{version!r} is rejected; a rejected entry stays rejected")
     entry["retired_at"] = _now()
     _transition(entry, "retired")
     _save(payload, registry)
@@ -266,6 +301,7 @@ def get_live(*, registry: Path | str | None = None) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "REJECT_VERDICT_LINE",
     "STATUSES",
     "VERDICT_LINE",
     "RegistryError",
@@ -277,6 +313,7 @@ __all__ = [
     "load_registry",
     "register_candidate",
     "registry_path",
+    "reject",
     "retire",
     "set_live",
     "update_calibration",
