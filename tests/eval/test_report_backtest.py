@@ -701,6 +701,43 @@ def test_seed_sensitivity_and_coverage_change():
     assert r["tie_aware_after"] == seed0
 
 
+def _seven_quantile_rows(seasons=(2021, 2022), weeks=(1, 2, 3, 4)) -> pl.DataFrame:
+    base = truth(seasons=seasons, weeks=weeks)
+    f = model_rows(base, "chain_v1", 2.0, 7)
+    return f.with_columns(
+        (pl.col("pred_q10") - 2.0).alias("pred_q05"), (pl.col("pred_q50") - 3.0).alias("pred_q25"),
+        (pl.col("pred_q50") + 3.0).alias("pred_q75"), (pl.col("pred_q90") + 2.0).alias("pred_q95"),
+        pl.lit(-5.0).alias("pos_min"), pl.lit(60.0).alias("pos_max"),
+    ).with_columns(pl.col("pred_q05").clip(-5.0, None), pl.col("pred_q10").clip(-5.0, None))
+
+
+def test_calibrator_sensitivity_reproduces_the_run_and_varies_seeds():
+    from ffml.models.calibration import OnlinePITQuantile
+
+    raw = _seven_quantile_rows()
+    stored = OnlinePITQuantile(seed=0).transform(raw, lower_bound="pos_min", upper_bound="pos_max").filter(
+        pl.col("season") == 2022)
+    bounds = pl.DataFrame({"position": list(POS_COUNTS), "pos_min": [-5.0] * 6, "pos_max": [60.0] * 6,
+                           "season": [2022] * 6}, schema_overrides={"season": pl.Int32})
+    sens, reproduce = R.calibrator_sensitivity(raw, stored, bounds, [2022], ("WR",), seeds=(0, 1))
+    assert reproduce == 0.0
+    assert sorted(zip(sens["seed"], sens["atoms"], strict=True)) == [(0, "nearest"), (0, "plain"), (1, "nearest")]
+    seed0 = sens.filter((pl.col("seed") == 0) & (pl.col("atoms") == "nearest"))["coverage"][0]
+    assert seed0 == R.tie_aware_coverage(R.with_randomized_pit(stored.filter(pl.col("position") == "WR"), bounds, 0))
+    text = R._calibrator_sensitivity_section(sens, reproduce, "chain_v1+cal", {"WR": (seed0, seed0)}, "b2.md")
+    assert "reproduces the run's calibrated quantiles exactly" in text and "Atom rule (disclosed method detail)" in text
+    assert "results that depend on this choice:" in text
+
+
+def test_parse_seed_ranges_reads_b2_format():
+    line = ("  - min-max across seeds: QB 0.778-0.779, RB 0.784-0.786, WR 0.785-0.786, TE 0.793-0.794, "
+            "K 0.807-0.807, DST 0.820-0.820.")
+    got = R.parse_seed_ranges("header\n" + line + "\nfooter")
+    assert got == {"QB": (0.778, 0.779), "RB": (0.784, 0.786), "WR": (0.785, 0.786), "TE": (0.793, 0.794),
+                   "K": (0.807, 0.807), "DST": (0.82, 0.82)}
+    assert R.parse_seed_ranges("no ranges here") == {}
+
+
 def test_load_calibrator_seed_table(tmp_path):
     assert R.load_calibrator_seed_table(None) is None
     assert R.load_calibrator_seed_table(tmp_path / "missing.csv") is None

@@ -62,6 +62,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 import time
@@ -906,6 +907,60 @@ def coverage_change(
                 "closed_after": M.interval_coverage(M.validate_frame(_slim(as_))),
             })
     return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+
+def calibrator_sensitivity(
+    raw_all: pl.DataFrame, stored_cal: pl.DataFrame, bounds: pl.DataFrame | None, report_seasons: Sequence[int],
+    positions: Sequence[str] = POSITIONS, seeds: Sequence[int] = SENSITIVITY_SEEDS, metric_seed: int = 0,
+) -> tuple[pl.DataFrame, float]:
+    """Rerun the v3 quantile calibrator in memory (calibrator seeds, and ``atoms="plain"``) and score each variant.
+
+    ``raw_all`` is the focus model's raw rows of every run season (the 2021
+    warm-up included) for one scoring, as the harness calibrates them;
+    ``stored_cal`` is the run's calibrated focus frame on the headline keys.
+    Each variant is restricted to those keys and scored with the acceptance
+    metric (tie-aware coverage, metric seed ``metric_seed``), so the seed-0
+    ``nearest`` variant must reproduce the acceptance value. Returns
+    ``(seed, atoms, position, coverage)`` rows and the largest absolute
+    difference between the seed-0 ``nearest`` quantiles and the stored ones
+    (0 when the run is reproduced). Nothing is written to the run directory.
+    """
+    from ffml.models.calibration import OnlinePITQuantile  # evaluated, not edited
+
+    keys = list(M.KEY_COLUMNS)
+    qcols = [c for c in M.KNOT_COLUMNS if c in stored_cal.columns]
+    rows = []
+    reproduce = math.nan
+    variants = [(int(s), "nearest") for s in seeds] + [(0, "plain")]
+    for seed, atoms in variants:
+        cal = OnlinePITQuantile(seed=seed, atoms=atoms).transform(
+            raw_all, lower_bound="pos_min", upper_bound="pos_max")
+        cal = cal.filter(pl.col("season").is_in(list(report_seasons))).join(
+            stored_cal.select(keys), on=keys, how="semi")
+        if (seed, atoms) == (0, "nearest"):
+            both = cal.select(*keys, *qcols).join(
+                stored_cal.select(*keys, *[pl.col(c).alias(f"{c}_s") for c in qcols]), on=keys)
+            reproduce = max(float((both[c] - both[f"{c}_s"]).abs().max() or 0.0) for c in qcols) if qcols else math.nan
+        scored = with_randomized_pit(cal, bounds, metric_seed)
+        for pos in positions:
+            sub = scored.filter(pl.col("position") == pos)
+            if not sub.is_empty():
+                rows.append({"seed": seed, "atoms": atoms, "position": pos, "coverage": tie_aware_coverage(sub)})
+    return (pl.DataFrame(rows) if rows else pl.DataFrame()), reproduce
+
+
+_RANGE_RE = re.compile(r"\b(QB|RB|WR|TE|K|DST)\s+(\d\.\d+)(?:\s*-\s*(\d\.\d+))?")
+
+
+def parse_seed_ranges(text: str) -> dict[str, tuple[float, float]]:
+    """Position ranges from a status-note line containing ``min-max across seeds`` (B2's format)."""
+    for line in text.splitlines():
+        if "min-max across seeds" in line:
+            out = {}
+            for pos, lo, hi in _RANGE_RE.findall(line.split("min-max across seeds", 1)[1]):
+                out[pos] = (float(lo), float(hi or lo))
+            return out
+    return {}
 
 
 def load_calibrator_seed_table(path: str | Path | None) -> pl.DataFrame | None:
@@ -1910,7 +1965,7 @@ def _changes_v3_section(previous: str | None, label: str, reports_dir: Path, fil
 
 
 def _seed_section(seeds: pl.DataFrame, calib_seed: pl.DataFrame | None, calib_seed_name: str | None,
-                  band: tuple[float, float] = COVERAGE_BAND) -> str:
+                  band: tuple[float, float] = COVERAGE_BAND, calibrator_block: bool = True) -> str:
     out = []
     if seeds.is_empty():
         out.append("Metric-seed sensitivity: not available.")
@@ -1937,6 +1992,8 @@ def _seed_section(seeds: pl.DataFrame, calib_seed: pl.DataFrame | None, calib_se
         out.append(_md_table(["model", "position", *[f"seed {s}" for s in seed_list], "min", "max", "range"], rows))
         out.append("\nPositions where the PASS/FAIL outcome would differ across seeds: "
                    + (", ".join(flips) if flips else "none") + ".")
+    if not calibrator_block:
+        return "\n".join(out)
     out.append("\n**Calibrator-seed sensitivity (ML Engineer B2):** " + (
         f"from `{calib_seed_name}`.\n" if calib_seed is not None else
         "not available; the file was not supplied or does not exist yet."))
@@ -1953,6 +2010,62 @@ def _seed_section(seeds: pl.DataFrame, calib_seed: pl.DataFrame | None, calib_se
             out.append(_frame_md(wide))
         else:
             out.append(_frame_md(frame))
+    return "\n".join(out)
+
+
+def _calibrator_sensitivity_section(sens: pl.DataFrame, reproduce: float, focus_cal: str,
+                                    b2_ranges: Mapping[str, tuple[float, float]], b2_name: str | None,
+                                    band: tuple[float, float] = COVERAGE_BAND) -> str:
+    if sens.is_empty():
+        return "Calibrator sensitivity: not computed."
+    seeds = sorted(sens.filter(pl.col("atoms") == "nearest")["seed"].unique().to_list())
+    out = [
+        f"Recomputed by the evaluator: the v3 quantile calibrator (`OnlinePITQuantile`, ffml/models/calibration.py) "
+        f"rerun in memory on the raw `{focus_cal.removesuffix(CAL)}` PPR rows of every run season (2021 warm-up "
+        f"included), with calibrator seeds {seeds[0]}-{seeds[-1]} and, at seed 0, with `atoms=\"plain\"` instead "
+        "of the default `atoms=\"nearest\"`. Each variant is scored with the acceptance metric (tie-aware coverage, "
+        "metric seed 0) on the headline keys. Nothing is written to the run directory. The seed-0 default rerun "
+        + ("reproduces the run's calibrated quantiles exactly." if reproduce == 0.0
+           else f"differs from the run's calibrated quantiles by up to {reproduce:.4g} points (FINDING).") + "\n",
+    ]
+    rows = []
+    disagree, depends = [], []
+    for pos in POSITIONS:
+        sub = sens.filter(pl.col("position") == pos)
+        if sub.is_empty():
+            continue
+        near = dict(sub.filter(pl.col("atoms") == "nearest").select("seed", "coverage").iter_rows())
+        plain = sub.filter(pl.col("atoms") == "plain")["coverage"]
+        plain_v = float(plain[0]) if plain.len() else math.nan
+        vals = [near.get(s, math.nan) for s in seeds]
+        lo, hi = min(vals), max(vals)
+        b2 = b2_ranges.get(pos)
+        agree = ""
+        if b2 is not None:
+            ok = round(lo, 3) == round(b2[0], 3) and round(hi, 3) == round(b2[1], 3)
+            agree = "yes" if ok else "**no**"
+            if not ok:
+                disagree.append(pos)
+        base_ok, plain_ok = _within(near.get(0, math.nan), band), _within(plain_v, band)
+        if base_ok != plain_ok:
+            depends.append(pos)
+        rows.append([pos, *[_num(v) for v in vals], _num(lo), _num(hi), _num(hi - lo),
+                     f"{b2[0]:.3f}-{b2[1]:.3f}" if b2 else "", agree,
+                     _num(plain_v), "PASS" if plain_ok else "FAIL", "PASS" if base_ok else "FAIL"])
+    out.append(_md_table(["position", *[f"seed {s}" for s in seeds], "min", "max", "range",
+                          f"B2 reported{' (' + b2_name + ')' if b2_name else ''}", "agrees",
+                          "atoms plain (seed 0)", "plain result", "default result"], rows))
+    out.append(
+        "\nAgreement with ML Engineer B2's reported ranges (to three decimals): "
+        + (("no B2 ranges supplied" if not b2_ranges else "all positions agree") if not disagree
+           else "disagree at " + ", ".join(disagree)) + "."
+    )
+    out.append(
+        "\n**Atom rule (disclosed method detail).** With the default `atoms=\"nearest\"`, a recalibrated knot that "
+        "falls on a point mass of earlier-week PITs is placed on it or just off it, whichever brings the outside "
+        "share closer to its target on earlier weeks only; `atoms=\"plain\"` uses the plain inverse. Acceptance "
+        "results that depend on this choice: " + (", ".join(depends) if depends else "none") + "."
+    )
     return "\n".join(out)
 
 
@@ -2241,6 +2354,7 @@ def build_backtest_report(
     coverage_before: str | Path | None = None,
     previous_label: str = "v1",
     calibrator_seeds: str | Path | None = None,
+    calibrator_check: bool = False,
 ) -> Path:
     """Write ``reports/<out_name>.md`` and ``data/reports/<out_name>_*.csv`` from one backtest run.
 
@@ -2426,7 +2540,18 @@ def build_backtest_report(
                 + ("unchanged" if worst <= 1e-9 else f"changed (largest absolute difference {worst:.4g})")
                 + f" on {both.height:,} rows; section 5.2 keeps the v1-to-current comparison."
             )
-    calib_seed = load_calibrator_seed_table(calibrator_seeds)
+    sens = pl.DataFrame()
+    reproduce = math.nan
+    b2_ranges: dict[str, tuple[float, float]] = {}
+    calib_seed: pl.DataFrame | None = None
+    if calibrator_check and models.focus + CAL in aligned:
+        raw_all = load_backtest(run_dir, "ppr", report_only=False, models=[models.focus])
+        sens, reproduce = calibrator_sensitivity(raw_all, aligned[models.focus + CAL], bounds, report_seasons,
+                                                 positions)
+        if calibrator_seeds is not None and Path(calibrator_seeds).exists() and str(calibrator_seeds).endswith(".md"):
+            b2_ranges = parse_seed_ranges(Path(calibrator_seeds).read_text(encoding="utf-8"))
+    else:
+        calib_seed = load_calibrator_seed_table(calibrator_seeds)
 
     # boom/bust calibration before and after (D-086)
     calib_stats = pl.DataFrame()
@@ -2597,7 +2722,12 @@ def build_backtest_report(
                                         models.focus + CAL))
     if final_calibration:
         lines.append("\n### 5.3 Seed sensitivity of tie-aware coverage (D-088)\n")
-        lines.append(_seed_section(seeds_df, calib_seed, Path(calibrator_seeds).name if calibrator_seeds else None))
+        lines.append(_seed_section(seeds_df, calib_seed, Path(calibrator_seeds).name if calibrator_seeds else None,
+                                   calibrator_block=sens.is_empty()))
+        if not sens.is_empty():
+            lines.append("\n#### Calibrator-seed sensitivity and the atom rule (recomputed by the evaluator)\n")
+            lines.append(_calibrator_sensitivity_section(sens, reproduce, models.focus + CAL, b2_ranges,
+                                                         Path(calibrator_seeds).name if calibrator_seeds else None))
 
     lines.append("\n## 6. Secondary population: inactive players included (availability layer)\n")
     lines.append(
@@ -2732,6 +2862,8 @@ def build_backtest_report(
         change.write_csv(data_dir / f"{out_name}_coverage_change.csv")
     if not seeds_df.is_empty():
         seeds_df.write_csv(data_dir / f"{out_name}_seed_sensitivity.csv")
+    if not sens.is_empty():
+        sens.write_csv(data_dir / f"{out_name}_calibrator_sensitivity.csv")
     records = [*delta_records, *lineup_records, *cons_records, *abl_records]
     records += [{"population": "verdict", "position": c.position, "form": c.form, "focus": c.delta.focus,
                  "other": c.delta.other, "metric": c.metric, "focus_value": c.delta.focus_value,
@@ -2768,7 +2900,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--previous-label", default="v1", help="label of the earlier report (Changes from ...)")
     parser.add_argument("--coverage-before", default=None,
                         help="predictions file of the previous calibration (v3: coverage before/after, D-088)")
-    parser.add_argument("--calibrator-seeds", default=None, help="calibrator-seed sensitivity table from B2")
+    parser.add_argument("--calibrator-seeds", default=None,
+                        help="B2's calibrator-seed sensitivity: a table, or a status note with 'min-max across seeds'")
+    parser.add_argument("--calibrator-check", action="store_true",
+                        help="rerun the v3 calibrator in memory (seeds 0-4, atoms plain) and compare with B2")
     args = parser.parse_args(argv)
     path = build_backtest_report(
         args.run_id, args.out, args.ablation_run_id, n_boot=args.n_boot, seed=args.seed, n_jobs=args.n_jobs,
@@ -2776,6 +2911,7 @@ def main(argv: list[str] | None = None) -> int:
         coverage_rule=args.coverage_rule, calibration_before=args.calibration_before,
         previous_report=args.previous_report, previous_label=args.previous_label,
         coverage_before=args.coverage_before, calibrator_seeds=args.calibrator_seeds,
+        calibrator_check=args.calibrator_check,
     )
     print(f"wrote {path}")
     return 0
@@ -2814,6 +2950,8 @@ __all__ = [
     "consensus_population",
     "consensus_sentences",
     "SENSITIVITY_SEEDS",
+    "calibrator_sensitivity",
+    "parse_seed_ranges",
     "consensus_status",
     "coverage_change",
     "coverage_detail",

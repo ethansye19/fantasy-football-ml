@@ -171,6 +171,27 @@ def test_registry_check(tmp_path):
                 "model registry").status == "SKIP"
 
 
+def test_registry_check_keeps_earlier_calibrators(tmp_path):
+    import hashlib
+
+    kw = dict(backtests_dir=tmp_path / "b", features_root=tmp_path / "f")
+    art = _registry(tmp_path)
+    reg_path = art / "models" / "REGISTRY.json"
+    payload = json.loads(reg_path.read_text(encoding="utf-8"))
+    old_rel = "artifacts/models/chain/chain_v1-primary-c2024w19-x/calibration_v2.json"
+    write(tmp_path, old_rel, '{"v": 2}')
+    payload["models"][0]["calibration_history"] = [{
+        "path": "artifacts/models/chain/chain_v1-primary-c2024w19-x/calibration.json",
+        "sha256": hashlib.sha256(b'{"v": 2}').hexdigest(), "calibration_version": "v2-per-position-isotonic",
+        "archived_as": old_rel}]
+    reg_path.write_text(json.dumps(payload), encoding="utf-8")
+    found = item(ia.audit_inputs(tmp_path, artifacts_dir=art, **kw), "model registry")
+    assert found.status == "PASS" and any("earlier calibrator v2-per-position-isotonic kept" in e for e in found.evidence)
+    (tmp_path / old_rel).unlink()
+    gone = item(ia.audit_inputs(tmp_path, artifacts_dir=art, **kw), "model registry")
+    assert gone.status == "FAIL" and any("not kept" in e for e in gone.evidence)
+
+
 def test_backtest_run_without_recorded_snapshots_warns(tmp_path):
     runs = tmp_path / "backtests"
     _run(runs, "bare", [2022])

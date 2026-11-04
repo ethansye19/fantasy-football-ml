@@ -21,7 +21,9 @@
 4. **Model registry** (D-076). Before the holdout release no entry may be
    approved or live; every candidate's artifact directory and frozen
    calibrator exist, and the calibrator's SHA-256 matches the recorded one
-   (each hash is listed in the evidence).
+   (each hash is listed in the evidence). Every earlier calibrator in
+   ``calibration_history`` is kept (``archived_as`` or ``path``) with its
+   recorded hash.
 """
 
 from __future__ import annotations
@@ -273,6 +275,18 @@ def check_registry(report: AuditReport, artifacts_dir: Path, root: Path) -> None
             f"{version}: status {status}, artifact {artifact}, calibrator {cal.get('path')} "
             f"({cal.get('calibration_version')}), sha256 {cal.get('sha256')}"
         )
+        # earlier calibrators must be kept (archived copy, or the path itself) with their recorded hash
+        for old in entry.get("calibration_history", []) or []:
+            rel = old.get("archived_as") or old.get("path")
+            label = f"{version}: earlier calibrator {old.get('calibration_version')}"
+            if not rel or not resolve(rel).exists():
+                fails.append(f"{label} not kept ({rel!r} missing)")
+                continue
+            got = _file_sha256(resolve(rel))
+            if got != old.get("sha256"):
+                fails.append(f"{label} at {rel}: sha256 {got} differs from recorded {old.get('sha256')}")
+            else:
+                evidence.append(f"{label} kept at {rel}, sha256 {got} matches")
     statuses = sorted({str(e.get("status")) for e in entries})
     if fails:
         report.add("model registry", "FAIL", f"{len(fails)} problems in {len(entries)} entries", fails + evidence)
