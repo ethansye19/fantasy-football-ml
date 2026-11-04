@@ -14,3 +14,5 @@ coverage/
 
 # local env
 .env*.local
+playwright-report-real/
+test-results-real/

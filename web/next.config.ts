@@ -27,7 +27,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // Dockerfile.web sets NEXT_OUTPUT=standalone; local `next start` uses the normal build.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   // Do not write an AGENTS.md into web/ on `next dev`.
   agentRules: false,
   poweredByHeader: false,

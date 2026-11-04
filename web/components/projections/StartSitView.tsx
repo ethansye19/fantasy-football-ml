@@ -54,7 +54,14 @@ function StartSitBody({ league, myTeam }: { league: League; myTeam: LeagueTeam |
     compare.reset();
   };
 
-  const roster = (myTeam?.players ?? []).filter((p) => p.player_id && p.slot !== "ir");
+  // Quick picks: my roster players that this run projects (others would be
+  // refused with player_not_found, for example rookies in a historical replay).
+  const mine = useApi<ProjectionsResponse>(myTeam ? `ss-mine:${league.id}:${myTeam.id}` : null, (signal) =>
+    api.projections.league(league.id, { availability: "mine", limit: 60 }, { signal }),
+  );
+  const roster =
+    mine.result?.kind === "ok" ? mine.result.data.players.map((p) => ({ player_id: p.player_id, name: p.name, position: p.position, team: p.team })) : [];
+  const unprojected = mine.result?.kind === "ok" ? (myTeam?.players ?? []).filter((p) => p.slot !== "ir").length - roster.length : 0;
   const full = picks.length >= MAX;
 
   return (
@@ -94,7 +101,7 @@ function StartSitBody({ league, myTeam }: { league: League; myTeam: LeagueTeam |
                     type="button"
                     aria-pressed={chosen}
                     disabled={!chosen && full}
-                    onClick={() => (chosen ? remove(p.player_id as string) : add({ id: p.player_id as string, name: p.name, position: p.position === "DEF" ? "DST" : p.position, team: p.team }))}
+                    onClick={() => (chosen ? remove(p.player_id) : add({ id: p.player_id, name: p.name, position: p.position, team: p.team }))}
                     className={`rounded-md border px-2 py-1 text-sm ${chosen ? "border-accent bg-accent-soft font-semibold" : "border-line-strong bg-surface hover:bg-surface-2"} disabled:opacity-50`}
                   >
                     {p.name} <span className="text-xs text-muted">{p.position}</span>
@@ -102,6 +109,11 @@ function StartSitBody({ league, myTeam }: { league: League; myTeam: LeagueTeam |
                 );
               })}
             </div>
+            {unprojected > 0 ? (
+              <p className="mt-2 text-xs text-muted">
+                {unprojected} {unprojected === 1 ? "player on your roster has" : "players on your roster have"} no projection in this run.
+              </p>
+            ) : null}
           </fieldset>
         ) : null}
 
