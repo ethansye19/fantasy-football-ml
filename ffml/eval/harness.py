@@ -983,7 +983,7 @@ def run_walk_forward(
     seasons = sorted({int(s) for s in seasons})
     if not seasons:
         raise ValueError("seasons is empty")
-    # the guard covers every season read, history included (2026 reads 2025 as history)
+    # the guard covers every season read, history included (the forward season reads the holdout)
     assert_seasons_allowed(_history(seasons), purpose)
     if refit_every < 1:
         raise ValueError("refit_every must be at least 1")

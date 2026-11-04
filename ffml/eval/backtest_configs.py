@@ -13,9 +13,10 @@
     models, one process.
 ``baselines``
     The default schedule with the baselines only.
-``holdout_2025`` / ``forward_2026`` (pre-registered, D-091 to D-096)
-    The one-time holdout (2025 weeks 1-18) and the forward check (2026 weeks
-    1-7, the weeks fully final in the frozen snapshot). Both use purpose
+``holdout_<season>`` / ``forward_<season + 1>`` (pre-registered, D-091 to D-096)
+    The one-time holdout (the holdout season of the settings, weeks 1-18) and
+    the forward check (the season after it, weeks 1-7, the weeks fully final in
+    the frozen snapshot). Names and seasons come from ``settings.holdout_season``. Both use purpose
     ``holdout_eval`` for every read (one audited session, D-049), refit
     every week, the five baselines, the challenger per scoring and both
     chain configurations (built strictly: a chain that cannot be built stops
@@ -35,9 +36,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ffml.config import get_settings
+
 log = logging.getLogger(__name__)
 
 SCORINGS: tuple[str, ...] = ("ppr", "half", "std")
+#: the holdout and forward-check seasons come from settings, never from literals (holdout audit)
+HOLDOUT_SEASON: int = get_settings().holdout_season
+FORWARD_SEASON: int = HOLDOUT_SEASON + 1
 CHAIN_CONFIGS: tuple[str, ...] = ("primary", "final_report")
 
 
@@ -191,29 +197,29 @@ CONFIGS: dict[str, BacktestConfig] = {
         extra_models=ablation_models,
     ),
     # ---- pre-registered holdout and forward check (D-091 to D-096) ---- #
-    "holdout_2025": BacktestConfig(
-        name="holdout_2025",
-        seasons=(2025,),
+    f"holdout_{HOLDOUT_SEASON}": BacktestConfig(
+        name=f"holdout_{HOLDOUT_SEASON}",
+        seasons=(HOLDOUT_SEASON,),
         weeks=tuple(range(1, 19)),
-        report_seasons=(2025,),
+        report_seasons=(HOLDOUT_SEASON,),
         refit_every=1,
         n_jobs=3,
         purpose="holdout_eval",
         calibration="frozen",
         strict_models=True,
-        description="one-time 2025 holdout, FIXED frozen calibration",
+        description="one-time holdout season, FIXED frozen calibration",
     ),
-    "forward_2026": BacktestConfig(
-        name="forward_2026",
-        seasons=(2026,),
+    f"forward_{FORWARD_SEASON}": BacktestConfig(
+        name=f"forward_{FORWARD_SEASON}",
+        seasons=(FORWARD_SEASON,),
         weeks=tuple(range(1, 8)),
-        report_seasons=(2026,),
+        report_seasons=(FORWARD_SEASON,),
         refit_every=1,
         n_jobs=3,
         purpose="holdout_eval",
         calibration="frozen",
         strict_models=True,
-        description="2026 forward check, weeks 1-7, FIXED frozen calibration",
+        description="forward check, the season after the holdout, weeks 1-7, FIXED frozen calibration",
     ),
     "frozen_dryrun_2024": BacktestConfig(
         name="frozen_dryrun_2024",
