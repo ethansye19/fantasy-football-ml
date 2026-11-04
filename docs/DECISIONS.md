@@ -596,6 +596,60 @@ These are not options, because each would select or adjust on the holdout:
   a baseline chosen after seeing 2025;
 - recalibrating on 2025 and re-scoring 2025.
 
+## D-098 Path after the failed holdout: chain_v2 and a live 2026 test (owner, 2026-11-04)
+
+1. **chain_v1 stays not approved and unpublished.**
+
+2. **chain_v2 makes only two changes:**
+   - (a) 2025 is added to training. 2025 is released as training data and
+     history. The release records the NOT APPROVED session and is not an
+     approval.
+   - (b) The calibrator becomes walk-forward: the v3 tie-aware quantile
+     method and the per-position boom/bust calibrator, updating each week
+     from earlier weeks only.
+
+   Nothing is tuned against 2025. Stage choices (selection.json),
+   hyperparameters, features 0.2.0, calibrator settings and seeds are
+   unchanged.
+
+3. **Before v2 is frozen, the Independent Evaluator estimates the chance that
+   a well-calibrated model passes all 22 rules over 2026 weeks 10-18.** The
+   estimate accounts for:
+   - the number of games each week (14, 13, 16, 14, 15, 16, 16, 16, 16);
+   - correlation within a week.
+
+   The owner sees the estimate and decides the test design before anything
+   is frozen.
+
+4. **v2 is frozen and pre-registered before the Week 10 kickoff**
+   (2026-11-13 01:15 UTC). If the review needs more time, the live test
+   starts at the next full week instead.
+   - Each week's projections are saved and hashed before that week's first
+     kickoff.
+   - They are scored only after the games finish.
+
+5. **Safeguard.** Releasing 2025 removes the lock that currently blocks
+   `ffml predict`. So before the release, live predictions are made to
+   require an approved, live registry model. Every other run is a private
+   test labeled "not approved" or a historical replay.
+
+## D-099 Phase-order exception for Phase 4 and Phase 5 (owner, 2026-11-04)
+
+As an owner exception to "Do not start a phase until the prior gate passes",
+Phase 4 (App) and Phase 5 (Automation) work starts now, although Gate 3
+failed. The limits:
+
+- **Real app.** Projections, start/sit, waivers, trades and rest-of-season
+  rankings are off and show "no approved model" until a model passes its
+  pre-registered test.
+- **Private test environments only.** Those screens may be built and tested
+  with fixtures, historical replay, or v2 outputs labeled "not approved".
+- **No approval claims.** No public recommendations and no claims of model
+  approval until v2 passes.
+- **Gate 4** stays open until an approved model is connected and tested end
+  to end.
+- **Phase 5** continues under the same limits.
+
 ## Owner answers received 2026-11-01
 
 1. Node.js LTS: install with winget (D-018).
@@ -609,5 +663,5 @@ These are not options, because each would select or adjust on the holdout:
 
 ## Open questions
 
-- How the model track continues after D-097, and whether Phase 4 may start
-  with projections switched off (asked 2026-11-04).
+- Live-test design for chain_v2 (rules, window, missed weeks), to be decided
+  by the owner after the evaluator's pass-probability estimate (D-098).
