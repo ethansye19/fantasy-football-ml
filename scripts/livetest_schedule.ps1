@@ -60,12 +60,17 @@ if (-not $Python) { $Python = Join-Path $RepoRoot ".venv\Scripts\python.exe" }
 $Runner = Join-Path $RepoRoot "scripts\livetest_week.py"
 $UserId = "$env:USERDOMAIN\$env:USERNAME"
 
+function Get-WindowArgs {
+    $extra = @()
+    if ($Weeks) { $extra += @("--weeks", $Weeks) }
+    if ($Season -gt 0) { $extra += @("--season", "$Season") }
+    return $extra
+}
+
 function Get-Plan {
     if ($PlanJson) { return (Get-Content -Raw -Path $PlanJson | ConvertFrom-Json) }
     $env:PYTHONUTF8 = "1"
-    $planArgs = @("plan", "--json")
-    if ($Weeks) { $planArgs += @("--weeks", $Weeks) }
-    if ($Season -gt 0) { $planArgs += @("--season", "$Season") }
+    $planArgs = @("plan", "--json") + (Get-WindowArgs)
     $out = & $Python $Runner @planArgs
     if ($LASTEXITCODE -ne 0) { throw "livetest_week.py plan failed (exit $LASTEXITCODE)" }
     return (($out -join "`n") | ConvertFrom-Json)
@@ -171,5 +176,6 @@ foreach ($s in $specs) {
     Write-Host "registered $TaskFolder$($s.Name)"
 }
 $env:PYTHONUTF8 = "1"
-& $Python $Runner plan --save | Out-Null
+$saveArgs = @("plan", "--save") + (Get-WindowArgs)
+& $Python $Runner @saveArgs | Out-Null
 Write-Host "saved the registered plan to data\livetest\schedule_plan.json (used by the daily drift check)"
