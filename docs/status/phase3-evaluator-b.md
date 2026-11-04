@@ -344,7 +344,7 @@ Evidence (PPR 2022-2024, calibrated, tie-aware coverage at metric seed 0):
   | QB | 0.801 | 0.779 | PASS |
   | RB | 0.811 | 0.785 | PASS |
   | WR | 0.778 | 0.786 | PASS |
-  | TE | 0.793 | 0.793 | PASS |
+  | TE | 0.791 | 0.793 | PASS |
   | K | 0.740 | 0.807 | PASS (was FAIL) |
   | DST | 0.762 | 0.820 | PASS |
 
