@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,10 +129,62 @@ def test_api_code_never_touches_restricted_data_or_holdout_bypass():
     assert hits == []
 
 
-def test_serving_paths_do_not_import_the_ecr_reader(make_client, api_dirs):
+SERVING_PATH_SCRIPT = """
+import json, sys
+from fastapi.testclient import TestClient
+from api.main import create_app
+from api.settings import ApiSettings
+
+fixtures, db_url, meta = json.loads(sys.argv[1])
+hits = []
+for env in ("production", "private_test"):
+    settings = ApiSettings(
+        app_env=env,
+        api_fixture_predictions_dir=fixtures,
+        database_url=db_url,
+        approval_ttl_seconds=0,
+    )
+    with TestClient(create_app(settings)) as client:
+        for path in meta:
+            hits.append((env, path, client.get(path).status_code))
+        hits.append((env, "/projections", client.get("/projections").status_code))
+        hits.append((env, "/ros", client.get("/ros").status_code))
+        league = "/leagues/00000000-0000-0000-0000-000000000000/projections"
+        hits.append((env, league, client.get(league).status_code))
+loaded = sorted(m for m in sys.modules if m.startswith("ffml.eval"))
+print(json.dumps({"hits": hits, "ffml_eval_modules": loaded}))
+"""
+
+
+def test_serving_paths_do_not_import_the_ecr_reader(api_dirs):
+    """D-007/D-051: serving never imports the restricted ECR reader.
+
+    Runs in a fresh interpreter so that other test modules (the evaluator's
+    tests import ``ffml.eval.ecr_baseline``) cannot make the check pass or
+    fail by import order. The gate is exercised in both environments:
+    production (blocked) and private_test (serving a fixture run).
+    """
     write_snapshot(api_dirs["fixtures"])
-    client = make_client(app_env="private_test", api_fixture_predictions_dir=api_dirs["fixtures"])
-    for path in META:
-        client.get(path)
-    client.get("/projections")
-    assert "ffml.eval.ecr_baseline" not in sys.modules
+    args = json.dumps(
+        [
+            str(api_dirs["fixtures"]),
+            f"sqlite:///{(api_dirs['data'] / 'subprocess.db').as_posix()}",
+            META,
+        ]
+    )
+    env = {**os.environ, "PYTHONUTF8": "1"}
+    proc = subprocess.run(
+        [sys.executable, "-c", SERVING_PATH_SCRIPT, args],
+        cwd=API_DIR.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    report = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert "ffml.eval.ecr_baseline" not in report["ffml_eval_modules"], report
+    statuses = {(env_, path): code for env_, path, code in report["hits"]}
+    assert statuses[("production", "/projections")] == 503
+    assert statuses[("private_test", "/projections")] == 200  # the fixture run was served
+    assert statuses[("private_test", "/meta/health")] == 200
