@@ -108,6 +108,7 @@ from ffml.models.calibration import (
     CAL_SUFFIX,
     CALIBRATION_VERSION,
     PROB_PAIRS,
+    FrozenCalibration,
     OnlineConformal,
     OnlineIsotonic,
     OnlinePITQuantile,
@@ -627,6 +628,11 @@ def _model_params(model: Any, run_dir: Path) -> Any:
     return getattr(model, "params", None)
 
 
+def _history(seasons: Sequence[int]) -> list[int]:
+    """Every season a run reads: the first data season through the last requested one."""
+    return list(range(min(get_settings().first_season, min(seasons)), max(seasons) + 1))
+
+
 def _load_actuals(
     seasons: Sequence[int], purpose: str, store: SnapshotStore | None
 ) -> pl.DataFrame:
@@ -662,15 +668,16 @@ def _feature_version(seasons: Sequence[int], purpose: str) -> str | None:
 
 
 def combine_parts(run_dir: Path, keys: Sequence[str]) -> pl.DataFrame:
+    """Every written part of ``keys``, with a ``_key`` column (the model key; never written out)."""
     frames = []
     for key in keys:
         mdir = run_dir / "parts" / _slug(key)
         for path in sorted(mdir.glob("*_w*.parquet")):
             part = pl.read_parquet(path)
             if part.height:
-                frames.append(part)
+                frames.append(part.with_columns(pl.lit(key).alias("_key")))
     if not frames:
-        return _empty_prediction_frame()
+        return _empty_prediction_frame().with_columns(pl.lit(None, dtype=pl.String).alias("_key"))
     return pl.concat(frames, how="diagonal_relaxed")
 
 
@@ -704,6 +711,211 @@ def calibrated_rows(
     cal = isotonic.transform(cal)
     cal = cal.with_columns(pl.lit(version).alias("calibration_version"))
     return with_pit(cal)
+
+
+# --------------------------------------------------------------------------- #
+# FIXED calibration: frozen calibrators (D-095)
+# --------------------------------------------------------------------------- #
+
+FROZEN_FORMAT = "ffml.frozen_calibrators/1"
+FROZEN_MANIFEST = "FROZEN.json"
+CALIBRATION_MODES: tuple[str, ...] = ("online", "frozen", "none")
+
+
+def frozen_manifest_path() -> Path:
+    """``artifacts/calibration/FROZEN.json``: the pre-registered calibrators of the holdout."""
+    return get_settings().artifacts_dir / "calibration" / FROZEN_MANIFEST
+
+
+def _rel(path: Path | str) -> str:
+    p = Path(path)
+    try:
+        return p.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return p.resolve().as_posix()
+
+
+def _resolve(path: str) -> Path:
+    p = Path(path)
+    return p if p.is_absolute() else PROJECT_ROOT / p
+
+
+def load_frozen_calibrators(
+    manifest: Path | str | None, keys: Sequence[str]
+) -> tuple[dict[str, tuple[FrozenCalibration, str]], dict[str, Any]]:
+    """Frozen calibrator and SHA-256 per model key, after integrity checks; raises on any gap.
+
+    Every key must have an entry, every file must exist and hash to the
+    SHA-256 recorded in the manifest. Returns the calibrators and the
+    manifest record for the run manifest (its own hash and each calibrator's).
+    """
+    path = Path(manifest) if manifest is not None else frozen_manifest_path()
+    if not path.is_file():
+        raise FileNotFoundError(f"frozen calibrator manifest {path} does not exist")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("format") != FROZEN_FORMAT:
+        raise ValueError(
+            f"{path} is not a frozen calibrator manifest (format={payload.get('format')!r})"
+        )
+    entries = payload.get("calibrators", {})
+    missing = [k for k in keys if k not in entries]
+    if missing:
+        raise ValueError(
+            f"no frozen calibrator for models {missing} in {path}; refusing to run uncalibrated"
+        )
+    out: dict[str, tuple[FrozenCalibration, str]] = {}
+    record: dict[str, Any] = {"path": _rel(path), "sha256": _sha256(path), "calibrators": {}}
+    for key in keys:
+        entry = entries[key]
+        file = _resolve(entry["path"])
+        if not file.is_file():
+            raise FileNotFoundError(f"frozen calibrator for {key} missing: {file}")
+        sha = _sha256(file)
+        if sha != entry["sha256"]:
+            raise ValueError(
+                f"frozen calibrator for {key} changed: {sha} != recorded {entry['sha256']}"
+            )
+        frozen = FrozenCalibration.load(file)
+        out[key] = (frozen, sha)
+        record["calibrators"][key] = {
+            "path": entry["path"],
+            "sha256": sha,
+            "label": f"frozen:{sha[:12]}",
+            "source_version": frozen.meta.get("calibration_version"),
+        }
+    return out, record
+
+
+def frozen_rows(
+    joined: pl.DataFrame, calibrators: Mapping[str, tuple[FrozenCalibration, str]]
+) -> pl.DataFrame:
+    """``<model>+cal`` rows: each model key's frozen calibrator applied to its raw rows, unchanged.
+
+    No online fitting of any kind; ``calibration_version`` is
+    ``frozen:<first 12 hex of the calibrator's SHA-256>``.
+    """
+    out = []
+    for key, part in joined.partition_by("_key", as_dict=True, maintain_order=True).items():
+        key = key[0] if isinstance(key, tuple) else key
+        if key not in calibrators:
+            raise ValueError(f"no frozen calibrator for model key {key!r}")
+        frozen, sha = calibrators[key]
+        cal = frozen.apply(part, lower_bound="pos_min", upper_bound="pos_max", rename=True)
+        out.append(cal.with_columns(pl.lit(f"frozen:{sha[:12]}").alias("calibration_version")))
+    if not out:
+        return joined.clear()
+    return with_pit(pl.concat(out, how="diagonal_relaxed"))
+
+
+def freeze_calibrators(
+    run: str | Path,
+    keys: Sequence[str],
+    out_dir: Path | str,
+    seasons: Sequence[int] = (2022, 2023, 2024),
+    *,
+    seed: int = CALIBRATION_SEED,
+    existing: Mapping[str, Path | str] | None = None,
+    actuals: pl.DataFrame | None = None,
+    purpose: str = "backtest",
+    scorings: Iterable[str] | Mapping[str, ScoringRules] | None = None,
+) -> Path:
+    """Fit and save the FIXED calibrator of every model key of a backtest run; write ``FROZEN.json``.
+
+    Each key's raw rows (its model name and scorings, read from its part
+    files) of ``seasons`` are fitted with the v3 quantile method
+    (:class:`OnlinePITQuantile`, ``seed``) and per-position isotonic boom/bust,
+    and saved as ``<out_dir>/<key>/calibration.json`` with the position bounds
+    for the season after ``seasons`` (played-score extremes of every season
+    up to ``max(seasons)``). ``existing`` maps keys to calibrator files that
+    are listed as they are (the chain candidate's file). Returns the manifest path.
+    """
+    run_dir = resolve_run_dir(run)
+    out_dir = Path(out_dir)
+    seasons = sorted({int(s) for s in seasons})
+    existing = dict(existing or {})
+    frame = pl.read_parquet(run_dir / PREDICTIONS).filter(pl.col("season").is_in(seasons))
+    if "pos_min" not in frame.columns:
+        raise ValueError(f"{run_dir} predictions lack pos_min/pos_max; recombine the run first")
+    run_manifest = read_manifest(run_dir)
+    scorings = resolve_scorings(
+        scorings if scorings is not None else tuple(run_manifest["scorings"])
+    )
+    if actuals is None:
+        settings = get_settings()
+        actuals = actual_statlines(range(settings.first_season, max(seasons) + 1), purpose)
+    next_season = max(seasons) + 1
+    bounds = position_bounds(
+        actuals.filter(pl.col("season") <= max(seasons)), [next_season], scorings
+    )
+    calibrators: dict[str, Any] = {}
+    for key in keys:
+        if key in existing:
+            file = Path(existing[key])
+            frozen = FrozenCalibration.load(file)
+            calibrators[key] = {
+                "path": _rel(file),
+                "sha256": _sha256(file),
+                "model": frozen.meta.get("model"),
+                "calibration_version": frozen.meta.get("calibration_version"),
+                "fit_rows": frozen.meta.get("rows"),
+                "existing": True,
+            }
+            continue
+        parts = sorted((run_dir / "parts" / _slug(key)).glob("*_w*.parquet"))
+        sample = next((pl.read_parquet(p) for p in parts if pl.read_parquet(p).height), None)
+        if sample is None:
+            raise ValueError(f"run {run_dir} has no rows for model key {key!r}")
+        name = sample["model"][0]
+        key_scorings = sorted(
+            set().union(
+                *(set(pl.read_parquet(p, columns=["scoring"])["scoring"].unique()) for p in parts)
+            )
+        )
+        rows = frame.filter((pl.col("model") == name) & pl.col("scoring").is_in(key_scorings))
+        cal = OnlinePITQuantile(seed=seed)
+        frozen = cal.fit_final(
+            rows,
+            isotonic=OnlineIsotonic(),
+            meta={
+                "backtest_run_id": run_manifest["run_id"],
+                "predictions_sha256": run_manifest["files"][PREDICTIONS],
+                "model_key": key,
+                "fit_seasons": seasons,
+                "seed": seed,
+                "mode": "fixed",
+                "bounds_note": f"stored bounds: played-score extremes through {max(seasons)}",
+            },
+            bounds=bounds.filter(pl.col("scoring").is_in(key_scorings)).drop("season"),
+        )
+        file = out_dir / _slug(key) / "calibration.json"
+        frozen.save(file)
+        calibrators[key] = {
+            "path": _rel(file),
+            "sha256": _sha256(file),
+            "model": name,
+            "scorings": key_scorings,
+            "calibration_version": frozen.meta["calibration_version"],
+            "fit_rows": frozen.meta["rows"],
+            "existing": False,
+        }
+    payload = {
+        "format": FROZEN_FORMAT,
+        "mode": "fixed",
+        "created_at": datetime.now(UTC).isoformat(),
+        "git": git_sha(),
+        "fitted_on": {
+            "run_id": run_manifest["run_id"],
+            "predictions_sha256": run_manifest["files"][PREDICTIONS],
+            "seasons": seasons,
+            "seed": seed,
+            "quantiles": repr(OnlinePITQuantile(seed=seed)),
+            "isotonic": repr(OnlineIsotonic()),
+        },
+        "calibrators": calibrators,
+    }
+    path = out_dir / FROZEN_MANIFEST
+    _write_json_atomic(payload, path)
+    return path
 
 
 #: calibration bookkeeping columns (null on raw rows)
@@ -747,6 +959,8 @@ def run_walk_forward(
     root: Path | str | None = None,
     store: SnapshotStore | None = None,
     actuals: pl.DataFrame | None = None,
+    calibration: str | None = None,
+    frozen_manifest: Path | str | None = None,
 ) -> Path:
     """Run the walk-forward backtest and return the run directory (see module docstring).
 
@@ -754,6 +968,14 @@ def run_walk_forward(
     store read, for tests. ``combine=False`` only writes part files (parallel
     workers); a later call with ``combine=True`` skips the written parts and
     writes ``predictions.parquet`` and the manifest.
+
+    ``calibration`` is ``online`` (walk-forward v3, the default when
+    ``calibrate``), ``none``, or ``frozen`` (FIXED, D-095): every model key's
+    calibrator from ``frozen_manifest`` (default
+    ``artifacts/calibration/FROZEN.json``) is applied unchanged to its raw rows
+    of every week, with no online fitting and no warm-up. A key without a
+    frozen calibrator, a missing file or a changed hash stops the run before
+    any model is fitted.
     """
     wall_start = time.perf_counter()
     started_at = datetime.now(UTC).isoformat()
@@ -761,19 +983,27 @@ def run_walk_forward(
     seasons = sorted({int(s) for s in seasons})
     if not seasons:
         raise ValueError("seasons is empty")
-    assert_seasons_allowed(seasons, purpose)
+    # the guard covers every season read, history included (2026 reads 2025 as history)
+    assert_seasons_allowed(_history(seasons), purpose)
     if refit_every < 1:
         raise ValueError("refit_every must be at least 1")
+    mode = calibration or ("online" if calibrate else "none")
+    if mode not in CALIBRATION_MODES:
+        raise ValueError(f"calibration must be one of {CALIBRATION_MODES}, got {mode!r}")
     rules = resolve_scorings(scorings)
     if not rules:
         raise ValueError("scorings is empty")
     keys = [model_key(m) for m in models]
     if len(set(keys)) != len(keys):
         raise ValueError(f"model keys must be unique within a run: {keys}")
+    frozen_calibrators: dict[str, tuple[FrozenCalibration, str]] = {}
+    frozen_record: dict[str, Any] | None = None
+    if mode == "frozen":
+        frozen_calibrators, frozen_record = load_frozen_calibrators(frozen_manifest, keys)
     report = (
         sorted({int(s) for s in report_seasons})
         if report_seasons is not None
-        else (seasons[1:] if len(seasons) > 1 else list(seasons))
+        else (seasons[1:] if len(seasons) > 1 and mode == "online" else list(seasons))
     )
     if not set(report) <= set(seasons):
         raise ValueError(f"report_seasons {report} are not all in seasons {seasons}")
@@ -828,8 +1058,10 @@ def run_walk_forward(
     )
     joined = with_pit(joined)
     frames = [joined]
-    if calibrate and joined.height:
+    if mode == "online" and joined.height:
         frames.append(calibrated_rows(joined))
+    elif mode == "frozen" and joined.height:
+        frames.append(frozen_rows(joined, frozen_calibrators))
     final = _finish_frame(pl.concat(frames, how="diagonal_relaxed"))
     pred_path = run_dir / PREDICTIONS
     _write_parquet_atomic(final, pred_path)
@@ -860,9 +1092,13 @@ def run_walk_forward(
         "scorings": {name: r.scoring_hash for name, r in rules.items()},
         "feature_version": _feature_version(seasons, purpose),
         "input_snapshots": _snapshot_ids(store),
-        "calibration_version": CALIBRATION_VERSION if calibrate else None,
+        "calibration_version": (
+            CALIBRATION_VERSION if mode == "online" else "frozen" if mode == "frozen" else None
+        ),
         "calibration": {
-            "applied": bool(calibrate),
+            "mode": mode,
+            "applied": mode != "none",
+            "frozen_manifest": frozen_record,
             "version": CALIBRATION_VERSION,
             "suffix": CAL_SUFFIX,
             "quantiles": repr(default_quantile_calibrator()),
@@ -960,7 +1196,11 @@ def _worker_logging(log_path: Path) -> None:
 
 
 def _run_config_part(
-    config_name: str, key: str, run_id: str, threads: int | None
+    config_name: str,
+    key: str,
+    run_id: str,
+    threads: int | None,
+    frozen_manifest: str | None = None,
 ) -> dict[str, Any]:
     """Worker: build the configured models, run the one with ``key``, write its parts only."""
     from ffml.eval.backtest_configs import get_config
@@ -982,12 +1222,17 @@ def _run_config_part(
         report_seasons=cfg.report_seasons,
         config_name=cfg.name,
         combine=False,
+        calibration=cfg.calibration,
+        frozen_manifest=frozen_manifest,
     )
     return {"key": key, "seconds": time.perf_counter() - t0}
 
 
 def run_backtest(
-    config_name: str = "default", run_id: str | None = None, n_jobs: int | None = None
+    config_name: str = "default",
+    run_id: str | None = None,
+    n_jobs: int | None = None,
+    frozen_manifest: str | Path | None = None,
 ) -> Path:
     """Run a configured backtest (``ffml/eval/backtest_configs.py``) and return the run directory.
 
@@ -995,20 +1240,29 @@ def run_backtest(
     so rerunning a stopped backtest on the same day resumes it. With
     ``n_jobs > 1`` each model runs in its own worker process (part files only;
     logs in ``<run>/logs``) and the parent then combines every part.
+
+    Before any model is built, the holdout guard checks every season the run
+    reads, and a frozen-calibration config checks that each model key has an
+    intact frozen calibrator (``frozen_manifest``, else the config's, else
+    ``artifacts/calibration/FROZEN.json``).
     """
     from ffml.eval.backtest_configs import get_config
 
     cfg = get_config(config_name)
+    assert_seasons_allowed(_history(cfg.seasons), cfg.purpose)
     run_id = (
         run_id
         or os.environ.get("FFML_BACKTEST_RUN_ID")
         or (f"{cfg.name}_{datetime.now(UTC).strftime('%Y%m%d')}")
     )
+    manifest = frozen_manifest or cfg.frozen_manifest
+    manifest = str(manifest) if manifest is not None else None
     n_jobs = cfg.n_jobs if n_jobs is None else int(n_jobs)
     models = cfg.build_models()
+    if cfg.calibration == "frozen":
+        load_frozen_calibrators(manifest, [model_key(m) for m in models])
     t0 = time.perf_counter()
     if n_jobs > 1 and len(models) > 1:
-        assert_seasons_allowed(cfg.seasons, cfg.purpose)
         threads = max(1, (os.cpu_count() or 2) // n_jobs)
         keys = [model_key(m) for m in models]
         # heaviest first so the long jobs start immediately
@@ -1025,7 +1279,9 @@ def run_backtest(
             threads,
         )
         with ProcessPoolExecutor(max_workers=n_jobs, mp_context=get_context("spawn")) as pool:
-            futures = [pool.submit(_run_config_part, cfg.name, k, run_id, threads) for k in keys]
+            futures = [
+                pool.submit(_run_config_part, cfg.name, k, run_id, threads, manifest) for k in keys
+            ]
             for fut in futures:
                 info = fut.result()
                 log.info("worker finished %s in %.1fs", info["key"], info["seconds"])
@@ -1039,6 +1295,8 @@ def run_backtest(
         cfg.purpose,
         report_seasons=cfg.report_seasons,
         config_name=cfg.name,
+        calibration=cfg.calibration,
+        frozen_manifest=manifest,
     )
     log.info("backtest %s finished in %.1fs: %s", run_id, time.perf_counter() - t0, run_dir)
     return run_dir
@@ -1047,6 +1305,10 @@ def run_backtest(
 __all__ = [
     "OUTCOME_COLUMNS",
     "build_schedule",
+    "freeze_calibrators",
+    "frozen_manifest_path",
+    "frozen_rows",
+    "load_frozen_calibrators",
     "calibrated_rows",
     "check_frame",
     "join_outcomes",

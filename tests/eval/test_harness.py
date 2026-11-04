@@ -447,3 +447,157 @@ def test_calibration_version_and_sources_on_recombine(tmp_settings, tmp_path):
     run(tmp_path, [idle], run_id="v2")
     assert idle.fits == [] and idle.predicts == []
     assert pl.read_parquet(run_dir / "predictions.parquet").equals(first)
+
+
+# --------------------------------------------------------------------------- #
+# FIXED (frozen) calibration, pre-registered for the holdout (D-095)
+# --------------------------------------------------------------------------- #
+
+
+def _sha(path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def frozen_setup(tmp_path, names=("fake_a", "fake_b")):
+    """An online run on 2021-2022, calibrators frozen on its 2021 rows; returns actuals and manifest."""
+    from ffml.eval.harness import freeze_calibrators
+
+    actuals = synthetic_actuals()
+    models = [BoomModel(actuals, name=n) for n in names]
+    src = run(tmp_path, models, run_id="source", seasons=(2021, 2022), report_seasons=[2022])
+    manifest = freeze_calibrators(
+        src, list(names), tmp_path / "frozen", seasons=[2021], actuals=actuals, scorings=SCORINGS
+    )
+    return actuals, manifest
+
+
+def test_frozen_mode_applies_calibrators_unchanged_and_never_fits(
+    tmp_settings, tmp_path, monkeypatch
+):
+    from ffml.models import calibration as C
+
+    actuals, manifest = frozen_setup(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["mode"] == "fixed" and payload["fitted_on"]["seasons"] == [2021]
+    for key, entry in payload["calibrators"].items():
+        assert _sha(tmp_path / "frozen" / key / "calibration.json") == entry["sha256"]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("frozen mode must not fit any calibrator")
+
+    for target in (
+        (C.OnlinePITQuantile, "transform"),
+        (C.OnlinePITQuantile, "fit_final"),
+        (C.OnlineIsotonic, "transform"),
+        (C.OnlineIsotonic, "fit_final"),
+        (C.OnlineConformal, "transform"),
+        (C.OnlineConformal, "fit_final"),
+    ):
+        monkeypatch.setattr(*target, forbidden)
+    models = [BoomModel(actuals, name=n) for n in ("fake_a", "fake_b")]
+    run_dir = run(
+        tmp_path,
+        models,
+        run_id="frozen",
+        seasons=(2022,),
+        calibration="frozen",
+        frozen_manifest=manifest,
+    )
+    out = pl.read_parquet(run_dir / "predictions.parquet")
+    m = read_manifest(run_dir)
+    assert m["calibration"]["mode"] == "frozen" and m["calibration_version"] == "frozen"
+    rec = m["calibration"]["frozen_manifest"]
+    assert rec["sha256"] == _sha(manifest)
+    assert m["report_seasons"] == [2022] and m["warmup_seasons"] == []
+    for key in ("fake_a", "fake_b"):
+        file = tmp_path / "frozen" / key / "calibration.json"
+        assert (
+            rec["calibrators"][key]["sha256"] == _sha(file) == payload["calibrators"][key]["sha256"]
+        )
+        label = f"frozen:{_sha(file)[:12]}"
+        cal = out.filter(pl.col("model") == key + CAL_SUFFIX)
+        assert set(cal["calibration_version"]) == {label}
+        # calibrated rows equal the frozen calibrator applied to the raw rows, every week (no warm-up)
+        raw = out.filter(pl.col("model") == key)
+        expect = C.FrozenCalibration.load(file).apply(
+            raw, lower_bound="pos_min", upper_bound="pos_max"
+        )
+        k = ["scoring", "season", "week", "entity_id"]
+        q = [
+            "pred_q05",
+            "pred_q10",
+            "pred_q25",
+            "pred_q50",
+            "pred_q75",
+            "pred_q90",
+            "pred_q95",
+            "boom_prob",
+        ]
+        assert cal.sort(k).select(q).equals(expect.sort(k).select(q))
+        first_week = cal.filter(pl.col("week") == 1)
+        assert set(first_week["cal_q_source"]) <= {
+            "position",
+            "pooled",
+        }  # frozen levels from week 1
+
+
+def test_frozen_mode_without_a_calibrator_fails_before_predicting(tmp_settings, tmp_path):
+    actuals, manifest = frozen_setup(tmp_path, names=("fake_a",))
+    extra = BoomModel(actuals, name="uncalibrated")
+    with pytest.raises(ValueError, match="no frozen calibrator"):
+        run(
+            tmp_path,
+            [BoomModel(actuals, name="fake_a"), extra],
+            run_id="missing",
+            seasons=(2022,),
+            calibration="frozen",
+            frozen_manifest=manifest,
+        )
+    assert extra.fits == [] and extra.predicts == []
+    with pytest.raises(FileNotFoundError):
+        run(
+            tmp_path,
+            [extra],
+            run_id="nomanifest",
+            seasons=(2022,),
+            calibration="frozen",
+            frozen_manifest=tmp_path / "nope.json",
+        )
+    # a calibrator whose bytes changed after registration is refused too
+    file = tmp_path / "frozen" / "fake_a" / "calibration.json"
+    file.write_text(file.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    model = BoomModel(actuals, name="fake_a")
+    with pytest.raises(ValueError, match="changed"):
+        run(
+            tmp_path,
+            [model],
+            run_id="tampered",
+            seasons=(2022,),
+            calibration="frozen",
+            frozen_manifest=manifest,
+        )
+    assert model.predicts == []
+
+
+def test_pre_registered_configs(tmp_settings):
+    from ffml.eval.backtest_configs import get_config
+    from ffml.eval.harness import run_backtest
+
+    hold, fwd, dry = (
+        get_config("holdout_2025"),
+        get_config("forward_2026"),
+        get_config("frozen_dryrun_2024"),
+    )
+    assert hold.seasons == (2025,) and hold.weeks == tuple(range(1, 19)) and hold.refit_every == 1
+    assert fwd.seasons == (2026,) and fwd.weeks == tuple(range(1, 8))
+    assert dry.seasons == (2024,) and dry.weeks == (1, 2, 3)
+    for cfg in (hold, fwd):
+        assert cfg.purpose == "holdout_eval" and cfg.calibration == "frozen" and cfg.strict_models
+        assert cfg.include_baselines and cfg.include_challenger and cfg.include_chain
+    # refused by the existing guard while locked, before any model is built or anything written
+    for name in ("holdout_2025", "forward_2026"):
+        with pytest.raises(HoldoutLockedError):
+            run_backtest(name, run_id=f"locked_{name}")
+        assert not (tmp_settings.data_dir / "backtests" / f"locked_{name}").exists()

@@ -13,8 +13,19 @@
     models, one process.
 ``baselines``
     The default schedule with the baselines only.
-
-The holdout season is never part of a configuration (D-005, D-058).
+``holdout_2025`` / ``forward_2026`` (pre-registered, D-091 to D-096)
+    The one-time holdout (2025 weeks 1-18) and the forward check (2026 weeks
+    1-7, the weeks fully final in the frozen snapshot). Both use purpose
+    ``holdout_eval`` for every read (one audited session, D-049), refit
+    every week, the five baselines, the challenger per scoring and both
+    chain configurations (built strictly: a chain that cannot be built stops
+    the run), and FIXED calibration: each model's frozen calibrator from
+    ``artifacts/calibration/FROZEN.json`` is applied unchanged, with no online
+    fitting (D-095). They run only when the holdout guard allows the seasons
+    they read; nothing here bypasses it.
+``frozen_dryrun_2024``
+    The same mechanics on 2024 weeks 1-3 with calibrators frozen on 2022-2023,
+    whose manifest is passed to ``run_backtest(frozen_manifest=...)``.
 """
 
 from __future__ import annotations
@@ -30,40 +41,55 @@ SCORINGS: tuple[str, ...] = ("ppr", "half", "std")
 CHAIN_CONFIGS: tuple[str, ...] = ("primary", "final_report")
 
 
-def baseline_models() -> list[Any]:
+def baseline_models(purpose: str = "backtest") -> list[Any]:
     from ffml.models.baselines import default_baselines
 
-    return list(default_baselines())
+    return list(default_baselines(purpose=purpose))
 
 
-def challenger_models(scorings: tuple[str, ...] = SCORINGS) -> list[Any]:
+def challenger_models(scorings: tuple[str, ...] = SCORINGS, purpose: str = "backtest") -> list[Any]:
     from ffml.models.challenger import DirectQuantileModel
 
-    return [DirectQuantileModel(s) for s in scorings]
+    return [DirectQuantileModel(s, purpose=purpose) for s in scorings]
 
 
-def chain_models() -> list[Any]:
+def chain_models(purpose: str | None = None, strict: bool = False) -> list[Any]:
     """``ChainModel`` in the primary and final-report configurations, if B1's chain is importable.
 
-    Any import or construction error (a chain package still being written)
-    leaves the chain out with a warning instead of failing the backtest.
+    ``purpose`` gives both models one shared ``ChainData`` that reads features
+    under that purpose (the holdout configs use ``holdout_eval``); ``None``
+    keeps the chain's own default data. Without ``strict``, an import or
+    construction error (a chain package still being written) leaves the chain
+    out with a warning; with ``strict`` (the pre-registered holdout runs) it
+    is raised.
     """
     try:
         from ffml.models.chain import ChainModel
+        from ffml.models.chain.data import ChainData
     except ImportError as exc:
+        if strict:
+            raise
         log.info("ChainModel not importable (%s); chain left out of the backtest", exc)
         return []
     except Exception as exc:  # noqa: BLE001 - a broken package must not stop the baselines
+        if strict:
+            raise
         log.warning("ChainModel import failed (%r); chain left out of the backtest", exc)
         return []
+    data = ChainData(purpose=purpose) if purpose is not None else None
     models = []
     for config in CHAIN_CONFIGS:
         try:
-            try:
-                models.append(ChainModel(config=config))
-            except TypeError:
-                models.append(ChainModel(config))
+            if data is not None:
+                models.append(ChainModel(config=config, data=data))
+            else:
+                try:
+                    models.append(ChainModel(config=config))
+                except TypeError:
+                    models.append(ChainModel(config))
         except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise
             log.warning("ChainModel(%r) could not be built (%r); left out", config, exc)
     return models
 
@@ -98,15 +124,25 @@ class BacktestConfig:
     purpose: str = "backtest"
     description: str = ""
     extra_models: Callable[[], list[Any]] | None = field(default=None, compare=False)
+    #: ``online`` (walk-forward calibration) or ``frozen`` (FIXED, pre-registered calibrators)
+    calibration: str = "online"
+    #: frozen mode: the calibrator manifest (``None`` = ``artifacts/calibration/FROZEN.json``)
+    frozen_manifest: str | None = None
+    #: give the models this run's purpose and fail if the chain cannot be built
+    strict_models: bool = False
 
     def build_models(self) -> list[Any]:
         models: list[Any] = []
+        purpose = self.purpose if self.strict_models else "backtest"
         if self.include_baselines:
-            models += baseline_models()
+            models += baseline_models(purpose)
         if self.include_challenger:
-            models += challenger_models(self.scorings)
+            models += challenger_models(self.scorings, purpose)
         if self.include_chain:
-            models += chain_models()
+            if self.strict_models:
+                models += chain_models(purpose=self.purpose, strict=True)
+            else:
+                models += chain_models()
         if self.extra_models is not None:
             models += self.extra_models()
         return models
@@ -153,6 +189,43 @@ CONFIGS: dict[str, BacktestConfig] = {
         description="chain ablations (no_vegas, no_ngs, depth_same_week); compare raw rows "
         "with chain_v1-primary from the default run",
         extra_models=ablation_models,
+    ),
+    # ---- pre-registered holdout and forward check (D-091 to D-096) ---- #
+    "holdout_2025": BacktestConfig(
+        name="holdout_2025",
+        seasons=(2025,),
+        weeks=tuple(range(1, 19)),
+        report_seasons=(2025,),
+        refit_every=1,
+        n_jobs=3,
+        purpose="holdout_eval",
+        calibration="frozen",
+        strict_models=True,
+        description="one-time 2025 holdout, FIXED frozen calibration",
+    ),
+    "forward_2026": BacktestConfig(
+        name="forward_2026",
+        seasons=(2026,),
+        weeks=tuple(range(1, 8)),
+        report_seasons=(2026,),
+        refit_every=1,
+        n_jobs=3,
+        purpose="holdout_eval",
+        calibration="frozen",
+        strict_models=True,
+        description="2026 forward check, weeks 1-7, FIXED frozen calibration",
+    ),
+    "frozen_dryrun_2024": BacktestConfig(
+        name="frozen_dryrun_2024",
+        seasons=(2024,),
+        weeks=(1, 2, 3),
+        report_seasons=(2024,),
+        refit_every=1,
+        n_jobs=3,
+        purpose="backtest",
+        calibration="frozen",
+        strict_models=True,
+        description="dry run of the frozen mechanics on 2024 weeks 1-3 (calibrators frozen on 2022-2023)",
     ),
 }
 
