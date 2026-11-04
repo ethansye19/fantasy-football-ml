@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,13 @@ def sims_frame(
     season: int, week: int, n_sims: int, seed: int = 7, weeks: list[int] | None = None
 ) -> pl.DataFrame:
     """Simulated stat lines for every entity; ``weeks`` gives several weeks (ROS)."""
+    return _sims_frame(season, week, n_sims, seed, tuple(weeks) if weeks else None)
+
+
+@lru_cache(maxsize=32)
+def _sims_frame(
+    season: int, week: int, n_sims: int, seed: int, weeks: tuple[int, ...] | None
+) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     frames = []
     ents = player_ids()
@@ -121,6 +129,16 @@ def sims_frame(
 
 def summary_frame(sims: pl.DataFrame, model: str = "chain_v2") -> pl.DataFrame:
     """A reference summary with a ``drivers`` JSON column, like ``player_summary.parquet``."""
+    key = (id(sims), model)
+    if key not in _SUMMARIES:
+        _SUMMARIES[key] = (sims, _summary_frame(sims, model))
+    return _SUMMARIES[key][1]
+
+
+_SUMMARIES: dict[tuple[int, str], tuple[pl.DataFrame, pl.DataFrame]] = {}
+
+
+def _summary_frame(sims: pl.DataFrame, model: str) -> pl.DataFrame:
     from ffml.scoring.rules import ScoringRules
 
     rows = []

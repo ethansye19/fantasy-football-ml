@@ -23,8 +23,10 @@ from api import __version__
 from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
 from api.db.session import Database
 from api.errors import install_error_handlers
+from api.services.players import DirectoryHolder
 from api.settings import ApiSettings, get_api_settings
 from ffml.config import ensure_utf8
+from ffml.data.sleeper import SleeperClient
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +55,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.gate = ApprovalGate(settings)
     app.state.db = Database(settings.resolved_database_url)
+    app.state.players = DirectoryHolder(settings.processed_dir)
+    app.state.sleeper_factory = SleeperClient
 
     install_error_handlers(app)
     app.add_middleware(
@@ -74,9 +78,10 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             response.headers[HEADER] = HEADER_NOT_APPROVED
         return response
 
-    from api.routers import meta, projections
+    from api.routers import leagues, meta, projections
 
     app.include_router(meta.router)
+    app.include_router(leagues.router)
     app.include_router(projections.router)
     return app
 
