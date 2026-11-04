@@ -379,3 +379,40 @@ UI and model card requirements (report section 13):
 Recommendation:
 - `chain_v1` with calibration v3 (`3c77725c...`) is ready for the owner's review (D-090). It meets the section 8 accuracy rules and the D-085 coverage rule at every position on 2022-2024, and is insensitive to both seeds and to the atom rule.
 - After the owner's go-ahead: one `holdout_eval` session with this frozen candidate and calibrator (EV-3.4).
+
+## Holdout release machinery (EV-3.4 preparation, 2026-11-04; no 2025 or 2026 outcome read)
+
+Done:
+- `ffml/eval/report_holdout.py` (0f3992b): `build_holdout_report(holdout_run_id, forward_run_id=None, prereg_path=...)` writes `reports/evaluator_release_<candidate>.md`. Its CLI is `python -m ffml.eval.report_holdout`.
+  - **The 22 lines** are defined in code: 12 beats-baseline, 4 start/sit, 6 coverage. They are canonicalised with the pinned statistics (500 draws, seed 0, metric seed 0, the D-077 pair set, tie-aware coverage) into `lines_spec_sha256()`, which the pre-registration must carry.
+  - **The pre-registration** is the first fenced `json` block of `docs/status/holdout-preregistration.md`, or a `.json` file. The schema is in the module docstring.
+  - **Integrity checks run before any metric is read.** Any failure gives `Verdict: INVALID (<reason>)` and nothing is computed. The checks are:
+    - the line hash, and the bootstrap and seed values;
+    - every session's git sha against the commit;
+    - the run's seasons and weeks;
+    - FROZEN.json and every calibrator file hash;
+    - the manifest's calibration mode `frozen`;
+    - every calibrator the run used is pre-registered with the same hash;
+    - the snapshot ids;
+    - exactly one `holdout_eval` access session at the commit. This is checked again after the reads.
+  - **Reads.** Every holdout-season read goes through the guard with purpose `holdout_eval`. PIT bounds come from the run's own `pos_min` / `pos_max`.
+  - **Forward check.** It prints `Forward check: PASS` or `Forward check: FAIL`, and never touches the verdict line.
+  - **Dry runs** are labelled, written under `data/reports/`, and their verdict line cannot satisfy the registry's exact `Verdict: APPROVED` check.
+  - **Information outside the 22 lines:** the verdict grid against every comparator including the challenger, closed coverage and tails, boom/bust with the D-086 rule and D-089 flags, and the Thursday split.
+- The dry run found a crash on an empty matched population (weeks without a consensus scrape). It is fixed in `split_mae_deltas`, with a regression test.
+
+Evidence:
+- `pytest tests/eval -q`: `110 passed in 162.56s`; `ruff check .`: `All checks passed!`
+- Dry run on `dryrun_frozen_2024` (2024 weeks 1-3) with a scratchpad test pre-registration. Reports are in `data/reports/dryrun/` and not committed.
+  - **As is:** `INVALID`, because the run's sessions span two commits (`1e9664a` parts, `0f3992b` combine).
+  - **Wrong FROZEN.json hash:** `INVALID`, naming the hash.
+  - **Empty access log:** `INVALID`, "0 access sessions".
+  - **Scratch copy with a single session commit:** `NOT APPROVED`.
+    - L13-L16 fail closed because 2024 weeks 1-3 have no consensus scrape.
+    - L21 fails: K tie-aware coverage is 0.747 on three weeks.
+    - The forward check, on the same copy, is `FAIL`.
+
+Findings:
+- F-10 (orchestrator, holdout run): the commit check requires every session in the run manifest to be at the pre-registered commit. A run whose parts and combine were produced at different commits is INVALID. The real holdout run should be produced and combined at one commit, with nothing committed in between.
+- F-11 (pre-registration): if early 2025 weeks have no consensus scrape, as in 2024 weeks 1-3, the start/sit lines use the weeks that have one. A line with no consensus rows at all fails closed.
+- Start/sit line wording: "not worse" is applied as "the 95% interval of chain minus consensus is not entirely below 0". Equivalently, the interval of consensus minus chain is not entirely above 0.

@@ -738,6 +738,21 @@ def test_parse_seed_ranges_reads_b2_format():
     assert R.parse_seed_ranges("no ranges here") == {}
 
 
+def test_split_mae_deltas_with_an_empty_population():
+    """Weeks without a consensus scrape leave the matched population empty: NaN intervals, no crash."""
+    base = truth(weeks=(1, 2, 3))
+    frames = M.with_reference_rank({"chain_v1+cal": model_rows(base, "chain_v1+cal", 1.0, 5),
+                                    "rolling_median_8+cal": model_rows(base, "rolling_median_8+cal", 4.0, 3)})
+    keys = R.population_keys(frames["chain_v1+cal"])
+    status = keys.with_columns(pl.lit(R.STATUS_EARLY).alias("status"))  # nothing matched
+    split = R.split_mae_deltas(R.split_populations(frames, status), "chain_v1+cal", "rolling_median_8+cal",
+                               ("WR",), n_boot=10)
+    pooled = {s.group: s for s in split}["ALL"]
+    assert all(math.isnan(x) for x in pooled.deltas[R.POP_MATCHED])
+    assert not math.isnan(pooled.deltas[R.POP_EARLY][1]) and all(math.isnan(x) for x in pooled.did)
+    assert "no direction can be stated" in R.thursday_sentence(pooled, "The chain", "rolling_median_8+cal")
+
+
 def test_load_calibrator_seed_table(tmp_path):
     assert R.load_calibrator_seed_table(None) is None
     assert R.load_calibrator_seed_table(tmp_path / "missing.csv") is None

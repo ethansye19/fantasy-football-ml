@@ -703,7 +703,10 @@ def split_mae_deltas(
         arrays: dict[str, np.ndarray | None] = {}
         for pop in (POP_MATCHED, POP_EARLY, POP_ALL):
             d = points[f"{pop}|{focus}"] - points[f"{pop}|{best}"]
-            arr = boots[f"{pop}|{focus}"]["mae"] - boots[f"{pop}|{best}"]["mae"] if boots else None
+            # an empty population (for example weeks without a consensus scrape) has no replicates
+            fa = boots.get(f"{pop}|{focus}", {}).get("mae")
+            fb = boots.get(f"{pop}|{best}", {}).get("mae")
+            arr = fa - fb if fa is not None and fb is not None else None
             lo, hi = M.percentile_interval(arr, alpha) if arr is not None else (math.nan, math.nan)
             deltas[pop] = (d, lo, hi)
             arrays[pop] = arr
