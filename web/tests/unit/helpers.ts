@@ -1,4 +1,21 @@
 import { vi } from "vitest";
+import { createMockApi } from "@/mock/app.mjs";
+
+/** Route every fetch to /api/* through the contract mock (web/mock/app.mjs). */
+export function stubWithMock(options: Parameters<typeof createMockApi>[0] = {}) {
+  const mock = createMockApi(options);
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://localhost");
+    const path = url.pathname.replace(/^\/api/, "");
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    const out = mock.handle((init?.method ?? "GET").toUpperCase(), path, url.searchParams, body);
+    const headers: Record<string, string> = { "Content-Type": "application/json", ...(out.headers ?? {}) };
+    if (mock.mode === "private_test") headers["X-FFML-Approval"] = "not-approved";
+    return new Response(out.body === null || out.status === 204 ? null : JSON.stringify(out.body), { status: out.status, headers });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return { mock, fetchMock };
+}
 
 export type Route = { status: number; body: unknown; headers?: Record<string, string> };
 
