@@ -335,7 +335,6 @@ Done:
 - Report `reports/backtest_2026-11-03_v3.md`:
   - 500 draws, seed 0, 1,337 s; predictions sha256 `58d782bf...`.
   - Checks pass: identical pair sets and matched keys, consensus sentences 43 of 43, others 84 of 84, no restricted rows; v1 and v2 are unchanged.
-- I rewrote this note's v3-generator `Next` line above with the actual run command.
 
 Evidence (PPR 2022-2024, calibrated, tie-aware coverage at metric seed 0):
 - `chain_v1+cal`, v2 → v3:
