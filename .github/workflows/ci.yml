@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege for the GITHUB_TOKEN: every job only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -22,3 +26,169 @@ jobs:
         run: ruff check .
       - name: Unit tests (offline)
         run: FFML_OFFLINE=1 pytest -q
+
+  # API tests against PostgreSQL (D-004). tests/api/conftest.py switches every
+  # API test to this database through FFML_TEST_DATABASE_URL and resets the
+  # schema with Alembic before each client. Backend proposal P-CI
+  # (docs/status/phase4-backend.md). The credentials belong to the throwaway
+  # service container of this job only.
+  api-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ffml
+          POSTGRES_PASSWORD: ffml
+          POSTGRES_DB: ffml_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ffml -d ffml_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      PYTHONUTF8: "1"
+      FFML_OFFLINE: "1"
+      FFML_TEST_DATABASE_URL: postgresql+psycopg://ffml:ffml@localhost:5432/ffml_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[api,dev]"
+      - name: API tests on PostgreSQL
+        run: pytest -q tests/api
+
+  # Builds Dockerfile.api and runs it with docker-compose.yml (api + PostgreSQL)
+  # under production rules. The checkout has no model registry and no
+  # predictions, which is the real state (D-097, D-099): every projection
+  # route must answer 503 no_approved_model from the built image.
+  api-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE: http://localhost:8000
+      DUMMY_LEAGUE: 00000000-0000-0000-0000-000000000000
+      NO_MODEL_MESSAGE: "No approved model. Projections are off until a model passes its pre-registered test."
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start api + postgres
+        run: |
+          mkdir -p data artifacts reports
+          docker compose up -d --build --wait --wait-timeout 240
+      - name: Health and approval state (production, no approved model)
+        run: |
+          set -euo pipefail
+          curl -fsS "$BASE/meta/health" | tee health.json
+          echo
+          jq -e '.status == "ok" and .environment == "production"
+                 and .checks.database == "ok" and .checks.projections == "off"' health.json
+          curl -fsS "$BASE/meta/approval" | tee approval.json
+          echo
+          jq -e '.environment == "production" and .serving == false
+                 and .approval_status == "not approved" and .run == null' approval.json
+      - name: Every projection route answers 503 no_approved_model
+        run: |
+          set -euo pipefail
+          routes=(
+            "GET /projections"
+            "GET /ros"
+            "GET /leagues/$DUMMY_LEAGUE/projections"
+            "POST /leagues/$DUMMY_LEAGUE/start-sit"
+            "GET /leagues/$DUMMY_LEAGUE/waivers"
+            "POST /leagues/$DUMMY_LEAGUE/trades/evaluate"
+            "GET /leagues/$DUMMY_LEAGUE/ros"
+          )
+          for route in "${routes[@]}"; do
+            method="${route%% *}"
+            path="${route#* }"
+            args=(-s -o body.json -D headers.txt -w '%{http_code}' -X "$method")
+            if [ "$method" = "POST" ]; then
+              args+=(-H 'Content-Type: application/json' --data '{}')
+            fi
+            code="$(curl "${args[@]}" "$BASE$path")"
+            echo "$method $path -> $code $(cat body.json)"
+            test "$code" = "503"
+            jq -e --arg msg "$NO_MODEL_MESSAGE" \
+              '. == {"status": "no_approved_model", "message": $msg}' body.json > /dev/null
+            grep -qi '^x-ffml-approval: none' headers.txt
+            grep -qi '^cache-control: no-store' headers.txt
+          done
+          # the gate runs before parsing: an invalid request is refused the same way
+          code="$(curl -s -o body.json -w '%{http_code}' "$BASE/projections?week=abc&limit=-5")"
+          test "$code" = "503"
+          grep -q no_approved_model body.json
+      - name: League routes work on PostgreSQL; security headers; non-root user
+        run: |
+          set -euo pipefail
+          body='{"name": "CI smoke", "season": 2026, "num_teams": 4,
+                 "scoring": {"preset": "ppr"}, "roster_positions": ["QB", "RB", "WR", "TE", "FLEX", "BN"]}'
+          code="$(curl -s -o league.json -w '%{http_code}' -H 'Content-Type: application/json' \
+            --data "$body" "$BASE/leagues")"
+          cat league.json
+          echo
+          test "$code" = "201"
+          id="$(jq -r .id league.json)"
+          curl -fsS "$BASE/leagues" | jq -e --arg id "$id" 'any(.leagues[]; .id == $id)'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/leagues/$id")" = "204"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/leagues/$id")" = "404"
+          curl -s -D headers.txt -o /dev/null "$BASE/meta/health"
+          cat headers.txt
+          grep -qi '^x-content-type-options: nosniff' headers.txt
+          grep -qi '^cache-control: no-store' headers.txt
+          test "$(docker compose exec -T api id -u)" = "10001"
+      - name: Audit Python packages installed in the image (report only)
+        # Report only: Dockerfile.api installs from pyproject ranges, not from
+        # requirements.lock.txt, and the base image ships its own pip and
+        # setuptools (docs/SECURITY.md, finding QA-F09). The lock itself is
+        # audited, blocking, in the security job.
+        continue-on-error: true
+        run: |
+          docker compose exec -T api python -m pip freeze --all | grep -v '^ffml' > image-freeze.txt
+          cat image-freeze.txt
+          pipx run --spec pip-audit==2.10.1 pip-audit -r image-freeze.txt --no-deps --disable-pip --progress-spinner off
+      - name: API logs
+        if: always()
+        run: docker compose logs api
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
+
+  # Secrets scan of the full git history and dependency audits (QA-4.1,
+  # docs/SECURITY.md). Pinned tool versions; the gitleaks binary is checked
+  # against the release checksum.
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secrets scan, full git history (gitleaks)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/gitleaks" git --config .github/gitleaks.toml --redact --no-banner --verbose .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python dependency audit (requirements.lock.txt)
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit -r requirements.lock.txt --no-deps --disable-pip --progress-spinner off
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - name: npm audit (web runtime dependencies)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=moderate

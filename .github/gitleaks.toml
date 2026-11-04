@@ -1,0 +1,16 @@
+# gitleaks configuration for the secrets scan in .github/workflows/ci.yml (QA-4.1).
+# Default rules plus one narrow allowlist: the generic-api-key rule flags
+# Sleeper scoring keys such as `key: "bonus_rec_yd_100"` (web scoring form) and
+# model keys such as `"model_key": "rolling_ew_035"`. Those are short
+# lower-case snake_case identifiers; real tokens have long random segments
+# or mixed case, so they still match. Every other rule is unchanged.
+title = "ffml gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "short lower-case snake_case identifiers (scoring and model keys)"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^[a-z][a-z0-9]{0,11}(?:_[a-z0-9]{1,12}){1,6}$''']
