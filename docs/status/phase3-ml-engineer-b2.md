@@ -305,3 +305,55 @@ Evidence:
 Not done / findings:
 - With seven knots, an integer-valued position cannot reach every PIT value; a point mass ends only at a knot level. The randomized PIT is therefore not exactly uniform for K and DST, even when the rule's tail shares are met. This is a representation limit, disclosed in the test docstrings.
 - v3 lowers chain QB (0.801 to 0.779) and RB (0.811 to 0.785) relative to v2, both inside the 75-85% band. v2's offsets targeted the closed-interval rule, which suits QB, RB, WR and TE better than it suits K.
+
+---
+
+# Follow-up / ML Engineer B2 / pre-registration of FIXED calibration for the holdout (D-091 to D-096)
+Date: 2026-11-04
+Scope: frozen calibrators for every compared model, a harness mode that applies them unchanged, the holdout and forward-check configs, and a dry run of the mechanics on 2024. No 2025 or 2026 outcome was read, and `FFML_HOLDOUT_UNLOCK` was never set (no `artifacts/holdout_access.log` exists).
+
+Done:
+- `ffml/eval/harness.py` (1e9664a), FIXED mode (`calibration="frozen"`):
+  - `load_frozen_calibrators` requires an entry for every model key, an existing file, and a SHA-256 equal to the one recorded. Otherwise it raises before any model is fitted or predicts (it runs in `run_walk_forward` and again in `run_backtest` before workers start).
+  - `frozen_rows` applies each key's `FrozenCalibration` to that key's raw rows for every week, with no online fitting and no warm-up. Rows get `calibration_version = frozen:<sha256[:12]>`.
+  - The run manifest records `calibration.mode`, FROZEN.json's path and SHA-256, and each calibrator's path, SHA-256, label and source version.
+  - `freeze_calibrators` fits and writes the calibrators of a run plus `FROZEN.json`.
+  - The holdout guard now checks every season a run reads (history included), in both `run_walk_forward` and `run_backtest`, before anything is built. 2026 therefore needs 2025 to be allowed. It is the existing guard; nothing bypasses it.
+  - `combine_parts` tags rows with the model key internally; the column is never written out.
+- `ffml/eval/backtest_configs.py` (1e9664a, a034df9):
+  - `holdout_2025` (2025 weeks 1-18) and `forward_2026` (2026 weeks 1-7, D-096): refit 1, purpose `holdout_eval` for every read, so the run is one audited session (D-049). Models: the five baselines, `direct_lgbm` per scoring, and `chain_v1` plus `chain_v1_final_report`, sharing one `ChainData(purpose="holdout_eval")`. Built strictly: a chain that cannot be built stops the run. Frozen calibration.
+  - `frozen_dryrun_2024`: 2024 weeks 1-3, frozen calibration.
+- Frozen calibrators (FIXED, D-095): v3 quantiles and v2 per-position boom/bust, seed 0, raw rows of 2022-2024 in `default_20261102`, all three scorings (one scoring per challenger). Stored bounds are 2016-2024 extremes.
+  - `artifacts/calibration/FROZEN.json` SHA-256 `901fafbd8e63f3c747d62bd072e2c978c6a075a9e7004a5c3a9ce44e5f9f1bbf`.
+  - Every file is `artifacts/calibration/<key>/calibration.json` except chain_v1, which keeps its candidate file:
+
+  | key | SHA-256 |
+  | --- | --- |
+  | rolling_avg_4 | c36a02601b1485419cca6600072241d6ea9dc39d33fa720ec043091be2cb91f7 |
+  | rolling_avg_3 | effde8fc29285e3f2686c973d2305d4918a1983d1a63e1d28a692ba0236f89af |
+  | rolling_ew_035 | 38bad46211d3902d0a39e491adf790c7d9e0d2a1807cc8cacbf1b1bab8813059 |
+  | prior_season | 384bb4a872e210f988d42c9ffb68c558712133e9aa2966551a47aab7338b9f41 |
+  | rolling_median_8 | 09ffdbd0190f21572371ca0da0e61310e1a74f8a2410c37f0b81e23c46f3c4ba |
+  | direct_lgbm_ppr | 7f98423eabf021d47efabb0e35554b842c7e5d6b33a7713e5120b452b8d1a013 |
+  | direct_lgbm_half | 5416d7e6da072ac3a3ece0fc9df3f9e584ee3b4c8ea8e4a473b44b02a586317e |
+  | direct_lgbm_std | fbb6bccf3e1e7c69a6bf620aaaad47b4c76460f91798be3ece7ae3c6b65b3860 |
+  | chain_v1 (`artifacts/models/chain/chain_v1-primary-c2024w19-20261102T222634Z/calibration.json`) | 3c77725c4e6cf21cd2fc26acaeeea2b3aff22991087614bf35dcd9da280bcd39 |
+  | chain_v1_final_report | 914fa8d8cd8145df06fb19bdc812c5766bc9e538c62773d5475304f9fc94a45e |
+
+- Tests (`tests/eval/test_harness.py`, +3):
+  - Frozen mode never fits: every online and `fit_final` method of the three calibrators is patched to raise, and the run still completes. Calibrated rows equal `FrozenCalibration.apply` on the raw rows, and manifest hashes equal the files'.
+  - A missing calibrator, a missing manifest, or a changed file raises before the model predicts.
+  - `holdout_2025` and `forward_2026` are refused by the guard while locked, with nothing written.
+
+Evidence:
+- `.venv/Scripts/python -m pytest -q`: `438 passed, 1 warning in 382.34s (0:06:22)` (after a034df9). An earlier run had `1 failed, 436 passed`: the evaluator's holdout audit (`test_real_repository_eval_code_is_clean`) flagged literal season numbers in the new configs. a034df9 takes the holdout and forward seasons, and the config names `holdout_2025` / `forward_2026`, from `settings.holdout_season`; the audit now has no `ffml/eval` findings.
+- `ruff check .`: `All checks passed!`
+- Dry run (mechanics only): `run_backtest("frozen_dryrun_2024", run_id="dryrun_frozen_2024", frozen_manifest=<scratch>/FROZEN.json)`.
+  - The temporary calibrators were fitted on 2022-2023 rows into the session scratchpad, not `artifacts/calibration/`. Their FROZEN.json SHA-256 is `6c88f626c25e…`.
+  - Real 8m10.8s (harness 487.5 s) with 3 workers. 82,272 rows: 41,136 raw + 41,136 calibrated, weeks 1-3 of 2024.
+  - All 41,136 calibrated rows equal `FrozenCalibration.apply` on the raw rows for every key (quantiles and boom/bust). Each key carries its `frozen:<sha12>` label.
+  - The manifest records the FROZEN.json hash and every calibrator hash; all match the files.
+  - Raw and calibrated frames pass `validate_predictions`. `metrics.validate_frame` accepts all three scorings, and `evaluate` runs on PPR (1,744 summary rows, 16 models).
+
+Not done:
+- The artifacts (calibrators, FROZEN.json, REGISTRY.json) are gitignored by project rule and are not committed; their hashes are recorded here and in the code-produced manifests.
