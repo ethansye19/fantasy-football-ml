@@ -554,6 +554,48 @@ say that accuracy was unchanged. The v2 TE tie-aware coverage was 0.791, as in
 both committed reports. The figure 0.793 in an earlier summary was a
 transcription error.
 
+## D-097 Holdout outcome: chain_v1 not approved; Gate 3 fails (orchestrator, 2026-11-04)
+
+The single 2025 holdout session (EV-3.4) ran under the pre-registration at
+294aac0 and ended with `Verdict: NOT APPROVED` and `Forward check: PASS`
+(reports/evaluator_release_chain_v1-primary-c2024w19-20261102T222634Z.md,
+commit 824162d).
+
+- 21 of 22 lines passed on 2025. L17 failed: QB tie-aware coverage was 0.739,
+  outside [0.75, 0.85]. QB 80% ranges were too narrow, with 13.5% of outcomes
+  below q10 and 11.6% above q90. Raw QB coverage was 0.693.
+- All 22 lines passed on the 2026 week 1-7 forward check, with QB at 0.774.
+  The forward check never changes the 2025 verdict (D-094).
+- Against the FantasyPros consensus on 2025 (same player-weeks, calibrated
+  MAE):
+  - the chain is worse at QB, +0.263 [+0.099, +0.418];
+  - it is worse at RB, +0.086 [+0.000, +0.172];
+  - there is no detectable difference at WR, TE, K and DST.
+- Start/sit against the consensus ties at QB, RB and WR and is better at TE.
+- QB boom/bust probabilities were miscalibrated on 2025, with slopes of 0.56
+  and 0.77, on top of the K and DST flags (D-089).
+- One infrastructure rerun was used under D-093: the memory-pressure reaper
+  killed the first run before any metric was read. The reason is in the
+  evaluator's addendum.
+
+Consequences, under D-092:
+- chain_v1 is not approved;
+- nothing is tuned on 2025;
+- the session is not rerun;
+- no Week 9 projections are published as approved.
+
+`release_holdout` and `registry.approve` were not called. The registry entry
+stays at status candidate, and `approve` cannot accept this report because it
+lacks the `Verdict: APPROVED` line. Gate 3 fails. Phase 4 does not start
+until the owner decides how to continue (PROMPT_1: "Do not start a phase
+until the prior gate passes").
+
+These are not options, because each would select or adjust on the holdout:
+- accepting 0.739 as close enough;
+- switching to `chain_v1_final_report` (QB 0.758 on 2025), `direct_lgbm`, or
+  a baseline chosen after seeing 2025;
+- recalibrating on 2025 and re-scoring 2025.
+
 ## Owner answers received 2026-11-01
 
 1. Node.js LTS: install with winget (D-018).
@@ -567,4 +609,5 @@ transcription error.
 
 ## Open questions
 
-None at this time.
+- How the model track continues after D-097, and whether Phase 4 may start
+  with projections switched off (asked 2026-11-04).
