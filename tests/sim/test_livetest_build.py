@@ -142,6 +142,8 @@ def test_build_commits_every_output_with_hashes(registry_env, toy_chain, tmp_pat
     assert c["as_of"] == NOW.isoformat() and c["first_kickoff"] == KICKOFF.isoformat()
     assert datetime.fromisoformat(c["created_at"]) < KICKOFF
     assert re.match(r"^[0-9a-f]{40}$", c["code"]["commit"]) and "clean" in c["code"]
+    assert re.match(r"^[0-9a-f]{40}$", c["code"]["commit_at_end"])
+    assert c["code"]["head_moved"] == (c["code"]["commit_at_end"] != c["code"]["commit"])
     # every output file is listed with its hash: predictions and model artifact
     outputs = {Path(o["path"]).name: o for o in c["outputs"]}
     for name in (

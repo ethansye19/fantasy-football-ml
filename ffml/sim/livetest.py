@@ -49,7 +49,8 @@ Steps of :func:`build_week` (point-in-time as of the build, D-046)
 6. **Commitment** (:func:`write_commitment`): every output file with its
    SHA-256, the model artifact and calibrator-state hashes, the calibration
    inputs with hashes, data and feature snapshot ids, the code commit with
-   clean-tree status, as-of time, ``created_at`` (UTC), the first kickoff,
+   clean-tree status (at the start; ``head_moved`` flags a commit made during
+   the build), as-of time, ``created_at`` (UTC), the first kickoff,
    run time and peak memory, and a top-level digest: SHA-256 of the
    canonical JSON (sorted keys, no whitespace) of everything except
    ``digest`` (:func:`commitment_digest`; :func:`verify_commitment` checks
@@ -764,6 +765,14 @@ def build_week(
     wf_files = file_records(hist["written"], "walkforward_part")
     seconds = time.perf_counter() - t_start
     peak = peak_memory_mb()
+    end = code_state()
+    code = {
+        **code,
+        "commit_at_end": end["commit"],
+        "code_clean_at_end": end["code_clean"],
+        # another process committing during the build (shared checkout); use a pinned worktree
+        "head_moved": end["commit"] != code["commit"],
+    }
     created_at = _utc(clock())
     payload = {
         "format": COMMITMENT_FORMAT,
