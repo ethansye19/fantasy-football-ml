@@ -11,11 +11,19 @@ is appended to ``<artifacts_dir>/holdout_access.log`` so the Independent
 Evaluator can verify that the holdout was evaluated exactly once (one
 ``holdout_eval`` session, D-049).
 
-After that session the evaluator calls :func:`release_holdout` with the
-approved model version. The release marker ``<artifacts_dir>/holdout_release.json``
-permanently unlocks the season for production refits and for 2026 features
-that use 2025 as history (D-058). Accesses after release are still logged,
-with ``released=true``.
+After that session the evaluator calls :func:`release_holdout`. A release
+means the holdout season has been evaluated once and is from then on available
+as training data and as history (D-058, D-098): the release marker
+``<artifacts_dir>/holdout_release.json`` permanently unlocks the season for
+refits and for 2026 features that use 2025 as history. Accesses after release
+are still logged, with ``released=true``.
+
+A release is **not** an approval. The marker records the evaluated version and
+the session's verdict (``approved``, false for chain_v1 under D-097), but
+approval of a model is recorded only in the registry
+(:func:`ffml.models.registry.approve` and ``set_live``), and live predictions
+require the registry's live version (D-099). Nothing may read
+:func:`is_released` as approval.
 """
 
 from __future__ import annotations
@@ -72,6 +80,7 @@ def release_info() -> dict[str, Any] | None:
 
 
 def is_released() -> bool:
+    """True once the holdout season was evaluated and released as data (not an approval)."""
     info = release_info()
     return bool(info) and int(info.get("season", -1)) == get_settings().holdout_season
 
@@ -80,12 +89,23 @@ def is_unlocked() -> bool:
     return bool(get_settings().holdout_unlock) or is_released()
 
 
-def release_holdout(model_version: str, evaluator_report: str) -> Path:
-    """Permanently release the holdout after the single evaluation session (D-058).
+def release_holdout(
+    model_version: str, evaluator_report: str, *, approved: bool, note: str = ""
+) -> Path:
+    """Permanently release the holdout after its single evaluation session (D-058, D-098).
+
+    The release makes the holdout season available as training data and as
+    history; it does not approve anything. ``model_version`` and
+    ``evaluator_report`` name the evaluated version and its report,
+    ``approved`` (keyword-only, required) records that session's verdict and
+    ``note`` says why the season is released. Approval itself lives only in
+    the registry (:mod:`ffml.models.registry`).
 
     Only the Independent Evaluator calls this, at the end of its release run,
     and only while the unlock flag is set (so a release cannot happen silently).
     """
+    if not isinstance(approved, bool):
+        raise TypeError(f"approved must be True or False (the session verdict), not {approved!r}")
     settings = get_settings()
     if not settings.holdout_unlock:
         raise HoldoutLockedError("release_holdout requires FFML_HOLDOUT_UNLOCK=true (evaluator run)")
@@ -96,6 +116,8 @@ def release_holdout(model_version: str, evaluator_report: str) -> Path:
         "released_at": datetime.now(UTC).isoformat(),
         "model_version": model_version,
         "evaluator_report": evaluator_report,
+        "approved": approved,
+        "note": note,
         "git": _git_sha(),
     }
     settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
