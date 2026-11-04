@@ -1,0 +1,37 @@
+# Web app (Next.js standalone server). Build from the repository root:
+#   docker build -f Dockerfile.web -t ffml-web .
+#   docker run -p 3000:3000 -e FFML_API_URL=http://api:8000 ffml-web
+# FFML_API_URL is read at request time by the /api proxy (web/app/api/[...path]),
+# so one image works against any API.
+
+FROM node:26-alpine AS deps
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+FROM node:26-alpine AS build
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_OUTPUT=standalone
+COPY --from=deps /app/node_modules ./node_modules
+COPY web/package.json web/next.config.ts web/tsconfig.json web/postcss.config.mjs ./
+COPY web/app ./app
+COPY web/components ./components
+COPY web/lib ./lib
+RUN npm run build
+
+FROM node:26-alpine AS run
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0 \
+    FFML_API_URL=http://api:8000
+RUN addgroup -S app && adduser -S app -G app
+COPY --from=build --chown=app:app /app/.next/standalone ./
+COPY --from=build --chown=app:app /app/.next/static ./.next/static
+USER app
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1
+CMD ["node", "server.js"]
