@@ -87,6 +87,9 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-085 | 2026-11-03 | accepted (owner) | Coverage acceptance uses tie-aware (randomized PIT) coverage, 75-85% band, fixed seed, same rule for every model; frozen before 2025; recorded in the model card as a rule change made after validation |
 | D-086 | 2026-11-03 | accepted (owner) | Boom/bust calibration per position, walk-forward (out-of-sample), before/after shown for every position, frozen before 2025; kicker boom/bust hidden or marked low confidence if still poorly calibrated |
 | D-087 | 2026-11-03 | accepted (owner) | The owner sees the updated report again before the holdout session |
+| D-088 | 2026-11-03 | accepted (owner) | The conformal calibrator targets the tie-aware rule, with the same seeded tie handling for every position and model; out-of-sample; seed sensitivity shown; last calibration change before the holdout; any position still failing is frozen and disclosed |
+| D-089 | 2026-11-03 | accepted (owner) | K and DST boom/bust are low confidence: hidden or marked in the app and disclosed in the model card; a smoother calibrator goes on the improvements list |
+| D-090 | 2026-11-03 | accepted (owner) | The owner sees the v3 summary and gives the go-ahead before 2025 is opened |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -504,6 +507,22 @@ is opened. If kicker slopes remain poor, the app hides kicker boom/bust or
 marks it low confidence, and the model card discloses it.
 
 **D-087.** The owner reviews the updated report before the holdout session.
+
+## D-088 to D-090 Final calibration change before the holdout (owner, 2026-11-03)
+
+Report v2 showed the chain passing tie-aware coverage at QB, RB, WR, TE and DST
+but failing at K (0.740 calibrated, 0.819 raw), because the conformal step
+still counted a score equal to a quantile as "at or below" it and so targeted
+the closed-interval definition, not the tie-aware one adopted in D-085.
+D-088: the calibrator is aligned with the acceptance rule. It uses the same
+randomized-PIT tie handling and seed scheme as the metric, applied identically
+to every position and model, fitted walk-forward on earlier weeks only. The
+results are shown to be insensitive to the seed, and v3 shows before and
+after. This is the last calibration change before the holdout. Any position
+that still fails is frozen as is and disclosed. D-089: K and DST boom/bust
+stay flagged under the pre-set low-confidence rule; no further post-hoc
+choice is made for them. D-090: the owner reviews the v3 summary and gives
+the go-ahead before 2025 is opened.
 
 ## Owner answers received 2026-11-01
 
