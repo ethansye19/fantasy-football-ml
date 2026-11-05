@@ -1570,7 +1570,7 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
     acc_min = min(r1["per_line"][i] for i in acc_idx)
     slack = sum(1.0 - r1["per_line"][i] for i in acc_idx)
     bound = ("in every replicate, so its pass rate of {p:.3f} is exactly" if slack == 0 else
-             "in at least {m:.1%} of replicates, so its pass rate of {p:.3f} is, to within {s:.3f},").format(
+             "in at least {m:.2%} of replicates, so its pass rate of {p:.3f} is, to within {s:.4f},").format(
         p=r1["p"], m=acc_min, s=slack)
     a("**Where the good-model shortfall comes from.** Under A_vc on weeks 10-18 each of `R1`'s 18 accuracy lines "
       f"passes {bound} the joint pass rate of the ten unchanged lines L13-L22 ("

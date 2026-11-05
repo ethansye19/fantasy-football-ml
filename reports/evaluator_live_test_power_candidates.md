@@ -17,7 +17,7 @@ This report applies the D-105 limits, which the owner fixed before any candidate
 
 Reading the columns: the false-approval rate is the pass rate of a model with no edge (N0_vc); the good-model pass rate is that of a well-calibrated model with the validated accuracy (A_vc). Both use the variance-corrected scenario as D-105 item 1 requires; the uncorrected A and N0 are shown alongside.
 
-**Where the good-model shortfall comes from.** Under A_vc on weeks 10-18 each of `R1`'s 18 accuracy lines passes in at least 100.0% of replicates, so its pass rate of 0.614 is, to within 0.000, the joint pass rate of the ten unchanged lines L13-L22 (L13 0.963, L14 0.970, L15 0.815, L16 0.982, L17 0.859, L18 1.000, L19 1.000, L20 1.000, L21 0.993, L22 0.959). The same ten lines bound `R3` (identical verdicts) and `R2`. A nine-week design that changes only the accuracy lines cannot pass a good model more often than those ten lines do together. This describes the candidates; it is not a proposal.
+**Where the good-model shortfall comes from.** Under A_vc on weeks 10-18 each of `R1`'s 18 accuracy lines passes in at least 99.98% of replicates, so its pass rate of 0.614 is, to within 0.0002, the joint pass rate of the ten unchanged lines L13-L22 (L13 0.963, L14 0.970, L15 0.815, L16 0.982, L17 0.859, L18 1.000, L19 1.000, L20 1.000, L21 0.993, L22 0.959). The same ten lines bound `R3` (identical verdicts) and `R2`. A nine-week design that changes only the accuracy lines cannot pass a good model more often than those ten lines do together. This describes the candidates; it is not a proposal.
 
 ## 1. Method: what changed against the first report
 
