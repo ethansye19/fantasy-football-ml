@@ -54,7 +54,7 @@ def model_card(request: Request) -> dict[str, Any]:
     card["label"] = state.label
     card["serving"] = state.serving
     if state.environment == "production":
-        card["models"] = registry_summary()
+        card["models"] = registry_summary(state)
     else:
         card["models"] = []
         card["notice"] = (
@@ -95,7 +95,25 @@ def season(request: Request) -> dict[str, Any]:
     return request.app.state.season.describe()
 
 
-def registry_summary() -> list[dict[str, Any]]:
+#: Registry status -> model-card word. The bare word "approved" is never emitted: an
+#: approved or live registry entry is "awaiting_release" unless the gate is serving it.
+REGISTRY_STATUS_WORDS = {
+    "candidate": "candidate",
+    "rejected": "rejected",
+    "retired": "retired",
+    "approved": "awaiting_release",
+    "live": "awaiting_release",
+}
+
+
+def registry_status_word(entry: dict[str, Any], state: Any) -> str:
+    raw = entry.get("status")
+    if raw == "live" and state.serving and state.live_model_version == entry.get("version"):
+        return "live"
+    return REGISTRY_STATUS_WORDS.get(str(raw), "unknown")
+
+
+def registry_summary(state: Any) -> list[dict[str, Any]]:
     """Registry entries for the model card (production only)."""
     try:
         from ffml.models.registry import list_models
@@ -103,12 +121,16 @@ def registry_summary() -> list[dict[str, Any]]:
         models = list_models()
     except Exception:  # noqa: BLE001 - the card still renders without the registry
         return []
-    return [
-        {
-            "name": m.get("name"),
-            "version": m.get("version"),
-            "registry_status": m.get("status"),
-            "created_at": m.get("created_at"),
-        }
-        for m in models
-    ]
+    out = []
+    for m in models:
+        word = registry_status_word(m, state)
+        out.append(
+            {
+                "name": m.get("name"),
+                "version": m.get("version"),
+                "registry_status": word,
+                "serving": word == "live",
+                "created_at": m.get("created_at"),
+            }
+        )
+    return out

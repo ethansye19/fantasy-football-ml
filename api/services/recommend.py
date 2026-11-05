@@ -188,6 +188,7 @@ def projections(
     return {
         "season": scored.run.season,
         "week": scored.run.week,
+        "boom_bust_low_confidence": sorted(scored.run.low_confidence_positions),
         "total": frame.height,
         "players": [player_row(scored, r, directory, rosters) for r in page.iter_rows(named=True)],
     }
@@ -207,9 +208,9 @@ def start_sit(
             missing.append(pid)
         else:
             idx.append(i)
-    if missing:
+    if missing:  # body ids: 422, not 404 (404 is for path ids, docs/API.md section 4)
         raise ApiError(
-            404,
+            422,
             "player_not_found",
             "No projection this week for some players (unknown id, or no game this week).",
             {"player_ids": missing, "week": run.week},
@@ -269,6 +270,7 @@ def start_sit(
             explanation.append(f"{name[pid]} plays in only {ap:.0%} of simulations (injury risk).")
     return {
         "week": run.week,
+        "boom_bust_low_confidence": sorted(run.low_confidence_positions),
         "players": players,
         "pairwise": pairwise,
         "p_highest": {pid: round(float(p_high[i]), 4) for i, pid in enumerate(ids)},

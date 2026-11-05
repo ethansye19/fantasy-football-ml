@@ -57,7 +57,7 @@ class SeasonService:
                 "week_in_progress": False,
                 "last_completed_week": None,
                 "next_kickoff_utc": None,
-                "offseason": False,
+                "offseason": None,  # unknown, not offseason
                 "banner": SEASON_BANNERS["unknown"],
                 "as_of": at.isoformat(),
             }

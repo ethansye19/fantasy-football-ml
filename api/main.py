@@ -82,10 +82,11 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             response.headers[HEADER] = HEADER_NOT_APPROVED
         return response
 
-    from api.routers import leagues, meta, projections
+    from api.routers import leagues, meta, players, projections
 
     app.include_router(meta.router)
     app.include_router(leagues.router)
+    app.include_router(players.router)
     app.include_router(projections.router)
     return app
 

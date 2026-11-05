@@ -35,15 +35,19 @@ import numpy as np
 import polars as pl
 from scipy.stats import rankdata
 
-from api.approval import PredictionSource
+from api.approval import PredictionSource, manifest_field
 from ffml.scoring.rules import ScoringRules
+from ffml.scoring.statline import POSITIONS
 from ffml.sim.summarize import BOOM_BUST_THRESHOLDS
 
 log = logging.getLogger(__name__)
 
 MIN_ACTIVE_SIMS = 100
 MIN_REPORT_SIMS = 20
-LOW_CONFIDENCE_BOOM_BUST = frozenset({"K", "DST"})  # D-089
+#: Default low-confidence boom/bust positions: K and DST (D-089) and QB, whose boom/bust
+#: slopes were 0.56 and 0.77 on the 2025 holdout (D-097). A run manifest may override the
+#: set with ``low_confidence_positions`` (D-104).
+LOW_CONFIDENCE_BOOM_BUST = frozenset({"QB", "K", "DST"})
 PRESETS = ("ppr", "half", "std")
 LAST_REG_WEEK = 18
 
@@ -69,6 +73,7 @@ class RunData:
     ros_weeks: list[int] = field(default_factory=list)
     n_ros: int = 0
     drivers: dict[str, dict[str, Any]] = field(default_factory=dict)  # preset -> entity -> raw
+    low_confidence_positions: frozenset[str] = LOW_CONFIDENCE_BOOM_BUST
 
 
 @dataclass
@@ -156,6 +161,22 @@ def _opponent(team: str | None, game_id: str | None) -> str | None:
         return None
     away, home = parts[2], parts[3]
     return home if team == away else away if team == home else None
+
+
+def low_confidence_positions(manifest: dict[str, Any]) -> frozenset[str]:
+    """Positions whose boom/bust is low confidence (D-104).
+
+    ``low_confidence_positions`` from the manifest (top level or ``extra``) when it is a
+    list of known positions (an empty list means none); otherwise the default
+    :data:`LOW_CONFIDENCE_BOOM_BUST`.
+    """
+    value = manifest_field(manifest, "low_confidence_positions")
+    if isinstance(value, list | tuple | set):
+        cleaned = {str(v).strip().upper().replace("DEF", "DST") for v in value}
+        if cleaned <= set(POSITIONS):
+            return frozenset(cleaned)
+        log.warning("manifest low_confidence_positions %r ignored; using the default", value)
+    return LOW_CONFIDENCE_BOOM_BUST
 
 
 def preset_like(rules: ScoringRules) -> str:
@@ -252,6 +273,7 @@ def load_run(source: PredictionSource) -> RunData:
         ros_weeks=ros_weeks,
         n_ros=n_ros,
         drivers=drivers,
+        low_confidence_positions=low_confidence_positions(source.manifest),
     )
 
 
@@ -339,7 +361,7 @@ def score_run(run: RunData, rules: ScoringRules) -> Scored:
         .cast(pl.Int32)
         .alias("position_rank"),
         (pl.col("n_active") < MIN_ACTIVE_SIMS).alias("low_sample"),
-        pl.when(pl.col("position").is_in(list(LOW_CONFIDENCE_BOOM_BUST)))
+        pl.when(pl.col("position").is_in(list(run.low_confidence_positions) or ["none"]))
         .then(pl.lit("low"))
         .otherwise(pl.lit("normal"))
         .alias("boom_bust_confidence"),
@@ -441,6 +463,7 @@ __all__ = [
     "Scored",
     "drivers_raw",
     "load_run",
+    "low_confidence_positions",
     "preset_like",
     "score_run",
 ]

@@ -44,6 +44,7 @@ DEFAULT_TEAM_ALIASES: dict[str, str] = {
 }
 GSIS_RE = re.compile(r"^00-\d{7}$")
 SKILL = ("QB", "RB", "WR", "TE", "K")
+FANTASY_POSITIONS = frozenset({*SKILL, "DST"})
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class PlayerInfo:
     position: str | None  # QB RB WR TE K DST (None when unknown)
     team: str | None
     injury_status: str | None = None
+    last_active_season: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +66,13 @@ class PlayerInfo:
             "team": self.team,
             "injury_status": self.injury_status,
         }
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _norm_position(pos: str | None) -> str | None:
@@ -106,6 +115,7 @@ class PlayerDirectory:
                     position=_norm_position(row.get("position")),
                     team=self.team((sp or {}).get("team")) or self.team(row.get("latest_team")),
                     injury_status=(sp or {}).get("injury_status"),
+                    last_active_season=_as_int(row.get("last_active_season")),
                 )
                 self.by_gsis[info.player_id] = info  # type: ignore[index]
                 if info.sleeper_id:
@@ -161,7 +171,17 @@ class PlayerDirectory:
                 return None
 
         return cls.from_frames(
-            read("dim_player", ["player_id", "sleeper_id", "full_name", "position", "latest_team"]),
+            read(
+                "dim_player",
+                [
+                    "player_id",
+                    "sleeper_id",
+                    "full_name",
+                    "position",
+                    "latest_team",
+                    "last_active_season",
+                ],
+            ),
             read(
                 "sleeper_players",
                 ["sleeper_id", "full_name", "position", "team", "injury_status", "gsis_id"],
@@ -219,6 +239,49 @@ class PlayerDirectory:
 
     def __len__(self) -> int:
         return len(self.by_gsis)
+
+    # -- search ------------------------------------------------------------ #
+
+    def _searchable(self) -> list[PlayerInfo]:
+        """Players with a name and a fantasy position, plus the 32 defenses (built once)."""
+        rows = getattr(self, "_search_rows", None)
+        if rows is None:
+            rows = [i for i in self.by_gsis.values() if i.name and i.position in FANTASY_POSITIONS]
+            rows += [d for d in (self.defense(t) for t in sorted(NFL_TEAMS)) if d is not None]
+            self._search_rows = rows
+        return rows
+
+    def search(
+        self, query: str, position: str | None = None, limit: int = 50
+    ) -> list[PlayerInfo]:
+        """Case-insensitive name search (at least 2 characters).
+
+        An exact gsis id, team code or team alias (``LAR``, ``JAC``, ``WSH``)
+        also matches. Order: names starting with the query (any word) first,
+        then the most recently active players, then players with a team, then
+        alphabetically.
+        """
+        needle = query.strip().lower()
+        if len(needle) < 2:
+            return []
+        wanted = _norm_position(position) if position else None
+        hits: list[tuple[int, int, int, str, PlayerInfo]] = []
+        for info in self._searchable():
+            if wanted and info.position != wanted:
+                continue
+            name = (info.name or "").lower()
+            ids = {str(info.player_id or "").lower()}
+            if info.position == "DST" and info.team:
+                ids |= {a.lower() for a, t in self.aliases.items() if t == info.team}
+            exact_id = needle in ids
+            if needle not in name and not exact_id:
+                continue
+            starts = name.startswith(needle) or any(w.startswith(needle) for w in name.split())
+            # defenses are always current; unknown recency sorts last
+            recency = -(info.last_active_season or (9999 if info.position == "DST" else 0))
+            hits.append((0 if (starts or exact_id) else 1, recency, 0 if info.team else 1, name, info))
+        hits.sort(key=lambda h: h[:4])
+        return [h[4] for h in hits[: max(int(limit), 0)]]
 
 
 class DirectoryHolder:

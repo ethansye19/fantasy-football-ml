@@ -1,7 +1,7 @@
 # API contract (Phase 4)
 
 Owner: Backend Engineer. Consumers: the web app (`web/`), Playwright tests, QA.
-Status: contract v1.2, 2026-11-04. Every endpoint below is implemented and
+Status: contract v1.3, 2026-11-04. Every endpoint below is implemented and
 tested (tests/api). Changes are recorded in the changelog at the end.
 
 Code: `api/` (FastAPI, Pydantic v2, SQLAlchemy 2). Run locally:
@@ -162,7 +162,8 @@ All errors other than the gate's 503 use one envelope:
 
 | HTTP | code | when |
 | --- | --- | --- |
-| 404 | `not_found`, `league_not_found`, `team_not_found`, `player_not_found`, `week_not_available` | unknown resource; `details` may list valid choices |
+| 404 | `not_found`, `league_not_found`, `team_not_found`, `week_not_available` | an unknown resource named in the path or query (404 is reserved for those); `details` may list valid choices |
+| 422 | `player_not_found` | unknown player ids in a request body (manual-league `teams[].players`, start/sit `player_ids`); `details.player_ids` lists them |
 | 404 | `sleeper_not_found` | Sleeper has no such user or league |
 | 409 | `multiple_leagues` | a username with several leagues and no `league_id`; `details.leagues` lists them |
 | 409 | `no_team_selected` | waivers or trades without a "my team" choice or `league_team_id` |
@@ -253,8 +254,10 @@ When serving, `run` is the envelope's run object plus `seeds`, `as_of`,
 ```
 
 `mode` is `regular`, `postseason`, `offseason` or `unknown` (no schedule
-snapshot). In `postseason`/`offseason` `banner` explains that weekly features
-are paused and rankings are season-level.
+snapshot). `offseason` is `true` in `postseason` and `offseason`, `false` in
+`regular`, and `null` when the mode is `unknown` (the UI keys on `mode` and
+shows "season status unknown"). In `postseason`/`offseason` `banner` explains
+that weekly features are paused and rankings are season-level.
 
 ## 6. Leagues (never gated)
 
@@ -350,6 +353,24 @@ and ignored). `players` accepts gsis ids, Sleeper ids or team codes. Returns
 | POST | `/leagues/{id}/sync` | | League (re-reads Sleeper rosters; 409 for manual leagues) |
 | DELETE | `/leagues/{id}` | | 204 |
 
+### GET /players?search=&position= (never gated)
+
+Player lookup for league setup. Returns identity only: no projections, no
+gate, no restricted data.
+
+```json
+{"query": "jeff", "position": null,
+ "players": [{"player_id": "00-0036322", "name": "Justin Jefferson", "position": "WR", "team": "MIN"}]}
+```
+
+`search` is required, 2 to 60 characters, matched case-insensitively against
+the name (an exact gsis id, team code or team alias such as `LAR` also
+matches); `position` is one of `QB|RB|WR|TE|K|DST`; `limit` 1-50 (default 50).
+Order: names starting with the query (any word) first, then the most recently
+active players, then players with a team, then alphabetical.
+Defenses appear as `<team> D/ST` with the team code as `player_id`. Responses
+carry `Cache-Control: public, max-age=300`.
+
 ## 7. Projection routes (gated, section 3)
 
 All take the league's scoring (or `scoring=ppr|half|std` on the preset
@@ -385,16 +406,22 @@ model's calibration is fitted on reference scorings and is not applied at
 request time; `scoring.quantiles` says so). `boom_prob` is the chance of a
 top-N positional finish within the simulation and `bust_prob` the chance of
 finishing outside the startable range (QB 6/18, RB 12/36, WR 12/48, TE 6/18,
-K and DST 6/20; D-017). `boom_bust_confidence` is `low` for K and DST
-(D-089). `drivers` are plain-language explanations of the projection
+K and DST 6/20; D-017). `boom_bust_confidence` is `low` for positions whose
+boom/bust calibration is not trusted (D-104): the run manifest's
+`low_confidence_positions` when present, else QB, K and DST (K and DST by
+D-089; QB because its boom/bust slopes were 0.56 and 0.77 on the 2025
+holdout, D-097). The set in force is returned as `boom_bust_low_confidence`
+on the projections and start/sit responses. `drivers` are plain-language explanations of the projection
 relative to a position-average player (groups: opportunity, efficiency,
 matchup, environment, availability), largest first. `roster` is null for free
 agents and on preset routes.
 
 ### GET /leagues/{league_id}/projections (BE-4.3)
 
-Query: `week` (default: the run's week; another week gives 404
-`week_not_available` with `details.available_weeks`), `position`
+Query: `week` (default: the week of the run being served; once runs cover
+several weeks the default is the latest published run's week, and
+`details.available_weeks` on a 404 `week_not_available` lists what can be
+asked for), `position`
 (`QB|RB|WR|TE|K|DST`), `search` (name substring), `availability`
 (`all|rostered|free_agents|mine`, default `all`), `sort`
 (`median|mean|ceiling|floor|boom|bust`, default `median`), `limit` (1-500,
@@ -402,6 +429,7 @@ default 100), `offset`.
 
 ```json
 {...envelope, "league_id": "...", "season": 2024, "week": 10,
+ "boom_bust_low_confidence": ["DST", "K", "QB"],
  "scoring": {"hash": "...", "unsupported_keys": [], "preset_like": "ppr",
              "drivers_reference": "ppr", "quantiles": "Raw simulation quantiles ..."},
  "total": 512, "players": [PlayerRow, ...]}
@@ -515,6 +543,17 @@ whenever a new run is published (weekly).
 ## Changelog
 
 - v1 (2026-11-04): first contract; gate, meta health and approval implemented.
+- v1.3 (2026-11-04), BE-4.9 rulings:
+  - `boom_bust_confidence` is `low` for the manifest's `low_confidence_positions`,
+    default QB, K, DST (D-104); responses carry `boom_bust_low_confidence`.
+  - `/meta/model-card` `models[].registry_status` is one of `candidate`, `rejected`,
+    `retired`, `awaiting_release`, `live` (never the bare word "approved"); `serving` added.
+  - `player_not_found` is 422 for body ids (manual league, start/sit) with
+    `details.player_ids`; 404 is reserved for path and query resources.
+  - New ungated `GET /players?search=&position=`.
+  - `/meta/season` returns `offseason: null` when `mode` is `unknown`.
+  - Week default documented: the served run's week; the latest published run once
+    runs cover several weeks.
 - v1.2 (2026-11-04): all endpoints implemented. Added fields: player row `expected`,
   `low_sample`, `injury_status`; `scoring.drivers_reference` and `scoring.quantiles`;
   waivers `open_roster_spot`, option `starts`; trade `league_team_id`, `partner_team_id`,

@@ -157,7 +157,10 @@ def test_projection_filters_sort_and_pages(env):
     k = client.get(url, params={"position": "K"}).json()
     assert {p["boom_bust_confidence"] for p in k["players"]} == {"low"}
     qb = client.get(url, params={"position": "QB"}).json()
-    assert {p["boom_bust_confidence"] for p in qb["players"]} == {"normal"}
+    assert {p["boom_bust_confidence"] for p in qb["players"]} == {"low"}  # D-097, D-104
+    assert qb["boom_bust_low_confidence"] == ["DST", "K", "QB"]
+    wr = client.get(url, params={"position": "WR"}).json()
+    assert {p["boom_bust_confidence"] for p in wr["players"]} == {"normal"}
     assert [p["position_rank"] for p in qb["players"]] == list(range(1, 7))
     page = client.get(url, params={"limit": 5, "offset": 5}).json()
     assert [p["player_id"] for p in page["players"]] == [
@@ -260,7 +263,7 @@ def test_start_sit(env):
         (["00-0000001"], 422, "validation_error"),
         (["a", "b", "c", "d", "e"], 422, "validation_error"),
         (["KC", "KC"], 422, "validation_error"),
-        (["KC", "00-9999999"], 404, "player_not_found"),
+        (["KC", "00-9999999"], 422, "player_not_found"),
     ],
 )
 def test_start_sit_validation(env, ids, status, code):
@@ -376,6 +379,46 @@ def test_ros(env):
         assert p["ros_mean"] <= top[p["player_id"]] + 1e-6
     preset = client.get("/ros", params={"scoring": "half", "position": "TE"}).json()
     assert {p["position"] for p in preset["players"]} == {"TE"}
+
+
+def test_low_confidence_positions_come_from_the_manifest(make_client, api_dirs):
+    """D-104: low_confidence_positions in the manifest overrides the default set."""
+    write_snapshot(
+        api_dirs["private"],
+        labels={**PRIVATE_LABELS, "low_confidence_positions": ["K"]},
+        n_sims=100,
+    )
+    client = make_client(app_env="private_test")
+    body = client.get("/projections", params={"limit": 500}).json()
+    assert body["boom_bust_low_confidence"] == ["K"]
+    by_pos: dict[str, set[str]] = {}
+    for p in body["players"]:
+        by_pos.setdefault(p["position"], set()).add(p["boom_bust_confidence"])
+    assert by_pos["K"] == {"low"}
+    assert by_pos["QB"] == {"normal"} and by_pos["DST"] == {"normal"}
+
+
+def test_bad_manifest_low_confidence_falls_back_to_default(make_client, api_dirs):
+    write_snapshot(
+        api_dirs["private"],
+        labels={**PRIVATE_LABELS, "low_confidence_positions": ["QB", "OL"]},
+        n_sims=100,
+    )
+    client = make_client(app_env="private_test")
+    body = client.get("/projections", params={"limit": 5}).json()
+    assert body["boom_bust_low_confidence"] == ["DST", "K", "QB"]
+
+
+def test_start_sit_unknown_body_ids_are_422_with_the_list(env):
+    client, league, _ = env
+    r = client.post(
+        f"/leagues/{league['id']}/start-sit",
+        json={"player_ids": ["KC", "00-9999999", "00-9999998"]},
+    )
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "player_not_found"
+    assert err["details"]["player_ids"] == ["00-9999999", "00-9999998"]
 
 
 # --------------------------------------------------------------------------- offseason

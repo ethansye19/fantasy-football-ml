@@ -11,7 +11,13 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from api_factory import PRIVATE_LABELS, live_entry, write_registry, write_snapshot
+from api_factory import (
+    APPROVED_LABELS,
+    PRIVATE_LABELS,
+    live_entry,
+    write_registry,
+    write_snapshot,
+)
 from api_helpers import assert_never_approved, strings
 
 from api.services.season import SeasonService
@@ -31,7 +37,10 @@ def test_meta_routes_answer_in_production_without_a_model(make_client, path):
 
 @pytest.mark.parametrize("path", META)
 def test_meta_routes_never_say_approved_in_private_test(make_client, api_dirs, path):
-    write_registry(api_dirs["artifacts"], [live_entry()])  # even with a live registry model
+    # even with live and approved registry entries
+    write_registry(
+        api_dirs["artifacts"], [live_entry(), live_entry("chain_v2-appr", status="approved")]
+    )
     write_snapshot(api_dirs["private"], labels=PRIVATE_LABELS)
     r = make_client(app_env="private_test").get(path)
     assert r.status_code == 200
@@ -83,6 +92,38 @@ def test_run_info(make_client, api_dirs):
 def test_season_unknown_without_schedule(make_client):
     body = make_client().get("/meta/season").json()
     assert body["mode"] == "unknown" and body["banner"]
+    assert body["offseason"] is None  # unknown is not offseason (BE-4.9 ruling 5)
+
+
+def test_model_card_registry_status_words(make_client, api_dirs):
+    """Never the bare word "approved": approved/live entries are awaiting_release unless serving."""
+    entries = [
+        live_entry("v-cand", status="candidate"),
+        live_entry("v-appr", status="approved"),
+        live_entry("v-live", status="live"),
+        live_entry("v-rej", status="rejected"),
+        live_entry("v-ret", status="retired"),
+    ]
+    write_registry(api_dirs["artifacts"], entries)
+    card = make_client().get("/meta/model-card").json()  # production, nothing published
+    words = {m["version"]: m["registry_status"] for m in card["models"]}
+    assert words == {
+        "v-cand": "candidate",
+        "v-appr": "awaiting_release",
+        "v-live": "awaiting_release",
+        "v-rej": "rejected",
+        "v-ret": "retired",
+    }
+    assert not any(m["serving"] for m in card["models"])
+    assert "approved" not in {s.lower() for s in strings(card)}
+
+
+def test_model_card_live_word_only_when_serving(make_client, api_dirs):
+    write_registry(api_dirs["artifacts"], [live_entry("v-live")])
+    write_snapshot(api_dirs["predictions"], model_version="v-live", labels=APPROVED_LABELS)
+    card = make_client().get("/meta/model-card").json()
+    assert card["serving"] is True
+    assert card["models"][0]["registry_status"] == "live" and card["models"][0]["serving"]
 
 
 @pytest.mark.parametrize(
