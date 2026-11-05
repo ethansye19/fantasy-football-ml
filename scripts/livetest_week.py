@@ -3,8 +3,9 @@
 For the week whose first kickoff is next (from ``dim_game`` ``kickoff_utc``),
 before that kickoff:
 
-1. refresh the data (new snapshots only; existing snapshots are fingerprinted
-   before and after and must be unchanged);
+1. refresh the data with the pinned interpreter (``python -m ffml.data.refresh``,
+   one step per process; new snapshots only, and existing snapshots are
+   fingerprinted before and after and must be unchanged);
 2. run ``ffml livetest build-week --season S --week W`` (optionally from a
    separate worktree pinned at the pre-registered commit, with its own venv);
 3. commit ``commitment.json`` (plus ``player_summary.parquet`` under 5 MB) to
@@ -431,7 +432,6 @@ def run_refresh(run: Run, wk: core.WeekKickoff, state: dict[str, Any]) -> dict[s
     """Run the refresh steps; returns {"status": ok|failed|stale, ...}. Raises Abort on snapshot changes."""
     cfg = run.cfg
     seasons = f"{cfg.first_season}-{wk.season}"
-    pin_copy = cfg.livetest_dir / "schema_pins" / "expected_schemas.json"
     report = cfg.logs_dir / f"validation_{core.compact(run.now())}.md"
     before = core.fingerprint_snapshots(cfg.data_dir)
     run.log.event("refresh", "started", steps=list(cfg.refresh_steps), seasons=seasons,
@@ -441,8 +441,8 @@ def run_refresh(run: Run, wk: core.WeekKickoff, state: dict[str, Any]) -> dict[s
     save_state(cfg, wk, state)
     status, results = "ok", []
     for step in cfg.refresh_steps:
-        cmd = [str(cfg.python), str(SCRIPTS_DIR / "refresh_data.py"), "--step", step, "--seasons", seasons,
-               "--pin-path", str(pin_copy), "--report", str(report)]
+        cmd = [str(cfg.python), "-m", "ffml.data.refresh", "--step", step, "--seasons", seasons,
+               "--report", str(report)]
         t0 = time.perf_counter()
         try:
             proc = run.deps.run(cmd, cwd=str(cfg.code_cwd), env=cfg.child_env(), capture_output=True, text=True,

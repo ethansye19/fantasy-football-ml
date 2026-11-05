@@ -281,7 +281,7 @@ def livetest_verify(path: str = typer.Argument(..., help="Path to a commitment.j
 @app.command()
 def refresh(step: str = typer.Option("all", help="all | data | injuries | retrain-check | predict")) -> None:
     """Scheduled refresh entry point used by the scheduler and CI."""
-    from ffml.refresh import run_refresh
+    from ffml.data.refresh import run_refresh
 
     run_refresh(step=step)
 

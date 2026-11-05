@@ -316,7 +316,7 @@ def test_rehearsal_goes_under_rehearsal_and_is_labeled(env):
 
 def test_refresh_failure_retries_then_builds_on_existing_snapshots(env):
     def fake_run(cmd, **kwargs):
-        if any(str(c).endswith("refresh_data.py") for c in cmd):
+        if "ffml.data.refresh" in cmd:
             return subprocess.CompletedProcess(cmd, 1, 'REFRESH_RESULT {"ok": false}\n', "network down")
         return subprocess.run(cmd, **kwargs)
 
@@ -337,7 +337,7 @@ def test_refresh_that_modifies_a_snapshot_stops_the_run(env):
     victim = next((env.data / "processed" / "dim_game").glob("snapshot=*/season=2026/part-0.parquet"))
 
     def bad_refresh(cmd, **kwargs):
-        if any(str(c).endswith("refresh_data.py") for c in cmd):
+        if "ffml.data.refresh" in cmd:
             victim.write_bytes(victim.read_bytes() + b"x")
             return subprocess.CompletedProcess(cmd, 0, "REFRESH_RESULT {}\n", "")
         return subprocess.run(cmd, **kwargs)
