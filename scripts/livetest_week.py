@@ -24,21 +24,36 @@ Commands::
     python scripts/livetest_week.py run [--season S --week W] [--rehearsal] [--dry-run]
     python scripts/livetest_week.py watchdog [--season S --week W]
     python scripts/livetest_week.py check            # daily: stale predictions, schedule drift, misses
-    python scripts/livetest_week.py plan [--json] [--save]
+    python scripts/livetest_week.py plan [--json] [--save] [--export scripts/livetest_schedule_2026.json]
     python scripts/livetest_week.py status [--json]
     python scripts/livetest_week.py verify --season S --week W [--rehearsal]
+    python scripts/livetest_week.py run --dry-run-branch livetest-dryrun [--force-fail refresh|build|push] ...
 
 Exit codes: 0 done or nothing to do; 1 failed, retry later; 2 build blocked
 or pin refused; 3 missed (too late for this week); 4 refused (bad arguments
 or unsafe environment); 6 integrity problem (needs a human); 7 an existing
 snapshot was modified.
 
-Timing defaults (relative to the first kickoff K; tentative weeks use K - 24 h):
-act from K - 12 h; scheduled start K - 9 h with retries every 30 min; no
-refresh starts after K - 3 h (the build then uses the newest snapshots, with
-an alert); no refresh or build starts after K - 30 min; no push starts after
-K - 5 min; nothing is pushed for the week after K (a MISSED marker is pushed
-instead once the week has kicked off).
+Timing defaults (relative to the official first kickoff K; tentative weeks use
+K - 24 h): act from K - 25 h; scheduled start K - 24 h 15 min with retries
+every 30 min until a valid commitment is pushed (D-106, D-107); no refresh
+starts after K - 3 h (the build then uses the newest snapshots, with an
+alert); no refresh or build starts after K - 30 min; no push starts after
+K - 5 min; nothing counts for the week after K.
+
+Missed weeks (D-106): after K, a week without a pushed commitment gets
+``<week>/MISSED.json`` on the branch with the reason (``technical_failure``
+with the last error, or ``machine_offline`` when no runner log exists in the
+window), the log excerpt, the miss number and the test state (one miss is
+excluded from scoring without extending the window; a second makes the test
+INVALID). A commitment built before K but not pushed in time is pushed under
+``<week>/late/`` so projections that exist are never withheld. ``STATUS.md``
+on the branch is regenerated at every push.
+
+Dry runs (D-107): ``--dry-run-branch <name>`` pushes to that branch only
+(never ``livetest-2026``), builds in the rehearsal sandbox without deadlines,
+and ``--force-fail refresh|build|push`` makes one step fail on purpose to
+prove the alert and the retry.
 """
 
 from __future__ import annotations
@@ -46,12 +61,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +90,8 @@ BUILD_OK, BUILD_FAILED, BUILD_BLOCKED, BUILD_REFUSED_KICKOFF, BUILD_ALREADY_COMM
 REFRESH_STEPS = ("ingest", "sleeper", "process", "validate", "features")
 ALERT_COOLDOWN_MINUTES = 120.0
 RESULT_PREFIX = "REFRESH_RESULT "
+FORCE_FAIL_STEPS = ("refresh", "build", "push")
+MISSES_ALLOWED = 1  # D-106: one miss is excluded; a second makes the test INVALID
 
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +133,9 @@ class Config:
     retry_every_minutes: float = 0.0
     check_env: bool = True
     github: bool = True
+    dry_run_branch: str | None = None  # push to this branch only; implies the rehearsal sandbox
+    real_branch: str = core.DEFAULT_BRANCH
+    force_fail: str | None = None  # dry-run branch only
 
     @property
     def livetest_dir(self) -> Path:
@@ -142,7 +163,11 @@ class Config:
 
     def runner_dir(self, season: int, week: int) -> Path:
         base = self.livetest_dir / "runner"
-        return (base / "rehearsal" if self.rehearsal else base) / core.week_key(season, week)
+        if self.dry_run_branch:
+            base = base / "dryrun" / re.sub(r"[^A-Za-z0-9._-]+", "-", self.dry_run_branch)
+        elif self.rehearsal:
+            base = base / "rehearsal"
+        return base / core.week_key(season, week)
 
     def child_env(self) -> dict[str, str]:
         env = core.clean_child_env(
@@ -201,8 +226,11 @@ class Run:
                 kind,
                 message,
                 severity=severity,
-                details={**details, "run_log": str(self.log.path), "rehearsal": self.cfg.rehearsal},
-                dedupe_key=f"livetest:{kind}:{key}{':rehearsal' if self.cfg.rehearsal else ''}",
+                details={**details, "run_log": str(self.log.path), "rehearsal": self.cfg.rehearsal,
+                         "dry_run_branch": self.cfg.dry_run_branch},
+                dedupe_key=f"livetest:{kind}:{key}"
+                + (f":dryrun:{self.cfg.dry_run_branch}" if self.cfg.dry_run_branch
+                   else ":rehearsal" if self.cfg.rehearsal else ""),
                 cooldown_minutes=ALERT_COOLDOWN_MINUTES,
                 now=self.now() if self.cfg.now_override else None,
             )
@@ -303,8 +331,8 @@ def select_week(run: Run, plan: list[core.WeekKickoff]) -> core.WeekKickoff | No
 
 
 def branch_prefix(cfg: Config, wk: core.WeekKickoff, commitment: core.Commitment | None) -> str | None:
-    if not cfg.rehearsal:
-        return wk.key
+    if cfg.dry_run_branch or not cfg.rehearsal:
+        return wk.key  # a dry-run branch mirrors the real layout so the watchdogs find the file
     if commitment is None or commitment.created_at is None:
         return None
     return f"rehearsal/{wk.key}-{core.compact(commitment.created_at)}"
@@ -312,7 +340,9 @@ def branch_prefix(cfg: Config, wk: core.WeekKickoff, commitment: core.Commitment
 
 def commit_message(cfg: Config, wk: core.WeekKickoff, c: core.Commitment, run: Run, refresh: dict[str, Any]) -> str:
     title = (
-        f"REHEARSAL livetest {wk.key}: stub commitment, not part of the test"
+        f"DRY RUN livetest {wk.key} on {cfg.branch}: {'stub ' if c.stub else ''}commitment, not part of the test"
+        if cfg.dry_run_branch
+        else f"REHEARSAL livetest {wk.key}: stub commitment, not part of the test"
         if cfg.rehearsal and c.stub
         else f"REHEARSAL livetest {wk.key}: commitment, not part of the test"
         if cfg.rehearsal
@@ -540,38 +570,154 @@ def remote_state(run: Run, repo: core.CommitmentsRepo, create: bool = False) -> 
         return None
 
 
-def missed_marker(run: Run, wk: core.WeekKickoff, reason: str) -> dict[str, Any]:
-    cfg = run.cfg
-    path = cfg.commitment_dir(wk.season, wk.week) / core.COMMITMENT_NAME
-    local: dict[str, Any] = {"exists": path.exists()}
-    if path.exists():
+def run_logs_in_window(cfg: Config, wk: core.WeekKickoff, t: dict[str, datetime]) -> list[Path]:
+    """This week's runner logs stamped between the window opening and the kickoff."""
+    if not cfg.logs_dir.exists():
+        return []
+    wanted = (f"{wk.key}_run", f"{wk.key}_watchdog", "next_run", "next_watchdog")
+    out = []
+    for path in sorted(cfg.logs_dir.glob("*.jsonl")):
         try:
-            c = core.load_commitment(path)
-            local.update(sha256=c.sha256, created_at=core.iso(c.created_at), digest=c.digest)
-        except (ValueError, OSError) as exc:
-            local["error"] = str(exc)
-    logs = sorted(p.name for p in cfg.logs_dir.glob(f"*{wk.key}*.jsonl"))[-10:] if cfg.logs_dir.exists() else []
+            stamp = datetime.strptime(path.name[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        if t["window_open"] <= stamp <= wk.first_kickoff_utc and path.name[17:].startswith(wanted):
+            out.append(path)
+    return out
+
+
+def log_events(path: Path) -> list[dict[str, Any]]:
+    keep = ("ts", "step", "status", "message", "exit_code", "returncode")
+    events: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return events
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        events.append({k: ev[k] for k in keep if k in ev})
+    return events
+
+
+def miss_reason(cfg: Config, wk: core.WeekKickoff, t: dict[str, datetime],
+                local: core.Commitment | None) -> tuple[dict[str, str], dict[str, Any]]:
+    """Why the week was missed (D-106): a technical failure with its error, or an offline machine."""
+    logs = run_logs_in_window(cfg, wk, t)
+    window = {"from": core.iso(t["window_open"]), "to": core.iso(wk.first_kickoff_utc)}
+    failures = [e for p in logs for e in log_events(p)
+                if e.get("status") in ("failed", "step failed", "unexpected") or e.get("step") == "error"]
+    last = failures[-1] if failures else None
+    record = {"window": window, "files": [p.name for p in logs][-10:],
+              "excerpt": log_events(logs[-1])[-12:] if logs else []}
+    if local is not None and local.created_at is not None:
+        detail = f"a commitment was built at {core.iso(local.created_at)} but was not pushed before the kickoff"
+        if last:
+            detail += f"; last failure: {last.get('step')}: {last.get('message')}"
+        return {"category": "technical_failure", "detail": detail}, record
+    if not logs:
+        return {
+            "category": "machine_offline",
+            "detail": f"no runner log between {window['from']} and the kickoff {window['to']}: the machine was "
+            "off, asleep or logged off, or the task did not start",
+        }, record
+    if last:
+        detail = f"{last.get('step')}: {last.get('message')}"
+    else:
+        detail = "the runner ran in the window but built no commitment; see the log excerpt"
+    return {"category": "technical_failure", "detail": detail}, record
+
+
+def missed_marker(run: Run, wk: core.WeekKickoff, t: dict[str, datetime], local: core.Commitment | None,
+                  miss_number: int, earlier: list[str]) -> dict[str, Any]:
+    reason, logs = miss_reason(run.cfg, wk, t, local)
+    invalid = miss_number > MISSES_ALLOWED
+    local_info: dict[str, Any] = {"exists": local is not None}
+    if local is not None:
+        local_info.update(
+            sha256=local.sha256, created_at=core.iso(local.created_at), digest=local.digest,
+            built_before_kickoff=bool(local.created_at and local.created_at < wk.first_kickoff_utc),
+        )
     return {
-        "format": "ffml.livetest.missed/1",
+        "format": "ffml.livetest.missed/2",
         "season": wk.season,
         "week": wk.week,
         "first_kickoff_utc": core.iso(wk.first_kickoff_utc),
         "recorded_at": core.iso(run.now()),
         "status": "MISSED: no commitment was pushed to this branch before the first kickoff",
         "reason": reason,
-        "local_commitment": local,
-        "runner_logs": logs,
-        "note": "How a missed week counts is set by the pre-registered test design.",
+        "run_logs": logs,
+        "local_commitment": local_info,
+        "late_commitment": None,
+        "miss_number": miss_number,
+        "misses_allowed": MISSES_ALLOWED,
+        "earlier_misses": earlier,
+        "test_status": (
+            "INVALID: second miss; the test is invalid (D-106)" if invalid
+            else "VALID: first miss; this week is excluded from scoring and the window is not extended (D-106)"
+        ),
     }
 
 
+def branch_status_markdown(cfg: Config, repo: core.CommitmentsRepo, test_weeks: list[core.WeekKickoff],
+                           now: datetime, pending: dict[str, dict[str, Any]] | None = None,
+                           pushed_now: str | None = None) -> str:
+    """``STATUS.md`` for the branch: one row per test week, misses and the test state (D-106)."""
+    rows, misses = [], []
+    for w in test_weeks:
+        committed = pushed_now == w.key or repo.remote_blob(f"{w.key}/{core.COMMITMENT_NAME}") is not None
+        marker = (pending or {}).get(w.key)
+        if marker is None:
+            blob = repo.remote_blob(f"{w.key}/{core.MISSED_NAME}")
+            if blob:
+                try:
+                    marker = json.loads(blob)
+                except ValueError:
+                    marker = {"reason": {"category": "unreadable"}}
+        late = bool((marker or {}).get("late_commitment")) or \
+            repo.remote_blob(f"{w.key}/{core.LATE_DIR}/{core.COMMITMENT_NAME}") is not None
+        if marker:
+            misses.append(w.key)
+            state = "MISSED"
+        elif committed:
+            state = "committed"
+        else:
+            state = "open" if w.first_kickoff_utc > now else "kicked off, not yet recorded"
+        reason = ((marker or {}).get("reason") or {}).get("category", "") if marker else ""
+        rows.append(f"| {w.key} | {core.iso(w.first_kickoff_utc)} | {state} | {reason} | {'yes' if late else ''} |")
+    invalid = len(misses) > MISSES_ALLOWED
+    season = test_weeks[0].season if test_weeks else cfg.test_season
+    weeks = f"{test_weeks[0].week}-{test_weeks[-1].week}" if test_weeks else ""
+    return "\n".join([
+        "# Live-test status",
+        "",
+        f"Generated by scripts/livetest_week.py at {core.iso(now)}. Season {season}, weeks {weeks}.",
+        "",
+        f"**Misses: {len(misses)}** ({', '.join(misses) if misses else 'none'}); allowed: {MISSES_ALLOWED}. "
+        f"**Test state: {'INVALID (D-106: more than one miss)' if invalid else 'VALID'}.**",
+        "",
+        "A missed week is excluded from scoring and the window is not extended; a second miss makes the",
+        "test invalid (D-106). A late commitment was built before kickoff and pushed after it; it is not",
+        "part of the test.",
+        "",
+        "| week | first kickoff (UTC) | state | missed: reason | late commitment |",
+        "| --- | --- | --- | --- | --- |",
+        *rows,
+        "",
+    ])
+
+
 def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.CommitmentsRepo | None = None) -> list[str]:
-    """Push a MISSED marker for every test week that kicked off without a pushed commitment."""
+    """Push a MISSED marker (with reason, log excerpt and any late commitment) for every test week
+    that kicked off without a pushed commitment (D-106)."""
     cfg = run.cfg
-    if cfg.rehearsal or cfg.test_season is None or not cfg.weeks or cfg.no_push or cfg.dry_run:
+    if cfg.rehearsal or cfg.dry_run_branch or cfg.test_season is None or not cfg.weeks or cfg.no_push or cfg.dry_run:
         return []
     now = run.now()
-    due = [w for w in plan if w.season == cfg.test_season and w.week in cfg.weeks and w.first_kickoff_utc <= now]
+    test_weeks = [w for w in plan if w.season == cfg.test_season and w.week in cfg.weeks]
+    due = [w for w in test_weeks if w.first_kickoff_utc <= now]
     if not due:
         return []
     repo = repo or run.repo()
@@ -584,26 +730,62 @@ def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.Commitments
             continue
         if repo.remote_blob(f"{wk.key}/{core.MISSED_NAME}") is not None:
             continue
-        reason = "no commitment on the branch at the first kickoff"
-        local = core.read_json(cfg.runner_dir(wk.season, wk.week) / "push_record.json")
-        if local:
-            reason += f"; local push record says {local.get('ok')}"
-        marker = missed_marker(run, wk, reason)
-        data = (json.dumps(marker, indent=2) + "\n").encode("utf-8")
+        earlier = [w.key for w in test_weeks
+                   if w.week != wk.week and repo.remote_blob(f"{w.key}/{core.MISSED_NAME}") is not None]
+        miss_number = len(earlier) + 1
+        t = core.triggers(wk, cfg.timing)
+        local = None
+        path = cfg.commitment_dir(wk.season, wk.week) / core.COMMITMENT_NAME
+        if path.exists():
+            try:
+                local = core.load_commitment(path)
+            except (ValueError, OSError) as exc:
+                run.log.event("misses", "local commitment unreadable", week=wk.key, message=str(exc))
+        marker = missed_marker(run, wk, t, local, miss_number, earlier)
+        files: dict[str, bytes] = {}
+        if local is not None and local.created_at is not None and local.created_at < wk.first_kickoff_utc:
+            v = core.verify_commitment(local, roots=roots(cfg, wk), season=wk.season, week=wk.week,
+                                       kickoff=wk.first_kickoff_utc)
+            late_prefix = f"{wk.key}/{core.LATE_DIR}"
+            files[f"{late_prefix}/{core.COMMITMENT_NAME}"] = local.raw
+            summary = local.summary_entry()
+            found = core.resolve_entry(summary, roots(cfg, wk)) if summary is not None else None
+            if found is not None and found.stat().st_size < core.SUMMARY_MAX_BYTES:
+                files[f"{late_prefix}/{core.SUMMARY_NAME}"] = found.read_bytes()
+            marker["late_commitment"] = {
+                "path": f"{late_prefix}/{core.COMMITMENT_NAME}",
+                "sha256": local.sha256,
+                "created_at": core.iso(local.created_at),
+                "verified": v.ok,
+                "problems": v.problems[:5],
+                "note": "built before the kickoff, pushed after it; not part of the test "
+                        "(D-106: projections that exist are never withheld)",
+            }
+        files[f"{wk.key}/{core.MISSED_NAME}"] = (json.dumps(marker, indent=2) + "\n").encode("utf-8")
+        title = f"livetest {wk.key}: MISSED ({marker['reason']['category']}), miss {miss_number} of {MISSES_ALLOWED} allowed"
+        if miss_number > MISSES_ALLOWED:
+            title += "; TEST INVALID (D-106)"
+        message = (
+            f"{title}\n\nfirst kickoff: {core.iso(wk.first_kickoff_utc)}\nreason: {marker['reason']['detail']}\n"
+            f"late commitment: {(marker.get('late_commitment') or {}).get('sha256')}\n"
+            + ("\n" + "\n".join(cfg.trailers) + "\n" if cfg.trailers else "")
+        )
         try:
             repo.sync()
-            sha = repo.commit({f"{wk.key}/{core.MISSED_NAME}": data},
-                              f"livetest {wk.key}: MISSED, no commitment pushed before first kickoff "
-                              f"{core.iso(wk.first_kickoff_utc)}\n\n{reason}\n"
-                              + ("\n" + "\n".join(cfg.trailers) + "\n" if cfg.trailers else ""))
+            files[core.STATUS_NAME] = branch_status_markdown(
+                cfg, repo, test_weeks, now, pending={wk.key: marker}).encode("utf-8")
+            sha = repo.commit(files, message)
             push = repo.push(clock=run.now, sleep=run.deps.sleep)
         except core.GitError as exc:
             run.log.event("misses", "failed", week=wk.key, message=str(exc))
             continue
         core.write_json(cfg.runner_dir(wk.season, wk.week) / core.MISSED_NAME, {**marker, "commit": sha, "push": push})
-        run.log.event("misses", "marked", week=wk.key, commit=sha, pushed=push["ok"])
-        run.alert("missed_commitment", f"{wk.key}: kicked off at {core.iso(wk.first_kickoff_utc)} with no pushed "
-                  "commitment; MISSED marker recorded", key=f"{wk.key}:marker", severity="critical")
+        run.log.event("misses", "marked", week=wk.key, commit=sha, pushed=push["ok"], reason=marker["reason"],
+                      miss_number=miss_number, test_status=marker["test_status"])
+        run.alert("missed_commitment",
+                  f"{wk.key}: MISSED ({marker['reason']['category']}: {marker['reason']['detail'][:160]}); "
+                  f"miss {miss_number}; {marker['test_status']}",
+                  key=f"{wk.key}:marker", severity="critical", test_status=marker["test_status"])
         marked.append(wk.key)
     return marked
 
@@ -743,9 +925,13 @@ def attempt(run: Run) -> int:
                               key=f"{key}:rehash", severity="critical")
                     return EXIT_INTEGRITY
                 return EXIT_OK
-            raise run.abort(EXIT_INTEGRITY, "idempotent", f"{key}: the branch holds a different commitment than "
-                            "the local one", alert_kind="integrity", key=key, severity="critical",
-                            remote_sha256=core.sha256_bytes(blob), local_sha256=c.sha256 if c else None)
+            if cfg.dry_run_branch:
+                run.log.event("idempotent", "dry-run branch holds an earlier commitment; it will be replaced",
+                              remote_sha256=core.sha256_bytes(blob), local_sha256=c.sha256 if c else None)
+            else:
+                raise run.abort(EXIT_INTEGRITY, "idempotent", f"{key}: the branch holds a different commitment "
+                                "than the local one", alert_kind="integrity", key=key, severity="critical",
+                                remote_sha256=core.sha256_bytes(blob), local_sha256=c.sha256 if c else None)
 
     # ---- time gates (not for rehearsals, which make no timing claim) --------- #
     if cfg.rehearsal:
@@ -780,6 +966,11 @@ def attempt(run: Run) -> int:
         if cfg.skip_refresh:
             refresh = {"status": "skipped (--skip-refresh)"}
             run.log.event("refresh", "skipped", message="--skip-refresh")
+        elif cfg.force_fail == "refresh":
+            state["refresh_attempts"] += 1
+            save_state(cfg, wk, state)
+            raise run.abort(EXIT_RETRY, "refresh", f"{key}: forced refresh failure (--force-fail refresh); "
+                            "the next run retries", alert_kind="refresh_failure", key=key)
         elif state.get("refresh_ok_at"):
             refresh = {"status": f"ok earlier at {state['refresh_ok_at']}"}
             run.log.event("refresh", "skipped", message=refresh["status"])
@@ -813,6 +1004,9 @@ def attempt(run: Run) -> int:
         if not cfg.rehearsal and run.now() >= t["cutoff"]:
             raise run.abort(EXIT_MISSED, "deadline", f"{key}: cutoff {core.iso(t['cutoff'])} passed before the build",
                             alert_kind="missed_commitment", key=key, severity="critical")
+        if cfg.force_fail == "build":
+            raise run.abort(EXIT_RETRY, "build", f"{key}: forced build failure (--force-fail build); the next "
+                            "run retries", alert_kind="build_failure", key=key)
         state["build_attempts"] = state.get("build_attempts", 0) + 1
         state["build_last_started"] = core.iso(run.now())
         save_state(cfg, wk, state)
@@ -869,7 +1063,11 @@ def attempt(run: Run) -> int:
         raise run.abort(EXIT_RETRY, "push", f"{key}: remote unreachable; will retry", alert_kind="push_failure", key=key)
     try:
         sync = repo.sync()
-        sha = repo.commit(files, commit_message(cfg, wk, c, run, refresh))
+        if not cfg.rehearsal:
+            test_weeks = [w for w in plan if w.season == cfg.test_season and w.week in cfg.weeks]
+            files[core.STATUS_NAME] = branch_status_markdown(
+                cfg, repo, test_weeks, run.now(), pushed_now=wk.key).encode("utf-8")
+        sha = repo.commit(files, commit_message(cfg, wk, c, run, refresh), allow_overwrite=bool(cfg.dry_run_branch))
         if sha is None:
             sha = repo.head()
             for rel, data in files.items():
@@ -879,7 +1077,12 @@ def attempt(run: Run) -> int:
     except core.GitError as exc:
         raise run.abort(EXIT_INTEGRITY, "commit", f"{key}: {exc}", alert_kind="push_failure", key=key,
                         severity="critical") from None
-    push = repo.push(deadline=t["push_deadline"], clock=run.now, sleep=run.deps.sleep)
+    if cfg.force_fail == "push":
+        push = {"ok": False, "refspec": f"refs/heads/{cfg.branch}", "attempts": [
+            {"attempt": 1, "forced": True, "finished": core.iso(run.now()),
+             "stderr": "forced failure (--force-fail push); nothing was pushed"}]}
+    else:
+        push = repo.push(deadline=t["push_deadline"], clock=run.now, sleep=run.deps.sleep)
     run.log.event("push", "ok" if push["ok"] else "failed", **push)
     record = external_record(run, repo, wk, sha, push, c, files)
     record["recorded_at"] = core.iso(run.now())
@@ -914,8 +1117,12 @@ def _label_key(cfg: Config) -> str:
     return core.week_key(cfg.season, cfg.week) if cfg.season is not None and cfg.week is not None else "next"
 
 
+def _mode_prefix(cfg: Config) -> str:
+    return "dryrun_" if cfg.dry_run_branch else "rehearsal_" if cfg.rehearsal else ""
+
+
 def cmd_run(cfg: Config, deps: Deps) -> int:
-    label = f"{'rehearsal_' if cfg.rehearsal else ''}{_label_key(cfg)}_run"
+    label = f"{_mode_prefix(cfg)}{_label_key(cfg)}_run"
     while True:
         run = Run(cfg, deps, label)
         try:
@@ -944,7 +1151,7 @@ def cmd_run(cfg: Config, deps: Deps) -> int:
 
 
 def cmd_watchdog(cfg: Config, deps: Deps) -> int:
-    run = Run(cfg, deps, f"{_label_key(cfg)}_watchdog")
+    run = Run(cfg, deps, f"{_mode_prefix(cfg)}{_label_key(cfg)}_watchdog")
     try:
         plan = load_plan(run, season_hint=cfg.season or cfg.test_season, live=False)
         wk = select_week(run, plan)
@@ -994,7 +1201,28 @@ def plan_rows(cfg: Config, plan: list[core.WeekKickoff], now: datetime) -> list[
     return rows
 
 
-def cmd_plan(cfg: Config, deps: Deps, as_json: bool, save: bool) -> int:
+def export_schedule(cfg: Config, rows: list[dict[str, Any]], now: datetime, path: Path) -> dict[str, Any]:
+    """The tracked schedule file the GitHub watchdog reads (scripts/livetest_schedule_2026.json)."""
+    season = rows[0]["season"] if rows else cfg.test_season
+    payload = {
+        "format": "ffml.livetest.schedule/1",
+        "generated_at": core.iso(now),
+        "generated_by": "scripts/livetest_week.py plan --export",
+        "source": {"dim_game_snapshot": core.dim_game_snapshot_id(cfg.data_dir), "live_schedule_checked": cfg.live_schedule},
+        "season": season,
+        "test_weeks": [r["week"] for r in rows],
+        "note": "Official first kickoff per week (UTC). Re-export and commit when the daily check reports "
+                "schedule drift (week 18 times are tentative until the NFL sets them).",
+        "weeks": [
+            {k: r[k] for k in ("key", "season", "week", "first_kickoff_utc", "effective_kickoff_utc", "tentative", "games")}
+            for r in rows
+        ],
+    }
+    core.write_json(path, payload)
+    return payload
+
+
+def cmd_plan(cfg: Config, deps: Deps, as_json: bool, save: bool, export: Path | None = None) -> int:
     run = Run(cfg, deps, "plan", echo=False)
     try:
         plan = load_plan(run, season_hint=cfg.test_season)
@@ -1004,6 +1232,9 @@ def cmd_plan(cfg: Config, deps: Deps, as_json: bool, save: bool) -> int:
     rows = plan_rows(cfg, plan, run.now())
     if save:
         core.write_json(cfg.livetest_dir / "schedule_plan.json", {"saved_at": core.iso(run.now()), "weeks": rows})
+    if export is not None:
+        export_schedule(cfg, rows, run.now(), export)
+        print(f"schedule exported to {export} ({len(rows)} weeks)", file=sys.stderr)
     if as_json:
         print(json.dumps(rows, indent=2))
     else:
@@ -1061,11 +1292,22 @@ def week_status(cfg: Config, run: Run, repo: core.CommitmentsRepo | None, remote
     c = core.load_commitment(c_path) if c_path.exists() else None
     record = core.read_json(cfg.runner_dir(wk.season, wk.week) / "push_record.json") or {}
     prefix = branch_prefix(cfg, wk, c)
-    pushed = missed = None
+    pushed = missed = late = None
+    missed_reason = test_state = None
     if remote is not None and repo is not None:
         blob = repo.remote_blob(f"{prefix}/{core.COMMITMENT_NAME}") if prefix else None
         pushed = blob is not None and (c is None or blob == c.raw)
-        missed = repo.remote_blob(f"{wk.key}/{core.MISSED_NAME}") is not None
+        missed_blob = repo.remote_blob(f"{wk.key}/{core.MISSED_NAME}")
+        missed = missed_blob is not None
+        if missed_blob:
+            try:
+                marker = json.loads(missed_blob)
+                reason = marker.get("reason")
+                missed_reason = reason.get("category") if isinstance(reason, dict) else str(reason)
+                test_state = marker.get("test_status")
+            except ValueError:
+                missed_reason = "unreadable"
+        late = repo.remote_blob(f"{wk.key}/{core.LATE_DIR}/{core.COMMITMENT_NAME}") is not None
     return {
         "week": wk.key,
         "first_kickoff_utc": core.iso(wk.first_kickoff_utc),
@@ -1075,6 +1317,9 @@ def week_status(cfg: Config, run: Run, repo: core.CommitmentsRepo | None, remote
         "github_push_timestamp": record.get("external_timestamp"),
         "on_time": record.get("on_time"),
         "missed_marker": missed,
+        "missed_reason": missed_reason,
+        "late_commitment": late,
+        "test_status": test_state,
         "commit_sha": record.get("commit_sha"),
     }
 
@@ -1093,20 +1338,27 @@ def cmd_status(cfg: Config, deps: Deps, as_json: bool) -> int:
         season = upcoming.season if upcoming else max((w.season for w in plan), default=None)
     rows = [week_status(cfg, run, repo, remote, w) for w in plan
             if w.season == season and (not cfg.weeks or w.week in cfg.weeks)]
+    misses = [r["week"] for r in rows if r["missed_marker"]]
+    test_state = "unknown (remote unreachable)" if remote is None else \
+        "INVALID (D-106: more than one miss)" if len(misses) > MISSES_ALLOWED else "VALID"
     if as_json:
-        print(json.dumps({"remote_reachable": remote is not None, "weeks": rows}, indent=2))
+        print(json.dumps({"remote_reachable": remote is not None, "branch": cfg.branch, "weeks": rows,
+                          "misses": misses, "misses_allowed": MISSES_ALLOWED, "test_state": test_state}, indent=2))
     else:
         print(f"remote {cfg.remote}/{cfg.branch} reachable: {remote is not None}")
         print(f"{'week':<8} {'first kickoff UTC':<22} {'local':<13} {'pushed':<7} {'GitHub push time':<22} "
-              f"{'on time':<8} missed")
+              f"{'on time':<8} {'missed':<7} {'reason':<18} late")
         for r in rows:
             print(f"{r['week']:<8} {r['first_kickoff_utc']:<22} {str(r['local_commitment']):<13} {str(r['pushed']):<7} "
-                  f"{str(r['github_push_timestamp']):<22} {str(r['on_time']):<8} {r['missed_marker']}")
+                  f"{str(r['github_push_timestamp']):<22} {str(r['on_time']):<8} {str(r['missed_marker']):<7} "
+                  f"{str(r['missed_reason'] or ''):<18} {r['late_commitment'] or ''}")
+        print(f"misses: {len(misses)} ({', '.join(misses) if misses else 'none'}); allowed {MISSES_ALLOWED}; "
+              f"test state: {test_state}")
     return EXIT_OK
 
 
 def cmd_verify(cfg: Config, deps: Deps) -> int:
-    run = Run(cfg, deps, f"{'rehearsal_' if cfg.rehearsal else ''}{core.week_key(cfg.season, cfg.week)}_verify")
+    run = Run(cfg, deps, f"{_mode_prefix(cfg)}{core.week_key(cfg.season, cfg.week)}_verify")
     try:
         plan = load_plan(run, season_hint=cfg.season, live=False)
         wk = select_week(run, plan)
@@ -1185,6 +1437,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--no-github", action="store_true", help="skip the gh api record")
     common.add_argument("--trailer", action="append", default=[], help="extra commit message trailer line")
     common.add_argument("--no-env-check", action="store_true", help=argparse.SUPPRESS)
+    common.add_argument("--dry-run-branch", default=None,
+                        help="push to this separate branch only, never livetest-2026; builds in the rehearsal "
+                             "sandbox with no deadlines (logged-off dry run, D-107)")
 
     sub = parser.add_subparsers(dest="command", required=True)
     p_run = sub.add_parser("run", parents=[common], help="refresh, build, commit, push, verify")
@@ -1198,12 +1453,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--retry-every-minutes", type=float, default=0.0,
                        help="keep retrying in this process until the cutoff (0: one attempt, as scheduled)")
     p_run.add_argument("--build-timeout-minutes", type=float, default=240.0)
+    p_run.add_argument("--force-fail", choices=FORCE_FAIL_STEPS, default=None,
+                       help="dry-run branch only: make this step fail on purpose to prove the alert and the retry")
     for name in ("watchdog", "check", "verify"):
         sub.add_parser(name, parents=[common])
     p_plan = sub.add_parser("plan", parents=[common])
     p_plan.add_argument("--json", action="store_true")
     p_plan.add_argument("--save", action="store_true", help="save as the registered plan for the drift check")
     p_plan.add_argument("--weeks", default=None, help="override the test window, e.g. 10-18 (with --season)")
+    p_plan.add_argument("--export", type=Path, default=None,
+                        help="write the tracked schedule file for the GitHub watchdog "
+                             "(scripts/livetest_schedule_2026.json)")
     p_status = sub.add_parser("status", parents=[common])
     p_status.add_argument("--json", action="store_true")
     p_init = sub.add_parser("init", parents=[common], help="record the test window and the pin")
@@ -1244,6 +1504,15 @@ def make_config(args: argparse.Namespace) -> Config:
     cfg.check_env = not args.no_env_check
     if args.now:
         cfg.now_override = core.parse_time(args.now)
+    cfg.real_branch = cfg.branch
+    cfg.dry_run_branch = getattr(args, "dry_run_branch", None) or None
+    if cfg.dry_run_branch:
+        cfg.branch = cfg.dry_run_branch
+        cfg.rehearsal = True
+        if not args.commitments_worktree:
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "-", cfg.dry_run_branch)
+            cfg.commitments_worktree = core.DEFAULT_COMMITMENTS_WORKTREE.parent / f"ffml-{safe}-commitments"
+    cfg.force_fail = getattr(args, "force_fail", None)
     if args.command == "plan" and args.weeks:
         cfg.weeks = core.parse_weeks(args.weeks)
         cfg.test_season = args.season or cfg.test_season
@@ -1273,6 +1542,17 @@ def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
     if cfg.now_override is not None and args.command == "run" and not (cfg.stub_build or cfg.dry_run):
         print("refused: --now is only for --dry-run and --stub-build runs", file=sys.stderr)
         return EXIT_REFUSED
+    if cfg.dry_run_branch and (
+        cfg.dry_run_branch in core.PROTECTED_BRANCHES
+        or cfg.dry_run_branch == cfg.real_branch
+        or cfg.dry_run_branch.startswith(core.DEFAULT_BRANCH)
+    ):
+        print(f"refused: --dry-run-branch {cfg.dry_run_branch!r} is the real commitments branch or a protected "
+              "branch; use a separate name such as livetest-dryrun", file=sys.stderr)
+        return EXIT_REFUSED
+    if cfg.force_fail and not cfg.dry_run_branch:
+        print("refused: --force-fail is only for --dry-run-branch runs", file=sys.stderr)
+        return EXIT_REFUSED
     for name in ("FFML_LIVETEST_NOW",):
         if name in os.environ and not cfg.stub_build:
             os.environ.pop(name, None)
@@ -1293,7 +1573,7 @@ def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
     if args.command == "check":
         return cmd_check(cfg, deps)
     if args.command == "plan":
-        return cmd_plan(cfg, deps, args.json, args.save)
+        return cmd_plan(cfg, deps, args.json, args.save, args.export)
     if args.command == "status":
         return cmd_status(cfg, deps, args.json)
     if args.command == "verify":

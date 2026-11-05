@@ -43,14 +43,19 @@ DEFAULT_CODE_WORKTREE = REPO_ROOT.parent / "ffml-livetest-code"
 COMMITMENT_NAME = "commitment.json"
 SUMMARY_NAME = "player_summary.parquet"
 MISSED_NAME = "MISSED.json"
+LATE_DIR = "late"  # <week>/late/commitment.json: built before kickoff, pushed after it
+STATUS_NAME = "STATUS.md"
+MUTABLE_FILES = frozenset({"README.md", STATUS_NAME})  # everything else on the branch is immutable
 SUMMARY_MAX_BYTES = 5 * 1024 * 1024
 TENTATIVE_LEAD = timedelta(hours=24)
 BRANCH_GITATTRIBUTES = "* -text\n"
 BRANCH_README = """# livetest-2026: pre-kickoff commitments for the chain_v2 live test
 
 This orphan branch holds only commitments for the live test of chain_v2 over
-2026 weeks 10-18 (D-098, D-099). It shares no history with `main`. The test
-design and the frozen code commit are pre-registered on `main`.
+2026 weeks 10-18 (D-098, D-099, D-105 to D-107). It shares no history with
+`main`. The test design and the frozen code commit are pre-registered on `main`.
+
+Layout:
 
 - `<season>w<week>/commitment.json`: written by `ffml livetest build-week`
   before the week's first kickoff. It lists the output files with SHA-256,
@@ -58,14 +63,29 @@ design and the frozen code commit are pre-registered on `main`.
   `created_at`, the first kickoff and a top-level digest.
 - `<season>w<week>/player_summary.parquet`: a copy of the projection summary
   when it is under 5 MB. Its SHA-256 is in the commitment.
-- `<season>w<week>/MISSED.json`: written after kickoff when no commitment was
-  pushed in time. How a missed week counts is decided by the test design.
+- `<season>w<week>/MISSED.json`: the week was missed: no commitment was on
+  this branch at the first kickoff. It carries the reason
+  (`technical_failure` with the last error, or `machine_offline` when no
+  runner log exists in the 25 hours before kickoff), the runner log excerpt,
+  the miss number and the test state.
+- `<season>w<week>/late/commitment.json`: a commitment built before kickoff
+  but pushed after it. Projections that exist are never withheld; a late
+  commitment is not part of the test.
+- `STATUS.md`: the per-week state, regenerated at every push.
 - `rehearsal/...`: rehearsal commitments. They are not part of the test.
+
+Missed weeks (D-106): one miss is allowed; it is excluded from scoring and
+the window is not extended. A second miss makes the test INVALID. The
+deadline is the official first kickoff of the week, including Thanksgiving
+and other early games.
+
+Dry runs go to a separate branch (`livetest-dryrun`), never here.
 
 The commit timestamps are set by the pushing machine. The external timestamp
 is GitHub's push record (`gh api repos/<owner>/<repo>/activity?ref=livetest-2026`).
 Outputs are labeled "not approved" and are never shown in the app (D-099).
-Pushed by `scripts/livetest_week.py`; never force-pushed.
+Pushed by `scripts/livetest_week.py`; never force-pushed. Only `README.md`
+and `STATUS.md` are ever rewritten; every other file is immutable.
 """
 
 
@@ -122,8 +142,8 @@ def compact(ts: datetime) -> str:
 class Timing:
     """Offsets relative to a week's (effective) first kickoff."""
 
-    window_hours: float = 12.0  # the runner acts only from K - window
-    run_offset_hours: float = 9.0  # scheduled start of the runner
+    window_hours: float = 25.0  # the runner acts only from K - window
+    run_offset_hours: float = 24.25  # scheduled start: 24 h 15 min before K, so at least 24 h (D-106)
     refresh_deadline_minutes: float = 180.0  # no refresh attempt starts after K - this
     cutoff_minutes: float = 30.0  # no refresh or build starts after K - this
     push_margin_minutes: float = 5.0  # no push starts after K - this
@@ -895,22 +915,26 @@ class CommitmentsRepo:
             return []
         return self.git("ls-tree", "-r", "--name-only", self.remote_ref).stdout.splitlines()
 
-    def commit(self, files: Mapping[str, bytes], message: str) -> str | None:
+    def commit(self, files: Mapping[str, bytes], message: str, *, allow_overwrite: bool = False) -> str | None:
         """Write ``files`` (branch path -> bytes), commit them, return the sha (None if unchanged).
 
         Commitment files are immutable: a path that already holds different
-        bytes is refused.
+        bytes is refused, except ``README.md`` and ``STATUS.md`` (regenerated
+        text) or when ``allow_overwrite`` is set (dry-run branches only).
         """
-        extras = {".gitattributes": BRANCH_GITATTRIBUTES.encode(), "README.md": BRANCH_README.encode()}
+        extras = {"README.md": BRANCH_README.encode()}
+        if not (self.worktree / ".gitattributes").exists():
+            extras[".gitattributes"] = BRANCH_GITATTRIBUTES.encode()
         to_add: list[str] = []
-        for rel, data in {**{k: v for k, v in extras.items() if not (self.worktree / k).exists()}, **files}.items():
+        for rel, data in {**extras, **files}.items():
             rel = rel.replace("\\", "/")
             if rel.startswith("/") or ".." in rel.split("/"):
                 raise GitError(f"unsafe branch path {rel!r}")
             target = self.worktree / rel
-            if target.exists():
-                if target.read_bytes() != data:
-                    raise GitError(f"{rel} already exists on the branch with different content; commitments are immutable")
+            if target.exists() and target.read_bytes() == data:
+                pass
+            elif target.exists() and not (allow_overwrite or rel in MUTABLE_FILES):
+                raise GitError(f"{rel} already exists on the branch with different content; commitments are immutable")
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)

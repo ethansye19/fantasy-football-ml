@@ -74,12 +74,14 @@ def test_plan_from_schedule_fixture_week12_wednesday_and_week18_saturday():
 def test_triggers_are_relative_to_the_first_kickoff():
     plan = core.week_plan(load_fixture(), 2026)
     t12 = core.triggers(core.find_week(plan, 2026, 12))
-    assert t12["run_start"] == datetime(2026, 11, 25, 16, 0, tzinfo=UTC)
+    assert t12["window_open"] == datetime(2026, 11, 25, 0, 0, tzinfo=UTC)  # K - 25 h
+    assert t12["run_start"] == datetime(2026, 11, 25, 0, 45, tzinfo=UTC)  # K - 24 h 15 min (D-106: at least 24 h)
+    assert t12["kickoff"] - t12["run_start"] >= timedelta(hours=24)
     assert t12["watchdog"] == datetime(2026, 11, 26, 0, 0, tzinfo=UTC)
     assert t12["cutoff"] == datetime(2026, 11, 26, 0, 30, tzinfo=UTC)
     assert t12["push_deadline"] == datetime(2026, 11, 26, 0, 55, tzinfo=UTC)
     t18 = core.triggers(core.find_week(plan, 2026, 18))
-    assert t18["run_start"] == datetime(2027, 1, 9, 12, 30, tzinfo=UTC)  # Saturday, not Sunday
+    assert t18["run_start"] == datetime(2027, 1, 8, 21, 15, tzinfo=UTC)  # Friday evening for a Saturday kickoff
 
 
 def test_next_week_is_strictly_after_now():
@@ -101,7 +103,7 @@ def test_tentative_week_is_scheduled_a_day_early_and_live_schedule_wins():
     tentative = core.find_week(core.week_plan(df, 2026), 2026, 18)
     assert tentative.tentative
     assert tentative.effective_kickoff_utc == datetime(2027, 1, 9, 18, 0, tzinfo=UTC)
-    assert core.triggers(tentative)["run_start"] == datetime(2027, 1, 9, 9, 0, tzinfo=UTC)
+    assert core.triggers(tentative)["run_start"] == datetime(2027, 1, 8, 17, 45, tzinfo=UTC)
     live = core.week_plan(load_fixture(), 2026)
     merged, diffs = runner.merge_plans(core.week_plan(df, 2026), live)
     w18 = core.find_week(merged, 2026, 18)
@@ -124,8 +126,9 @@ class Env:
         self.calls = root / "stub_calls.txt"
         self.alert_log = root / "alerts" / "alerts.jsonl"
 
-    def argv(self, command: str, now: datetime, *extra: str, week: int | None = 10) -> list[str]:
-        out = [command, "--main-repo", str(self.main), "--commitments-worktree", str(self.worktree),
+    def argv(self, command: str, now: datetime, *extra: str, week: int | None = 10,
+             worktree: Path | None = None) -> list[str]:
+        out = [command, "--main-repo", str(self.main), "--commitments-worktree", str(worktree or self.worktree),
                "--now", iso(now), "--no-live-schedule", "--no-github"]
         if week is not None:
             out += ["--season", "2026", "--week", str(week)]
@@ -139,8 +142,8 @@ class Env:
     def stub_calls(self) -> int:
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
-    def remote_blob(self, rel: str) -> bytes | None:
-        proc = subprocess.run(["git", "cat-file", "blob", f"livetest-2026:{rel}"], cwd=self.remote, capture_output=True)
+    def remote_blob(self, rel: str, branch: str = "livetest-2026") -> bytes | None:
+        proc = subprocess.run(["git", "cat-file", "blob", f"{branch}:{rel}"], cwd=self.remote, capture_output=True)
         return proc.stdout if proc.returncode == 0 else None
 
     def remote_refs(self) -> list[str]:
@@ -241,9 +244,13 @@ def test_different_commitment_on_branch_is_an_integrity_error(env):
     assert env.alerts()[-1]["kind"] == "integrity"
 
 
-def test_too_early_does_nothing(env):
-    assert env.main_(env.argv("run", K10 - timedelta(hours=13))) == runner.EXIT_OK
+def test_too_early_does_nothing_and_the_window_opens_a_day_ahead(env):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=26))) == runner.EXIT_OK
     assert env.stub_calls() == 0 and env.remote_refs() == []
+    assert env.main_(env.argv("run", K10 - timedelta(hours=24, minutes=15))) == runner.EXIT_OK  # scheduled start
+    assert env.stub_calls() == 1 and env.remote_blob("2026w10/commitment.json") is not None
+    status = env.remote_blob("STATUS.md").decode()
+    assert "| 2026w10 |" in status and "committed" in status and "Misses: 0" in status
 
 
 def test_no_build_after_the_cutoff(env):
@@ -269,15 +276,125 @@ def test_built_commitment_pushed_until_the_push_deadline(env, monkeypatch):
     assert env.stub_calls() == 1
 
 
-def test_missed_week_gets_a_marker_on_the_branch(env):
+def test_missed_week_gets_a_marker_with_machine_offline_reason(env):
     assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK  # week 11 too early
     marker = json.loads(env.remote_blob("2026w10/MISSED.json"))
     assert marker["status"].startswith("MISSED") and marker["first_kickoff_utc"] == "2026-11-13T01:15:00Z"
+    assert marker["reason"]["category"] == "machine_offline"  # no runner log in the 25 h before kickoff
+    assert marker["run_logs"]["files"] == [] and marker["run_logs"]["window"]["from"] == "2026-11-12T00:15:00Z"
+    assert marker["miss_number"] == 1 and marker["test_status"].startswith("VALID")
+    assert marker["late_commitment"] is None
     assert env.remote_blob("2026w10/commitment.json") is None
+    status = env.remote_blob("STATUS.md").decode()
+    assert "Misses: 1" in status and "Test state: VALID" in status and "| 2026w10 |" in status
+    assert "machine_offline" in status
     assert any(a["kind"] == "missed_commitment" for a in env.alerts())
     head = git("rev-parse", "livetest-2026", cwd=env.remote)
     assert env.main_(env.argv("check", K10 + timedelta(hours=2), week=None)) in (0, 1)
     assert git("rev-parse", "livetest-2026", cwd=env.remote) == head  # marked once
+
+
+def test_missed_week_records_the_technical_failure_and_its_log_excerpt(env, monkeypatch):
+    monkeypatch.setenv("FFML_STUB_EXIT", "1")
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_RETRY  # a failed run in the window
+    monkeypatch.delenv("FFML_STUB_EXIT")
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    marker = json.loads(env.remote_blob("2026w10/MISSED.json"))
+    assert marker["reason"]["category"] == "technical_failure"
+    assert "build-week failed (exit 1)" in marker["reason"]["detail"]
+    assert len(marker["run_logs"]["files"]) == 1 and marker["run_logs"]["files"][0].endswith("_2026w10_run.jsonl")
+    assert any(e.get("step") == "build" and e.get("status") == "failed" for e in marker["run_logs"]["excerpt"])
+    alert = [a for a in env.alerts() if a["kind"] == "missed_commitment"][-1]
+    assert "technical_failure" in alert["message"] and "VALID" in alert["message"]
+
+
+def test_built_but_unpushed_commitment_is_pushed_late_and_never_withheld(env, monkeypatch):
+    monkeypatch.setenv("FFML_LIVETEST_NOW", iso(K10 - timedelta(hours=1)))
+    stub = [sys.executable, str(SCRIPTS / "livetest_stub_build.py"), "livetest", "build-week", "--season", "2026",
+            "--week", "10"]
+    assert subprocess.run(stub, env=dict(os.environ)).returncode == 0
+    monkeypatch.delenv("FFML_LIVETEST_NOW")
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    marker = json.loads(env.remote_blob("2026w10/MISSED.json"))
+    assert marker["reason"]["category"] == "technical_failure"
+    assert "built at 2026-11-13T00:15:00Z but was not pushed" in marker["reason"]["detail"]
+    assert marker["local_commitment"]["built_before_kickoff"] is True
+    late = marker["late_commitment"]
+    assert late["path"] == "2026w10/late/commitment.json" and late["verified"] is True
+    assert env.remote_blob("2026w10/late/commitment.json") == env.commitment_path().read_bytes()
+    assert env.remote_blob("2026w10/late/player_summary.parquet") is not None
+    assert env.remote_blob("2026w10/commitment.json") is None  # not a pre-kickoff commitment
+    assert "| yes |" in env.remote_blob("STATUS.md").decode()
+
+
+def test_second_miss_makes_the_test_invalid(env):
+    K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    assert env.main_(env.argv("run", K11 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    first = json.loads(env.remote_blob("2026w10/MISSED.json"))
+    second = json.loads(env.remote_blob("2026w11/MISSED.json"))
+    assert (first["miss_number"], second["miss_number"]) == (1, 2)
+    assert second["earlier_misses"] == ["2026w10"] and second["test_status"].startswith("INVALID")
+    status = env.remote_blob("STATUS.md").decode()
+    assert "Misses: 2" in status and "INVALID" in status
+    assert "INVALID" in git("log", "-1", "--format=%s", "livetest-2026", cwd=env.remote)
+    assert "INVALID" in [a for a in env.alerts() if a["kind"] == "missed_commitment"][-1]["message"]
+
+
+def test_status_shows_misses_and_the_test_state(env, capsys):
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    capsys.readouterr()
+    assert env.main_(env.argv("status", K10 + timedelta(hours=2), week=None)) == runner.EXIT_OK
+    out = capsys.readouterr().out
+    assert "2026w10" in out and "machine_offline" in out
+    assert "misses: 1 (2026w10); allowed 1; test state: VALID" in out
+    assert env.main_(env.argv("status", K10 + timedelta(hours=2), "--json", week=None)) == runner.EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert data["misses"] == ["2026w10"] and data["test_state"] == "VALID"
+    assert data["weeks"][0]["missed_reason"] == "machine_offline"
+
+
+def test_plan_export_writes_the_tracked_schedule(env, tmp_path):
+    out = tmp_path / "schedule.json"
+    assert env.main_(env.argv("plan", K10 - timedelta(days=5), "--export", str(out), week=None)) == runner.EXIT_OK
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["format"] == "ffml.livetest.schedule/1"
+    assert data["season"] == 2026 and data["test_weeks"] == list(range(10, 19))
+    w12 = next(w for w in data["weeks"] if w["week"] == 12)
+    assert w12["key"] == "2026w12" and w12["first_kickoff_utc"] == "2026-11-26T01:00:00Z"
+    assert w12["tentative"] is False and w12["games"] == 16
+
+
+def test_dry_run_branch_pushes_elsewhere_and_force_fail_proves_alert_and_retry(env):
+    wt = env.root / "dryrun-commitments"
+    early = K10 - timedelta(days=20)
+    dry = ["--dry-run-branch", "livetest-dryrun"]
+    # refusals: the real branch, and --force-fail outside a dry run
+    assert env.main_(env.argv("run", early, "--dry-run-branch", "livetest-2026", worktree=wt)) == runner.EXIT_REFUSED
+    assert env.main_(env.argv("run", early, "--force-fail", "push")) == runner.EXIT_REFUSED
+    assert env.remote_refs() == [] and env.stub_calls() == 0
+    # forced push failure: built and committed locally, nothing pushed, alert raised
+    assert env.main_(env.argv("run", early, *dry, "--force-fail", "push", worktree=wt)) == runner.EXIT_RETRY
+    assert env.alerts()[-1]["kind"] == "push_failure" and env.remote_refs() == [] and env.stub_calls() == 1
+    # the retry without the flag pushes the same commitment as is (never rebuilt)
+    assert env.main_(env.argv("run", early, *dry, worktree=wt)) == runner.EXIT_OK
+    assert env.stub_calls() == 1 and env.remote_refs() == ["refs/heads/livetest-dryrun"]
+    local = env.commitment_path(rehearsal=True).read_bytes()
+    assert env.remote_blob("2026w10/commitment.json", branch="livetest-dryrun") == local
+    assert env.remote_blob("2026w10/commitment.json") is None
+    assert git("log", "-1", "--format=%s", "livetest-dryrun", cwd=env.remote).startswith(
+        "DRY RUN livetest 2026w10 on livetest-dryrun: stub commitment")
+    assert env.main_(env.argv("watchdog", early, *dry, worktree=wt)) == runner.EXIT_OK
+    # forced build failure on another week: alert, nothing built, the watchdog on that branch complains
+    assert env.main_(env.argv("run", early, *dry, "--force-fail", "build", week=11, worktree=wt)) == runner.EXIT_RETRY
+    assert env.alerts()[-1]["kind"] == "build_failure" and env.stub_calls() == 1
+    assert env.main_(env.argv("watchdog", early, *dry, week=11, worktree=wt)) == runner.EXIT_RETRY
+    # a later dry run of the same week replaces the earlier commitment (dry-run branches are not immutable)
+    env.commitment_path(rehearsal=True).unlink()
+    assert env.main_(env.argv("run", early + timedelta(days=1), *dry, worktree=wt)) == runner.EXIT_OK
+    assert env.stub_calls() == 2
+    assert env.remote_blob("2026w10/commitment.json", branch="livetest-dryrun") != local
+    assert env.remote_refs() == ["refs/heads/livetest-dryrun"]  # still nothing on livetest-2026
 
 
 def test_watchdog_alerts_when_nothing_is_pushed(env):
