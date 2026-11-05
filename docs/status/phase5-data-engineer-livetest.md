@@ -487,6 +487,121 @@ Evidence:
 - `ruff check ffml/data/ ffml/config.py ffml/cli.py scripts/ tests/data/`:
   All checks passed.
 - From the installed CLI: `ffml refresh --help` exits 0;
-  `ffml refresh --step predict` raises
-  `RefreshError: step 'predict' is refused: live predictions need an
-  approved model (D-099, D-100) ...`.
+  `ffml refresh --step predict` raised `RefreshError` at the time; since
+  DE-5.5 it exits 1 with `refresh failed: step 'predict' is refused: ...`.
+
+## DE-5.5: operating rules D-106 and D-107 (2026-11-05)
+
+Done, per the owner's rules (D-106, D-107) and the orchestrator's brief.
+
+1. **24-hour start.** `Timing`: the window opens at K - 25 h, the scheduled
+   run starts at K - 24 h 15 min (at least 24 h before the official first
+   kickoff even with Task Scheduler's start delay) and repeats every 30 min
+   until K - 5 min; the build cutoff K - 30 min and the push deadline
+   K - 5 min are unchanged. Week 12: the run starts 2026-11-25 00:45Z for
+   K = 2026-11-26 01:00Z. Tests updated (triggers, too early at K - 26 h,
+   runs at K - 24 h 15 min).
+2. **One-miss rule.** `MISSED.json` (format `ffml.livetest.missed/2`)
+   carries `reason.category` (`technical_failure` with the last failed step
+   and message, or `machine_offline` when no runner log exists between
+   K - 25 h and K), `run_logs` (window, files, last 12 events of the latest
+   log), `local_commitment`, `late_commitment`, `miss_number`,
+   `earlier_misses` and `test_status` (VALID: excluded, window not extended;
+   INVALID on the second miss). A commitment built before K but not pushed
+   in time is pushed under `<week>/late/` with the marker, so projections
+   that exist are never withheld. `STATUS.md` on the branch is regenerated
+   at every push (commitments and misses) with the per-week state, the miss
+   count and the test state; the branch README explains the layout and the
+   rule (`README.md` and `STATUS.md` are the only rewritable files on the
+   branch). `status` prints `missed`, the reason, `late` and a footer
+   `misses: N (...); allowed 1; test state: VALID|INVALID`. The retry after
+   a push failure still pushes the existing commitment as is (tested).
+3. **GitHub watchdog.** `.github/workflows/livetest_watchdog.yml` runs
+   `scripts/livetest_watchdog_gh.py` hourly on `main` (standard library
+   only). It reads the tracked `scripts/livetest_schedule_2026.json`
+   (exported from dim_game with `plan --export`; week 18 flagged
+   tentative), takes the next test week and, inside [6.5 h, 5.5 h) and
+   [1.5 h, 0) before kickoff, checks `livetest-2026` for
+   `<week>/commitment.json` through the contents API. Missing: exit 1
+   (workflow failure, GitHub mails the owner) plus the webhook when the
+   `FFML_ALERT_WEBHOOK` secret exists (through `scripts/alert.py`, no
+   toast). `workflow_dispatch` takes `branch`, `now` and `force_window` for
+   the dry run.
+4. **Least privilege.** `scripts/livetest_schedule.ps1`: default
+   `-LogonMode Password`; `-RunLevel Limited` in both registration paths;
+   the password is prompted by `Get-Credential`, handed to
+   `Register-ScheduledTask` and cleared, written to no file, script or log
+   (the run log records only the command line and the configuration);
+   settings `StartWhenAvailable`, `WakeToRun` (unless `-NoWake`), start only
+   on AC power (no `-AllowStartIfOnBatteries`; a running job is not stopped
+   on unplugging), `IgnoreNew`, 5 h limit. New read-only
+   `scripts/livetest_power_check.ps1`, and RUNBOOK section 12 with the exact
+   `powercfg` commands. Readings on this laptop (nothing changed): Balanced;
+   wake timers Enable on AC and Disable on battery; sleep after 60 min;
+   hibernate never on AC; Modern Standby; Fast Startup on, so a "Shut down"
+   hibernates and wake timers do not fire; the lid setting is not exposed
+   by `powercfg` here.
+5. **Logged-off dry run.** `--dry-run-branch <name>` on `run`, `watchdog`,
+   `status` and `verify`: refuses `livetest-2026`, `main` and any name
+   starting with `livetest-2026`; pushes to that branch from its own
+   worktree `../ffml-<branch>-commitments`; builds in the rehearsal sandbox
+   with no deadlines; the branch layout mirrors the real one so both
+   watchdogs find the file; dry-run branches are not immutable (a later dry
+   run replaces the commitment). `--force-fail refresh|build|push` (dry run
+   only) fails that step on purpose and alerts; the retry pushes the built
+   commitment as is. `livetest_schedule.ps1 -DryRunBranch ... [-ForceFail
+   push] [-DryRunStub] [-DryRunSkipRefresh] [-DryRunAt]` defines the two
+   dry-run tasks. Procedure: RUNBOOK section 13.
+6. **Registration command**, every parameter explained: RUNBOOK section 14.
+7. **CLI** (authorized edits): `ffml ingest --update-schema-pin`;
+   `ffml refresh` catches `RefreshError` and exits 1 with a message. CI fix:
+   `test_cli_help_resolves` invokes Typer with `NO_COLOR=1`, `TERM=dumb` and
+   `COLUMNS=200` and strips ANSI escapes; new tests cover `--step nonsense`
+   (exit 1, "unknown step") and `--step predict` (exit 1, "refused", no
+   traceback).
+
+Evidence:
+- `PYTHONUTF8=1 FFML_OFFLINE=1 .venv/Scripts/python -m pytest -q tests/data`:
+  **189 passed, 2 skipped** (network) in 223 s, with 12 new tests. In
+  `test_livetest.py`: the `machine_offline` reason, the technical-failure
+  reason with its log excerpt, the late commitment under `late/`, the second
+  miss INVALID, the status footer, the plan export, and the dry-run branch
+  with forced push and build failures. In `test_watchdog_gh.py`: the windows
+  around the Thanksgiving kickoff, `decide`, `main` with a fake contents API
+  and the alert dispatch, and the local alert log. In `test_refresh.py`:
+  refused and unknown steps exit 1, and `--update-schema-pin`.
+- `ruff check scripts/ tests/data/ ffml/data/ ffml/config.py ffml/cli.py`:
+  All checks passed.
+- `scripts/livetest_schedule.ps1 -Weeks 10-18 -Season 2026` (dry run): the
+  week 10 run task at 2026-11-11 20:00 local (2026-11-12T01:00Z), every
+  30 min until 2026-11-12 20:10 local; `-DryRunBranch livetest-dryrun
+  -ForceFail push -DryRunStub` prints the two dry-run tasks;
+  `-DryRunBranch livetest-2026` throws. `Get-ScheduledTask -TaskPath \ffml\`
+  returns 0: nothing registered.
+- `plan --export scripts/livetest_schedule_2026.json --weeks 10-18 --season 2026`
+  wrote 9 weeks from dim_game snapshot 20261104T233034Z with the live
+  schedule checked.
+- `scripts/livetest_watchdog_gh.py --repo ethansye19/fantasy-football-ml`
+  against the real branch (read only; token from `gh auth token`; alert log
+  pointed at a scratch file): `--now 2026-11-12T19:00:00Z` exit 1 ("NO
+  commitment on the branch 6.2 h before the first kickoff", window 6h);
+  `--now 2026-11-10T12:00:00Z` exit 0 ("61.2 h to kickoff; outside the
+  alert windows"); `--branch livetest-dryrun --force-window` exit 1 with the
+  alert logged (webhook not configured).
+- `livetest_week.py status --season 2026` against the real branch: every
+  week `pushed False`; footer `misses: 0 (none); allowed 1; test state:
+  VALID`.
+- `scripts/livetest_power_check.ps1` runs read only (readings above).
+
+Not done:
+- No task was registered, no dry run was executed logged off and no secret
+  was set: the owner does these (RUNBOOK sections 11 to 14). The workflow
+  runs only once it is on `main` (orchestrator push).
+- The GitHub watchdog's webhook path is tested with the alert module against
+  a local server (`test_alert.py`) and the dispatch wiring with a fake, not
+  against a real webhook URL.
+
+Proposed for the decision log, if wanted: D-108, the timing constants
+(window K - 25 h, start K - 24 h 15 min, repetition until K - 5 min, cutoffs
+unchanged) and the GitHub watchdog windows [6.5, 5.5) and [1.5, 0) hours
+before kickoff.

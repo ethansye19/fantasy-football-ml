@@ -1,14 +1,13 @@
 # Weekly operations runbook (OR-5.1)
 
-This runbook covers the chain_v2 live test over 2026 weeks 10-18 (D-098).
-Each week's projections are saved and hashed before that week's first
-kickoff. They are scored only after the games finish. It also covers the
-alerts that support the test (QA-5.1).
+This runbook covers the chain_v2 live test over 2026 weeks 10-18 (D-098,
+D-105). Each week's projections are saved and hashed before that week's
+official first kickoff. They are scored only after the games finish. The
+runbook also covers the alerts that support the test (QA-5.1), the operating
+rules for missed weeks (D-106) and the operations set-up (D-107).
 
-The test design is decided by the owner after the evaluator's pass-probability
-estimate. That design sets the frozen code commit, the window and how missed
-weeks count. The machinery below follows that design. It does not decide any
-of it.
+Sections 11 to 14 are the ones the owner acts on: the GitHub watchdog, the
+power settings, the logged-off dry run and the registration command.
 
 ## 1. Limits that always apply (D-099, D-100)
 
@@ -17,15 +16,18 @@ of it.
 - **Private, labeled outputs only.** chain_v2 outputs exist only in the private
   store and in private tests, labeled "not approved".
   - Real builds write to `data/predictions_private`.
-  - Rehearsals write to the sandbox under `data/livetest/rehearsal/`.
+  - Rehearsals and dry runs write to the sandbox under `data/livetest/rehearsal/`.
 - **No approval claims.** Nothing here approves a model.
 - **The holdout is never unlocked.** Never set `FFML_HOLDOUT_UNLOCK`. The runner refuses to start when it
   is set, and it strips the variable from every subprocess.
-- **No automated pushes of `main`.** Automation pushes only `refs/heads/livetest-2026`, from its own worktree.
-  It never force-pushes. Unreviewed work on `main` therefore never reaches the remote this way.
+- **No automated pushes of `main`.** Automation pushes only `refs/heads/livetest-2026` (or the dry-run
+  branch), from its own worktree. It never force-pushes. Unreviewed work on `main` therefore never
+  reaches the remote this way.
 - **Snapshots are append-only.** A refresh adds snapshots and moves `LATEST`. It never rewrites or prunes a
   snapshot. The runner fingerprints every snapshot before and after the refresh, and it stops with exit 7
   if one changed.
+- **Least privilege.** The scheduled tasks run as the owner's user with no administrator rights
+  (section 14).
 
 ## 2. Components
 
@@ -35,9 +37,11 @@ of it.
 | Shared machinery | `scripts/livetest_core.py` | week plan, commitment re-hash, pin check, commitments repo, GitHub record, fingerprints |
 | Refresh driver | `python -m ffml.data.refresh` (also `ffml refresh --step`, `scripts/refresh_data.py`) | `ingest`, `sleeper`, `process`, `validate`, `features`, one step per process; the runner uses the pinned interpreter |
 | Build | `ffml livetest build-week --season S --week W [--rehearsal]` | ML Engineer: refit, calibrate, predict privately, write `commitment.json` |
-| Build stub | `scripts/livetest_stub_build.py` | the same contract with no model output (tests and machinery rehearsals) |
+| Build stub | `scripts/livetest_stub_build.py` | the same contract with no model output (tests and machinery dry runs) |
 | Pinned code | `scripts/livetest_setup_worktree.py` | worktree at the pre-registered commit with its own venv |
-| Scheduler | `scripts/livetest_schedule.ps1` | Windows Task Scheduler tasks (dry run unless `-Register`) |
+| Scheduler | `scripts/livetest_schedule.ps1` | Windows Task Scheduler tasks (dry run unless `-Register`); also the dry-run tasks |
+| Power check | `scripts/livetest_power_check.ps1` | read-only report of wake timers, sleep, hibernate, lid, Fast Startup |
+| GitHub watchdog | `.github/workflows/livetest_watchdog.yml`, `scripts/livetest_watchdog_gh.py`, `scripts/livetest_schedule_2026.json` | hourly check on GitHub's side, alerts 6 h and 1 h before kickoff |
 | Alerts | `scripts/alert.py` | local log, webhook (`FFML_ALERT_WEBHOOK`), Windows toast |
 
 Files written under `data/`. None of them is in git.
@@ -46,7 +50,9 @@ Files written under `data/`. None of them is in git.
 | --- | --- |
 | `data/livetest/config.json` | test window and pin, written by `init` (keeps a history of replaced values) |
 | `data/livetest/{S}w{WW}/commitment.json` | written by build-week |
+| `data/livetest/rehearsal/{S}w{WW}/` | rehearsal and dry-run builds (sandbox) |
 | `data/livetest/runner/{S}w{WW}/` | `state.json`, `push_record.json` (push result and GitHub's record), `verify.json`, `MISSED.json` |
+| `data/livetest/runner/dryrun/<branch>/{S}w{WW}/` | the same for dry runs |
 | `data/livetest/logs/*.jsonl` | one log per run (every step, exit code, alert) and validation reports |
 | `data/livetest/schedule_plan.json` | the plan the tasks were registered from (used by the drift check) |
 | `data/schema_pins/expected_schemas.json` | working copy of the schema pins; every ingest reads and updates it, so the tracked `ffml/data/schemas/expected_schemas.json` (and a pinned checkout) stays clean unless `FFML_UPDATE_SCHEMA_PIN=1` asks for a deliberate re-pin |
@@ -57,11 +63,17 @@ shared with `main`. It is checked out in `../ffml-livetest-commitments`.
 
 ```
 README.md, .gitattributes (* -text: bytes are committed exactly)
+STATUS.md                             per-week state, misses and the test state; regenerated at every push
 2026w10/commitment.json
 2026w10/player_summary.parquet        copy when under 5 MB; its SHA-256 is in the commitment
-2026w11/MISSED.json                   only when nothing was pushed before kickoff
+2026w11/MISSED.json                   the week was missed: reason, log excerpt, miss number, test state
+2026w11/late/commitment.json          built before kickoff, pushed after it; not part of the test
 rehearsal/2026w10-<created stamp>/... rehearsals, not part of the test
 ```
+
+Only `README.md` and `STATUS.md` are ever rewritten on the branch; every
+other file is immutable. Dry runs use a separate branch (`livetest-dryrun`),
+never this one.
 
 ## 3. One-time setup (after the owner signs off on the design)
 
@@ -102,6 +114,8 @@ Run everything from the repository root in PowerShell. Set
    - Put `FFML_ALERT_WEBHOOK=<url>` in `.env`. Slack, Discord and ntfy URLs
      are detected automatically. Any other URL gets a JSON body with `text`
      and `alert`.
+   - Add the same URL as the repository secret `FFML_ALERT_WEBHOOK` for the
+     GitHub watchdog (section 11).
    - Then send a test alert:
 
    ```powershell
@@ -111,43 +125,30 @@ Run everything from the repository root in PowerShell. Set
    Check that the webhook received it and that a toast appeared. The result
    is also printed, and logged in `data/alerts/alerts.jsonl`.
 
-4. **Rehearse with the real build before week 10.** This uses the
-   `build-week` rehearsal sandbox and pushes under `rehearsal/`:
+4. **Export and commit the tracked schedule** for the GitHub watchdog
+   (section 11), then push `main` through the normal review.
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_week.py run --rehearsal --season 2026 --week 10 --skip-refresh
+   .venv\Scripts\python scripts\livetest_week.py plan --export scripts\livetest_schedule_2026.json
    ```
 
-5. **Register the scheduled tasks.** Dry run first:
+5. **Check the power settings** (section 12) and fix anything marked CHECK.
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1
-   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -Register -LogonMode Password
-   ```
+6. **Run the logged-off dry run** (section 13). It proves build, push, retry,
+   failure alert and both watchdogs while the owner is logged off.
 
-   Logon modes:
-   - `-LogonMode Password` runs whether or not the user is logged on. It asks
-     for the Windows password once, and Task Scheduler stores it.
-   - `Interactive` runs only while the user is logged on. A locked screen is
-     fine.
-   - `S4U` cannot read Windows Credential Manager, so `git push` and `gh`
-     fail. Do not use it.
+7. **Register the weekly tasks** with the command in section 14. Dry run
+   first (without `-Register`), then with `-Register`.
 
    Registering also saves `data/livetest/schedule_plan.json`. Re-run
    `-Register` whenever the daily check reports schedule drift. It replaces
-   the tasks.
-
-6. **Set up power.**
-   - In Power Options, set "Allow wake timers" to Enable on battery and when
-     plugged in.
-   - Keep the laptop plugged in and asleep at most (not shut down) on
-     kickoff days.
+   the weekly tasks and leaves dry-run tasks alone.
 
 ## 4. The week cycle
 
-K is the week's first kickoff in `dim_game.kickoff_utc`. The runner
-cross-checks it against the live nflverse schedule and uses the earlier of
-the two.
+K is the week's official first kickoff in `dim_game.kickoff_utc`, including
+Thanksgiving and other early games (D-106). The runner cross-checks it against
+the live nflverse schedule and uses the earlier of the two.
 
 A week is **tentative** while every one of its games sits at one identical
 time. Week 18 is tentative until the NFL sets its times, which may include
@@ -156,20 +157,26 @@ real times appear.
 
 | Time | What happens |
 | --- | --- |
-| K - 12 h | the runner's window opens (earlier runs exit 0 "too early") |
-| K - 9 h | scheduled run starts, then repeats every 30 min |
+| K - 25 h | the runner's window opens (earlier runs exit 0 "too early") |
+| K - 24 h 15 min | scheduled run starts, then repeats every 30 min until a valid commitment is pushed (the task repeats until K - 5 min) |
 | run | 1. refresh with the pinned interpreter (`python -m ffml.data.refresh`, one step per process): ingest of all seasons 2016 through the current one, Sleeper map (once per day), process, validate, features |
 | run | 2. `ffml livetest build-week` from the pinned worktree |
 | run | 3. verify the commitment (hashes, digest, season/week, `created_at` < K, pinned commit, clean tree) |
-| run | 4. commit to `livetest-2026` and push that branch only |
+| run | 4. commit to `livetest-2026` (with a regenerated `STATUS.md`) and push that branch only |
 | run | 5. record `git ls-remote` and GitHub's view, then re-hash against the manifest and the pushed blobs |
+| K - 6 h | GitHub watchdog: workflow failure plus webhook if the commitment is not on the branch |
 | K - 3 h | no new refresh starts; if no refresh succeeded, the build uses the newest snapshots, with an alert |
-| K - 1 h | watchdog: alert if the commitment is not on the remote branch |
+| K - 1 h | local watchdog and GitHub watchdog: alert if the commitment is not on the remote branch |
 | K - 30 min | no refresh or build starts |
 | K - 5 min | no push starts |
-| K | nothing is committed for the week any more |
-| after K | the next run or the daily check pushes `{S}w{WW}/MISSED.json` if nothing was pushed |
+| K | the deadline (D-106): nothing pushed after it counts |
+| after K | the next run or the daily check pushes `{S}w{WW}/MISSED.json` (and `late/` if a commitment was built), see section 8 |
 | after the games | scoring, by the evaluator, outside this runner |
+
+Why 24 h 15 min and not 24 h: Task Scheduler starts a task up to a minute
+after its trigger, so the first attempt is at least 24 hours before K as
+D-106 asks. The build is point-in-time as of the build; a commitment made a
+day early uses the information of that time.
 
 The runner is idempotent:
 - a week whose commitment is on the branch is left alone (exit 0);
@@ -182,18 +189,20 @@ attempts are used up or K - 3 h passes, and then uses the newest snapshots.
 The same applies when earlier weeks' games are still not final in the data.
 
 Schedule examples (UTC):
-- week 10: K = 2026-11-13 01:15; the run starts 2026-11-12 16:15.
+- week 10: K = 2026-11-13 01:15; the run starts 2026-11-12 01:00 (Wednesday
+  20:00 ET) and repeats until 2026-11-13 01:10.
 - week 12 is on Thanksgiving eve: K = 2026-11-26 01:00 (Wednesday 20:00 ET);
-  the run starts 2026-11-25 16:00.
+  the run starts 2026-11-25 00:45 (Tuesday 19:45 ET).
 - week 18 is tentative in the current schedule (all games 2027-01-10 18:00);
-  it is scheduled from 2027-01-09 09:00.
+  it is scheduled from 2027-01-08 17:45. When the NFL sets Saturday games the
+  daily check reports drift; re-register, and re-export the tracked schedule.
 
 Manual run, the same command the task uses:
 
 ```powershell
 .venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 10
 .venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 10 --dry-run   # changes nothing
-.venv\Scripts\python scripts\livetest_week.py run --retry-every-minutes 30            # keep retrying until the cutoff
+.venv\Scripts\python scripts\livetest_week.py run --retry-every-minutes 30            # keep retrying in one process
 ```
 
 ## 5. Checking that a commitment was pushed before kickoff
@@ -209,7 +218,12 @@ Manual run, the same command the task uses:
    - whether the remote branch holds identical bytes;
    - GitHub's push time;
    - `on time`, meaning the push time is before K;
-   - whether a MISSED marker exists.
+   - `missed`, the reason (`technical_failure` or `machine_offline`) and
+     whether a late commitment exists;
+
+   and a last line: `misses: N (...); allowed 1; test state: VALID` or
+   `INVALID (D-106: more than one miss)`. `STATUS.md` on the branch shows the
+   same table.
 
 2. **External timestamp.** Git commit dates come from this laptop's clock.
    GitHub's repository activity record does not: GitHub's servers set it when
@@ -242,6 +256,10 @@ Manual run, the same command the task uses:
    `verify` recomputes the digest, re-hashes every listed file, compares the
    pushed blobs, and runs `ffml livetest verify` as a second opinion. It
    exits 6 on any mismatch.
+
+4. **From GitHub's side:** the latest `livetest watchdog` workflow runs
+   (Actions tab) inside the 6 h and 1 h windows are green when the
+   commitment is there and red when it is not.
 
 ## 6. The pinned worktree
 
@@ -294,53 +312,83 @@ the stderr tails of the refresh and the build.
 | `refresh_failure`, exit 1 | a refresh step failed (network, nflverse, Sleeper) | Nothing, if before K - 3 h: the next repetition retries. Check the network. After K - 3 h the build uses the newest snapshots. Never edit or delete snapshots by hand. |
 | `data_quality` | `validate` FAILED, or earlier weeks' games are not final yet | Read the validation report in `data/livetest/logs/validation_*.md`. Retried like a refresh failure. |
 | `build_failure`, exit 2 | the pin check refused, or build-week was refused by the approval gate | Read the reason. Do not "fix" the pinned worktree: tell the orchestrator. A refused gate is a configuration problem, not a model problem. |
-| `build_failure`, exit 1 | build-week failed (traceback in the log) | Re-run `run --season S --week W` by hand once the cause is fixed (network, memory). It is safe: nothing was committed. |
-| `push_failure`, exit 1 | remote unreachable or push rejected | Check `gh auth status`, the network and `git -C ..\ffml-livetest-commitments status`. Re-run the runner: it pushes the existing commitment, never a new build. Never force-push. Never push `main`. |
-| `missed_commitment` at K - 1 h | the watchdog found nothing on the remote | Run the runner by hand now. If it cannot push before K - 5 min, the week is missed. |
-| `missed_commitment` after K, exit 3 | the week kicked off without a pushed commitment | No action on the branch: the MISSED marker is pushed automatically. Tell the owner. The test design decides how it counts. |
+| `build_failure`, exit 1 | build-week failed (traceback in the log) | The next repetition retries. Re-run `run --season S --week W` by hand once the cause is fixed (network, memory). It is safe: nothing was committed. |
+| `push_failure`, exit 1 | remote unreachable or push rejected | Check `gh auth status`, the network and `git -C ..\ffml-livetest-commitments status`. The next repetition pushes the existing commitment as it is, never a new build. Never force-push. Never push `main`. |
+| `missed_commitment` at K - 6 h or K - 1 h (GitHub workflow red, webhook) | the GitHub watchdog found nothing on the branch | Check the laptop: is it on, on AC, online? Run the runner by hand now (`run --season S --week W`). If it cannot push before K - 5 min, the week is missed. |
+| `missed_commitment` at K - 1 h (local) | the local watchdog found nothing on the remote | Same as above. |
+| `missed_commitment` after K, exit 3 | the week kicked off without a pushed commitment | No action on the branch: the MISSED marker (with reason and log excerpt) is pushed automatically, and a late commitment with it. Tell the owner. First miss: excluded, test goes on. Second miss: the test is INVALID (D-106). |
 | `integrity`, exit 6 | the branch holds a different commitment, a file no longer matches its hash, or post-push verification failed | Stop. Do not rebuild, delete or re-push. Keep the logs and tell the orchestrator. |
 | `integrity`, exit 7 | an existing snapshot changed during a refresh | Stop. Do not build. Tell the orchestrator. |
 | `integrity` (clock skew) | the laptop clock differs from GitHub by over 2 min | Resync Windows time (Settings, Time, Sync now). Use GitHub's timestamp as the record. |
-| `schedule_drift` | kickoff times changed after the tasks were registered (week 18 flex) | Re-run `scripts\livetest_schedule.ps1 -Register` (dry run first). |
+| `schedule_drift` | kickoff times changed after the tasks were registered (week 18 flex) | Re-run `scripts\livetest_schedule.ps1 -Register` (dry run first) and re-export `scripts\livetest_schedule_2026.json` (section 11). |
 | `stale_predictions` | in season, the newest private run (or the public run, once a model is live) is over 8 days old | During the test, check that the last week's run completed. Test with `scripts\alert.py check-stale --now <time>`. |
 
-## 8. Laptop off, asleep or logged out
+## 8. Missed weeks (D-106), laptop off, asleep or logged out
+
+The one-miss rule:
+- a week counts as missed when no commitment is on `livetest-2026` at its
+  official first kickoff K;
+- the first missed week is **excluded from scoring**; the window is **not
+  extended**; the frozen rules are unchanged and the evaluator reports the
+  lower pass rate of an eight-week test;
+- a **second miss makes the test INVALID** (not failed);
+- a miss counts only for a real technical failure or an offline machine, and
+  it is logged with its reason;
+- projections that exist are never withheld: a commitment that was built but
+  not pushed in time is pushed anyway, under `<week>/late/`, and marked as not
+  part of the test.
+
+How a miss is recorded. After K, the next runner start or the daily check
+pushes `<week>/MISSED.json`:
+
+| Field | Content |
+| --- | --- |
+| `reason.category` | `technical_failure`: a runner log in the window ending at K shows a failure, or a commitment was built and not pushed; `machine_offline`: no runner log exists between K - 25 h and K (off, asleep, logged off, or the task did not start) |
+| `reason.detail` | the last failed step and its message, or the built-but-not-pushed statement |
+| `run_logs` | the window, the log file names in it, and the last 12 events of the latest log |
+| `local_commitment` | whether a local commitment exists, its hash, `created_at`, `built_before_kickoff` |
+| `late_commitment` | the `late/` path and hash when one was pushed, with its verification result |
+| `miss_number`, `earlier_misses`, `test_status` | 1 and `VALID: ...`, or 2 and `INVALID: ...` |
+
+`STATUS.md` on the branch is regenerated at every push and shows every test
+week, the misses and the test state. `status` (section 5) prints the same.
+The alert for a second miss says INVALID.
 
 The tasks use these settings:
 - `StartWhenAvailable`: a missed start runs when the machine is available
   again;
-- `WakeToRun`: wake from sleep, when wake timers are allowed;
-- running on battery is allowed;
+- `WakeToRun`: wake from sleep, when wake timers are allowed (section 12);
+- start only on AC power (a run that is already going is not stopped on
+  unplugging);
 - `IgnoreNew`: no overlapping runs;
 - a 5-hour limit;
 - each run trigger ends at kickoff.
 
-| State during the window | Result |
+| State during the window (K - 25 h to K) | Result |
 | --- | --- |
-| asleep, wake timers on | the task wakes the laptop and runs |
-| asleep, wake timers off (Windows often disables them on battery) | nothing runs until the laptop wakes. Missed repetitions run once on wake, while still before kickoff. |
-| shut down or hibernated past kickoff | nothing runs. At the next boot the trigger has expired, so the runner is not started for that week. The daily check (or the next week's run) pushes `MISSED.json`, and alerts. |
-| logged out, `-LogonMode Interactive` | nothing runs (same as shut down) |
+| on, on AC | the task runs at K - 24 h 15 min and retries every 30 min until the push |
+| asleep, wake timers enabled on AC | the task wakes the laptop and runs |
+| asleep, wake timers disabled | nothing runs until the laptop wakes. Missed repetitions run once on wake, while still before K - 5 min. |
+| on battery | the task does not start until AC is back (the next repetition then starts it) |
+| shut down (Fast Startup on) or hibernated past K | nothing runs. At the next boot the trigger has expired, so the runner is not started for that week. The daily check or the next week's run pushes `MISSED.json` with `machine_offline`, and alerts. |
 | logged out, `-LogonMode Password` | the task runs, and git and gh credentials work |
-| no network | the build succeeds locally, the push fails and is retried every 30 min until K - 5 min. The watchdog alerts at K - 1 h. |
+| logged out, `-LogonMode Interactive` | nothing runs (same as shut down) |
+| no network | the build succeeds locally, the push fails and is retried every 30 min until K - 5 min; both watchdogs alert; after K the commitment is pushed under `late/` with a `technical_failure` marker |
 
-A missed week shows up in four places, and the signals agree:
-1. an alert at K - 1 h, plus another when the marker is pushed;
-2. `status`, where `pushed False` and `missed True`;
-3. `MISSED.json` on the branch. It records any local commitment that was
-   built but not pushed, with its hash.
-4. the absence of a commitment with a GitHub push timestamp before K.
+A missed week shows up in five places, and the signals agree:
+1. alerts at K - 6 h and K - 1 h (GitHub) and K - 1 h (local), plus one when
+   the marker is pushed;
+2. `status`, with `missed True`, the reason and the test state;
+3. `STATUS.md` and `<week>/MISSED.json` on the branch;
+4. the GitHub watchdog runs inside the windows are red;
+5. the absence of a commitment with a GitHub push timestamp before K.
 
-A commitment pushed after K is never made: the runner stops pushing at
-K - 5 min. If a push still lands after K (an extreme case), the push record
-says `on_time: false` and an alert is raised.
-
-## 9. Daily check and Gate 5 evidence
+## 9. Daily check and one-off commands
 
 `livetest_week.py check` runs daily at 15:00 local. It does three things:
 - the stale-prediction check;
 - schedule drift against `schedule_plan.json`;
-- MISSED markers.
+- MISSED markers (with reasons) for weeks that kicked off.
 
 Useful one-off commands:
 
@@ -351,6 +399,7 @@ Useful one-off commands:
 .venv\Scripts\python scripts\alert.py tail -n 20
 .venv\Scripts\python scripts\alert.py send --kind push_failure --message "forced failure test" --severity warning
 .venv\Scripts\python scripts\alert.py check-stale --now 2026-11-21T12:00:00Z
+powershell -ExecutionPolicy Bypass -File scripts\livetest_power_check.ps1
 ```
 
 ## 10. Exit codes of `livetest_week.py`
@@ -361,6 +410,208 @@ Useful one-off commands:
 | 1 | failed; the next repetition retries (refresh, build, push, watchdog finding) |
 | 2 | build blocked: pin refused, or approval gate refused |
 | 3 | missed: too late for this week |
-| 4 | refused: unsafe environment or bad arguments (`FFML_HOLDOUT_UNLOCK`, `--now` on a real run, stub outside a rehearsal, no `init`) |
+| 4 | refused: unsafe environment or bad arguments (`FFML_HOLDOUT_UNLOCK`, `--now` on a real run, stub outside a rehearsal, no `init`, `--dry-run-branch livetest-2026`, `--force-fail` outside a dry run) |
 | 6 | integrity problem; needs a human |
 | 7 | an existing snapshot was modified; needs a human |
+
+## 11. GitHub watchdog (D-107)
+
+The workflow `.github/workflows/livetest_watchdog.yml` runs
+`scripts/livetest_watchdog_gh.py` every hour on `main`, on GitHub's runners,
+so it does not depend on the laptop. The script:
+1. reads the tracked schedule `scripts/livetest_schedule_2026.json`, exported
+   from `dim_game` with `livetest_week.py plan --export` and committed;
+2. takes the next test week and computes the hours to its official first
+   kickoff;
+3. inside the windows 6 h 30 min to 5 h 30 min and 1 h 30 min to 0 before
+   kickoff, checks `livetest-2026` for `<week>/commitment.json` through the
+   GitHub contents API (hourly cron runs land at K - 6 h to K - 6 h 15 min and
+   K - 1 h to K - 1 h 15 min for the usual 01:00Z and 01:15Z kickoffs, and a
+   run delayed by up to 30 minutes still falls inside; the last run before
+   kickoff alerts too);
+4. with nothing there: fails the run (GitHub mails the owner about the failed
+   workflow) and posts to the webhook when the repository secret
+   `FFML_ALERT_WEBHOOK` exists. Outside the windows it exits 0 in seconds.
+
+Set-up:
+- repository secret `FFML_ALERT_WEBHOOK` (Settings, Secrets and variables,
+  Actions): the same URL as in `.env`;
+- the workflow and the schedule file must be on `main` (pushed through the
+  normal review);
+- GitHub turns scheduled workflows off after 60 days without a push; a push
+  to `main` during the test keeps it on, and the Actions tab shows a warning
+  beforehand.
+
+Manual run (Actions, `livetest watchdog`, Run workflow): `branch`
+(`livetest-dryrun` for the dry run), `now` (a clock override such as
+`2026-11-12T19:00:00Z`, which is K - 6 h 15 min for week 10) and
+`force_window` (check even outside the windows). The same from a shell:
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token)
+.venv\Scripts\python scripts\livetest_watchdog_gh.py --repo ethansye19/fantasy-football-ml --now 2026-11-12T19:00:00Z
+.venv\Scripts\python scripts\livetest_watchdog_gh.py --repo ethansye19/fantasy-football-ml --branch livetest-dryrun --force-window
+```
+
+Re-export and commit the schedule file when the daily check reports schedule
+drift (week 18), so the GitHub side has the same kickoffs as the laptop.
+
+## 12. Power and sleep settings to check (D-107)
+
+Run the read-only report and fix every line marked CHECK:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\livetest_power_check.ps1
+```
+
+What it reads, and the exact commands behind it (all read only):
+
+| Setting | Command | What the live test needs |
+| --- | --- | --- |
+| Allow wake timers | `powercfg /q SCHEME_CURRENT SUB_SLEEP RTCWAKE` | AC index 1 (Enable). Otherwise the task cannot wake a sleeping laptop. (Index 0 Disable, 2 Important wake timers only.) |
+| Sleep after | `powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE` | any value; the task wakes the machine |
+| Hibernate after | `powercfg /q SCHEME_CURRENT SUB_SLEEP HIBERNATEIDLE` | AC index 0 (Never): wake timers do not fire from hibernation |
+| Lid close action | `powercfg /q SCHEME_CURRENT SUB_BUTTONS LIDACTION` | AC index 0 (Do nothing) or 1 (Sleep), not 2 (Hibernate) or 3 (Shut down) |
+| Sleep states | `powercfg /a` | shows Modern Standby (S0 Low Power Idle) or S3, Hibernate, Fast Startup |
+| Fast Startup | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled` | 1 means a "Shut down" hibernates the kernel and wake timers do not fire: on kickoff days use Sleep, never Shut down, or turn Fast Startup off |
+| Armed wake timers (elevated prompt, optional) | `powercfg /waketimers`, `powercfg /lastwake`, `powercfg /requests` | the registered task appears the day before kickoff |
+
+On this laptop on 2026-11-05 (read only, nothing changed): Balanced scheme;
+wake timers Enable on AC and Disable on battery; sleep after 60 min on AC and
+battery; hibernate never on AC; Modern Standby, Hibernate and Fast Startup
+available; `HiberbootEnabled = 1` (Fast Startup on). The action for the owner
+is therefore: keep the laptop plugged in, put it to sleep rather than shutting
+it down on kickoff days (or turn Fast Startup off), and keep wake timers
+enabled on AC. Settings are changed by the owner in Power Options, not by any
+script here.
+
+## 13. Logged-off dry run before Week 10 (D-107)
+
+The dry run proves, while the owner is logged off: the scheduled task starts,
+the build runs, the push lands on a test branch, a failure raises an alert,
+the retry pushes the existing commitment as it is, and both watchdogs see the
+branch. It never touches `livetest-2026`, and a dry-run commitment is not a
+live commitment.
+
+Everything goes to the branch `livetest-dryrun`, its own worktree
+`..\ffml-livetest-dryrun-commitments`, and `data\livetest\runner\dryrun\`.
+The build is `build-week --rehearsal` (the sandbox) or the stub with
+`-DryRunStub`; the refresh runs unless `-DryRunSkipRefresh`.
+
+Step by step (about two hours):
+
+1. Sections 11 and 12 done; `init` done (section 3). Plug the laptop in.
+2. **Dry run first, nothing registered:**
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -DryRunBranch livetest-dryrun -ForceFail push
+   ```
+
+3. **Register the forced-failure dry run** (the first attempt in 10 minutes,
+   then every 30 minutes for 3 hours; the dry-run watchdog 75 minutes later):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -DryRunBranch livetest-dryrun -ForceFail push -Register
+   ```
+
+   Enter the Windows password when Get-Credential asks (section 14 explains
+   where it goes). Then **log off** (not sleep, not shut down) and wait at
+   least 15 minutes. If you want to also prove the wake, put the laptop to
+   sleep after logging off; wake timers must be enabled (section 12).
+4. **Log on and check the forced failure:**
+
+   ```powershell
+   .venv\Scripts\python scripts\alert.py tail -n 5                       # a push_failure alert from the run
+   Get-ChildItem data\livetest\logs | Sort-Object LastWriteTime | Select-Object -Last 3
+   .venv\Scripts\python scripts\livetest_week.py status --dry-run-branch livetest-dryrun
+   ```
+
+   Expected: a run log written while logged off, ending in `push: failed`
+   with the forced message, a `push_failure` alert (log, webhook, no toast
+   while logged off), the commitment built locally, nothing on the branch,
+   `pushed False` in status.
+5. **Replace the task without the forced failure** and log off again:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -DryRunBranch livetest-dryrun -Register
+   ```
+
+   The next attempt pushes the existing commitment as it is (no rebuild) to
+   `livetest-dryrun`. The dry-run watchdog task, 75 minutes after the first
+   start, exits 0 once the push is there.
+6. **Log on and check the push and the retry:**
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py status --dry-run-branch livetest-dryrun    # pushed True
+   git ls-remote origin livetest-dryrun livetest-2026                                       # only livetest-dryrun moved
+   .venv\Scripts\python scripts\livetest_week.py verify --season 2026 --week 10 --dry-run-branch livetest-dryrun
+   ```
+
+   The run log shows `build: commitment written` only in the first run and
+   `push: ok` in the later one.
+7. **GitHub watchdog against the dry-run branch** (Actions, `livetest
+   watchdog`, Run workflow): once with `branch = livetest-dryrun` and
+   `force_window = true` (green: the commitment is there), and once with
+   `branch = livetest-dryrun-empty` and `force_window = true` (red: the alert
+   path, and the webhook message if the secret is set).
+8. **Clean up:**
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -DryRunBranch livetest-dryrun -Unregister
+   ```
+
+   The branch may stay as evidence or be deleted on GitHub; it is never read
+   by the test. Note the run-log names and the alert lines in the status note
+   or the gate review.
+
+A dry run can also be done logged on, by hand, without the scheduler:
+
+```powershell
+.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 10 --force-fail push
+.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 10
+```
+
+## 14. Registration command and least privilege (D-107)
+
+The owner runs this, from the repository root, after sections 11 to 13:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\livetest_schedule.ps1 -Register -LogonMode Password
+```
+
+Every part, in plain words:
+
+| Part | Meaning |
+| --- | --- |
+| `powershell -ExecutionPolicy Bypass -File ...` | run this one script with Windows PowerShell even if script execution is otherwise restricted on the machine; nothing else is changed |
+| `-Register` | actually register the tasks; without it the script only prints what it would do |
+| `-LogonMode Password` | the default; the tasks run whether or not the user is logged on. Get-Credential asks for the Windows password once; Task Scheduler stores it in the system credential store (the same place as for any "run whether user is logged on or not" task). The script keeps it only in memory for the registration calls and writes it to no file, script, log or the console. If the account signs in with a Microsoft account and a PIN, the password is the Microsoft account password. An account without a password cannot run logged-off tasks; use `-LogonMode Interactive` then (runs only while logged on, locked screen is fine). |
+| (implicit) run level Limited | the tasks run as the current user with no administrator rights; no elevation is asked for or used |
+| (implicit) start only on AC power | the tasks do not start on battery; a run already going is not killed when unplugged |
+| (implicit) `StartWhenAvailable` | a start missed because the machine was off or asleep runs as soon as it is available again |
+| (implicit) `WakeToRun` | the task may wake the laptop from sleep (needs wake timers enabled, section 12); `-NoWake` turns this off |
+| (implicit) `IgnoreNew`, 5-hour limit, 2 restarts | no overlapping runs; a run is stopped after 5 hours; a crashed task is restarted twice, 10 minutes apart |
+| `-TaskFolder "\ffml\"` (default) | the tasks live in the `ffml` folder of Task Scheduler. If registration fails with "Access is denied" for the folder, use `-TaskFolder "\"` (the root folder); no administrator rights are needed either way |
+| `-Weeks 10-18 -Season 2026` | only if `init` has not been run yet; otherwise the window comes from `data\livetest\config.json` |
+| `-DailyCheckTime 15:00` (default) | the daily check's local time |
+
+What the registered tasks can and cannot do:
+- they run exactly `.venv\Scripts\python.exe scripts\livetest_week.py run|watchdog|check` from this
+  repository, as the owner's user, with the owner's normal rights;
+- git and gh use the owner's existing Credential Manager entries; nothing new is stored by this
+  project;
+- they push one branch (`livetest-2026`), never `main`, never with force;
+- they never set `FFML_HOLDOUT_UNLOCK` and never write to the public predictions store;
+- no password or token is written into `data\livetest\logs\`, `data\alerts\` or the task
+  definitions (the run log records the command line and the configuration, which contain
+  neither).
+
+Check after registering:
+
+```powershell
+Get-ScheduledTask -TaskPath "\ffml\" | Format-Table TaskName, State
+(Get-ScheduledTask -TaskPath "\ffml\" -TaskName "livetest-2026w10-run").Principal   # LogonType Password, RunLevel Limited
+Get-ScheduledTaskInfo -TaskPath "\ffml\" -TaskName "livetest-2026w10-run"            # NextRunTime
+```
+
+To remove everything: `scripts\livetest_schedule.ps1 -Unregister`.
