@@ -82,13 +82,15 @@ All paths are under the repository root.
 - Per-week state, a run lock, and a JSON-lines log per run under
   `data/livetest/logs/`.
 
-**Refresh driver**: `scripts/refresh_data.py`, one step per process
+**Refresh driver**: `ffml/data/refresh.py` (DE-5.4; at first
+`scripts/refresh_data.py`, now a thin wrapper), one step per process
 (`ingest`, `sleeper`, `process`, `validate`, `features`).
-- It runs with the pinned interpreter, so data are processed by frozen code.
+- The runner calls `python -m ffml.data.refresh` with the pinned
+  interpreter, so data are processed by frozen code.
 - Ingest is a full 2016-S run (see finding 2).
-- Schema pins are read from and updated in
-  `data/livetest/schema_pins/expected_schemas.json`, so the code checkout is
-  never modified (see finding 3).
+- Schema pins are read from and updated in the working copy
+  `data/schema_pins/expected_schemas.json`, so the code checkout is never
+  modified (see finding 3 and the DE-5.4 section).
 - Sleeper is fetched at most once per day, never forced.
 - The runner fingerprints every snapshot directory (file sizes, mtimes,
   manifest hash) before and after a refresh. Any change stops the run with
@@ -256,9 +258,8 @@ commitment outside a rehearsal.
 1. **`ffml refresh` is broken.** `ffml/cli.py` imports `ffml.refresh`, which
    does not exist, so the command raises `ModuleNotFoundError`. The live
    test uses `scripts/refresh_data.py`.
-   - Proposal (orchestrator): add a thin `ffml/refresh.py` that calls the
-     same steps, or point the command at `ffml.data.refresh` (Data Engineer
-     path) in a later task.
+   - Fixed in DE-5.4: `ffml/data/refresh.py`, and the one-line import
+     change in `ffml/cli.py`.
 2. **D-031 does not hold as written.** `ffml ingest --seasons 2026` writes a
    snapshot with only the 2026 partition and moves `LATEST` to it. After
    that, `process` and `features` would see no history.
@@ -267,9 +268,10 @@ commitment outside a rehearsal.
      forward.
 3. **`ffml ingest` rewrites the tracked file
    `ffml/data/schemas/expected_schemas.json`** when columns are added. In a
-   pinned worktree, that would make the next pin check fail. The refresh
-   driver therefore passes `pin_path` to a copy under
-   `data/livetest/schema_pins/`.
+   pinned worktree, that would make the next pin check fail. Fixed in
+   DE-5.4: the default is the working copy
+   `data/schema_pins/expected_schemas.json`; the tracked file changes only
+   with `update_schema_pin=True` or `FFML_UPDATE_SCHEMA_PIN=1`.
 4. **ML Engineer: paths are resolved against the code checkout.** Registry
    entries and `ffml.sim.livetest.rel()` paths are relative to
    `PROJECT_ROOT`, and in a pinned run that is the worktree.
@@ -286,8 +288,8 @@ commitment outside a rehearsal.
    `rehearsal/<week>-<created stamp>/`. My stub rehearsal used a separate
    data directory to avoid colliding with the ML Engineer's.
 6. **`.env.example` names `ALERT_WEBHOOK_URL`, but the brief names
-   `FFML_ALERT_WEBHOOK`.** `alert.py` reads both. Proposal (orchestrator
-   file): rename it in `.env.example`.
+   `FFML_ALERT_WEBHOOK`.** `alert.py` reads both. Renamed in DE-5.4 at the
+   orchestrator's request; `ALERT_WEBHOOK_URL` stays as a documented alias.
 
 ## Decisions proposed
 
@@ -301,7 +303,7 @@ commitment outside a rehearsal.
 - **D-102: live-test refresh.** The refresh is a full ingest of 2016-S, the
   Sleeper map once per day, process, validate and features, all run with
   the pinned interpreter.
-  - Schema pins come from the copy in `data/livetest/schema_pins/`.
+  - Schema pins come from the working copy `data/schema_pins/`.
   - No snapshot is pruned while the test runs. The commitments reference
     the snapshot ids, and disk grows by about 0.6 GB a week.
 - **D-103: deadlines.**
@@ -420,4 +422,71 @@ of this hand-off.
   4. real `run --rehearsal` with build-week;
   5. schedule dry run, then `-Register`;
   6. `alert.py test` with a real webhook.
-- QA: the watchdog workflow and the `.env.example` rename.
+- QA: the watchdog workflow.
+
+## DE-5.4 follow-ups (2026-11-04)
+
+Done at the orchestrator's request, after the review of the runner.
+
+1. **`ffml refresh` works.** New `ffml/data/refresh.py` holds the step
+   implementations (`ingest`, `sleeper`, `process`, `validate`, `features`);
+   `scripts/refresh_data.py` is a thin wrapper, so there is one
+   implementation. `ffml refresh --step <name>` runs one step in process.
+   `all` (alias `data`) runs the five steps, one child process each
+   (`python -m ffml.data.refresh --step ...`), and stops at the first
+   failure. `injuries` is an ingest of injuries, depth charts and weekly
+   rosters, then process. `retrain-check` and `predict` are refused with a
+   message (D-099, D-100). The live-test runner now calls
+   `python -m ffml.data.refresh` with the pinned interpreter, so the refresh
+   code is pinned together with the model code. The one authorized edit in
+   `ffml/cli.py` is the import, `from ffml.data.refresh import run_refresh`.
+   The help string still lists the old step names; a test checks that every
+   one of them either resolves or is refused clearly.
+2. **Schema pins no longer dirty a pinned worktree.** `resolve_pin_path` in
+   `ffml/data/ingest.py`: an explicit `pin_path` wins; otherwise the working
+   copy `Settings.schema_pin_path`, which is
+   `<data_dir>/schema_pins/expected_schemas.json`, seeded from the tracked
+   file and topped up with any dataset the tracked file pins that the copy
+   lacks. The tracked `ffml/data/schemas/expected_schemas.json` is written
+   only with `run_ingest(update_schema_pin=True)` or
+   `FFML_UPDATE_SCHEMA_PIN=1`, and is then mirrored into the working copy.
+   `ffml validate` reads the same copy. Not done: an `--update-schema-pin`
+   option on `ffml ingest` itself needs a small change to the `ingest`
+   command in `ffml/cli.py`, outside the authorized edit; the patch is in
+   the hand-off, and the environment variable works without it.
+3. **D-031 correction** (for the decision log). D-031 said the nightly
+   refresh calls `ffml ingest --seasons <current>` for the mutable datasets
+   and the full 2016-2026 run only after Thursday's stat corrections. That
+   does not work with the snapshot store as built: a raw snapshot holds only
+   the seasons it was asked for, and `LATEST` points at one snapshot, so a
+   `--seasons 2026` ingest moves `LATEST` to a 2026-only snapshot, and
+   `process` and `features` then see no 2016-2025 history. The rule the live
+   test and `ffml refresh` use: every ingest requests all seasons from
+   `Settings.first_season` (2016) through the current season, which is the
+   later of the schedule snapshot's season and the calendar season (a year
+   counts from September, when nflverse starts publishing it; asking earlier
+   fails as a gap under D-028). The ingest loads one season at a time, so
+   memory is bounded. A full run costs about 80 s and 207 MB per snapshot
+   set, and no snapshot is pruned during the live test (about 0.6 GB a
+   week). A per-season carry-forward in the store, copying unchanged
+   partitions into the new snapshot, would restore the cheap nightly run; it
+   is a follow-up, not a prerequisite.
+4. **`.env.example`**: `FFML_ALERT_WEBHOOK=` replaces `ALERT_WEBHOOK_URL=`.
+   The old name is kept as a documented alias, since `alert.py` reads both,
+   and `FFML_UPDATE_SCHEMA_PIN` is documented there as well.
+
+Evidence:
+- `PYTHONUTF8=1 FFML_OFFLINE=1 .venv/Scripts/python -m pytest tests/data -q`:
+  **177 passed, 2 skipped** (network) in 157 s, with 7 new tests. In
+  `tests/data/test_refresh.py`: CLI help, every step name, an in-process
+  ingest using the working pin copy while the tracked file's hash is
+  unchanged, `all` running one process per step and stopping at a failure,
+  default seasons, and the `python -m ffml.data.refresh` result line. In
+  `tests/data/test_ingest.py`: the new pin default and the explicit re-pin.
+  The late-schema-change tests are unchanged and pass.
+- `ruff check ffml/data/ ffml/config.py ffml/cli.py scripts/ tests/data/`:
+  All checks passed.
+- From the installed CLI: `ffml refresh --help` exits 0;
+  `ffml refresh --step predict` raises
+  `RefreshError: step 'predict' is refused: live predictions need an
+  approved model (D-099, D-100) ...`.

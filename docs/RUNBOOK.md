@@ -33,7 +33,7 @@ of it.
 | --- | --- | --- |
 | Weekly runner | `scripts/livetest_week.py` | `run`, `watchdog`, `check`, `plan`, `status`, `verify`, `init` |
 | Shared machinery | `scripts/livetest_core.py` | week plan, commitment re-hash, pin check, commitments repo, GitHub record, fingerprints |
-| Refresh driver | `scripts/refresh_data.py` | `ingest`, `sleeper`, `process`, `validate`, `features`, one step per process |
+| Refresh driver | `python -m ffml.data.refresh` (also `ffml refresh --step`, `scripts/refresh_data.py`) | `ingest`, `sleeper`, `process`, `validate`, `features`, one step per process; the runner uses the pinned interpreter |
 | Build | `ffml livetest build-week --season S --week W [--rehearsal]` | ML Engineer: refit, calibrate, predict privately, write `commitment.json` |
 | Build stub | `scripts/livetest_stub_build.py` | the same contract with no model output (tests and machinery rehearsals) |
 | Pinned code | `scripts/livetest_setup_worktree.py` | worktree at the pre-registered commit with its own venv |
@@ -49,7 +49,7 @@ Files written under `data/`. None of them is in git.
 | `data/livetest/runner/{S}w{WW}/` | `state.json`, `push_record.json` (push result and GitHub's record), `verify.json`, `MISSED.json` |
 | `data/livetest/logs/*.jsonl` | one log per run (every step, exit code, alert) and validation reports |
 | `data/livetest/schedule_plan.json` | the plan the tasks were registered from (used by the drift check) |
-| `data/livetest/schema_pins/expected_schemas.json` | schema pins used by refresh ingests, so the code checkout is never modified |
+| `data/schema_pins/expected_schemas.json` | working copy of the schema pins; every ingest reads and updates it, so the tracked `ffml/data/schemas/expected_schemas.json` (and a pinned checkout) stays clean unless `FFML_UPDATE_SCHEMA_PIN=1` asks for a deliberate re-pin |
 | `data/alerts/alerts.jsonl` | every alert, with the outcome of each channel |
 
 The commitments branch `livetest-2026` is an orphan branch, with no history
@@ -158,7 +158,7 @@ real times appear.
 | --- | --- |
 | K - 12 h | the runner's window opens (earlier runs exit 0 "too early") |
 | K - 9 h | scheduled run starts, then repeats every 30 min |
-| run | 1. refresh: ingest all seasons, Sleeper map (once per day), process, validate, features |
+| run | 1. refresh with the pinned interpreter (`python -m ffml.data.refresh`, one step per process): ingest of all seasons 2016 through the current one, Sleeper map (once per day), process, validate, features |
 | run | 2. `ffml livetest build-week` from the pinned worktree |
 | run | 3. verify the commitment (hashes, digest, season/week, `created_at` < K, pinned commit, clean tree) |
 | run | 4. commit to `livetest-2026` and push that branch only |
@@ -275,8 +275,11 @@ git -C ..\ffml-livetest-code status --porcelain --untracked-files=all
 ..\ffml-livetest-code\.venv\Scripts\python -c "import ffml; print(ffml.__file__)"
 ```
 
-Never edit, check out or `pip install` anything in the pinned worktree. If
-the pre-registration changes, that is a new decision:
+Never edit, check out or `pip install` anything in the pinned worktree, and
+never run an ingest with `FFML_UPDATE_SCHEMA_PIN=1` from it: that writes the
+tracked pin file and makes the tree dirty. A routine ingest writes new
+columns to `data/schema_pins/expected_schemas.json` instead. If the
+pre-registration changes, that is a new decision:
 1. `git worktree remove ..\ffml-livetest-code`;
 2. set up again;
 3. `init --force`.
@@ -342,6 +345,7 @@ says `on_time: false` and an alert is raised.
 Useful one-off commands:
 
 ```powershell
+.venv\Scripts\ffml refresh --step all                               # the five refresh steps, one child process each
 .venv\Scripts\python scripts\livetest_week.py plan                  # the week plan and trigger times
 .venv\Scripts\python scripts\livetest_week.py watchdog --season 2026 --week 10
 .venv\Scripts\python scripts\alert.py tail -n 20
