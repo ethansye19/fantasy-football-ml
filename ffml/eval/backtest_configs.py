@@ -27,6 +27,17 @@
 ``frozen_dryrun_2024``
     The same mechanics on 2024 weeks 1-3 with calibrators frozen on 2022-2023,
     whose manifest is passed to ``run_backtest(frozen_manifest=...)``.
+``livetest_comparators`` (the live test's comparators, D-110)
+    The five baselines and the direct challenger per scoring (information
+    only), no chain; seasons 2021 through the season after the forward
+    season (2027), weeks 1-18, refit every week, online v3 calibration
+    warmed from 2021 exactly as ``default``; reported seasons are the two
+    live seasons; purpose ``livetest_score`` for every read; one process.
+    The harness schedules only weeks that have final games in the actuals
+    (``build_schedule``) and skips written parts, so the run is extended one
+    week at a time by ``ffml.eval.livetest_score`` after each scored week is
+    final; the online calibration is recomputed at every combine from the
+    same prefix of rows, so earlier calibrated rows do not change.
 """
 
 from __future__ import annotations
@@ -45,6 +56,9 @@ SCORINGS: tuple[str, ...] = ("ppr", "half", "std")
 HOLDOUT_SEASON: int = get_settings().holdout_season
 FORWARD_SEASON: int = HOLDOUT_SEASON + 1
 CHAIN_CONFIGS: tuple[str, ...] = ("primary", "final_report")
+#: live-test seasons: calibration warm-up from 2021 through the second live season (D-110)
+LIVETEST_SEASONS: tuple[int, ...] = tuple(range(2021, FORWARD_SEASON + 2))
+LIVETEST_REPORT_SEASONS: tuple[int, ...] = (FORWARD_SEASON, FORWARD_SEASON + 1)
 
 
 def baseline_models(purpose: str = "backtest") -> list[Any]:
@@ -220,6 +234,21 @@ CONFIGS: dict[str, BacktestConfig] = {
         calibration="frozen",
         strict_models=True,
         description="forward check, the season after the holdout, weeks 1-7, FIXED frozen calibration",
+    ),
+    # ---- live-test comparators (D-110; extended week by week by ffml.eval.livetest_score) ---- #
+    "livetest_comparators": BacktestConfig(
+        name="livetest_comparators",
+        seasons=LIVETEST_SEASONS,
+        weeks=tuple(range(1, 19)),
+        report_seasons=LIVETEST_REPORT_SEASONS,
+        refit_every=1,
+        include_chain=False,
+        n_jobs=1,
+        purpose="livetest_score",
+        calibration="online",
+        strict_models=True,
+        description="live-test comparators: five baselines and the challenger per scoring, online v3 "
+        "calibration warmed from 2021, weeks scheduled only where final games exist, resumable parts",
     ),
     "frozen_dryrun_2024": BacktestConfig(
         name="frozen_dryrun_2024",

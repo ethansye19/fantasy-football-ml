@@ -610,12 +610,114 @@ def week_frame(raw_rows: pl.DataFrame, cal_rows: pl.DataFrame, season: int, week
     return outcomes(both, season)
 
 
-def baseline_rows(run: str | Path, season: int, week: int) -> pl.DataFrame:  # pragma: no cover - reads a run
-    from ffml.eval.harness import load_backtest, resolve_run_dir
+COMPARATORS_CONFIG = "livetest_comparators"
+COMPARATORS_RUN = "livetest_comparators"  # data/backtests/livetest_comparators
+COMPARATOR_LABELS: tuple[str, ...] = tuple(b + RB.CAL for b in H.LINE_BASELINES)
 
-    frame = load_backtest(resolve_run_dir(run), SCORING, report_only=False)
-    want = [*RB.BASELINES, *[b + RB.CAL for b in RB.BASELINES]]
-    return frame.filter((pl.col("season") == season) & (pl.col("week") == week) & pl.col("model").is_in(want))
+
+def comparators_run_dir(run: str | Path | None = None) -> Path:
+    from ffml.eval.harness import resolve_run_dir
+
+    return resolve_run_dir(run or COMPARATORS_RUN)
+
+
+def baseline_rows(run: str | Path, season: int, week: int) -> pl.DataFrame:
+    """The comparators run's rows for one week: baselines and the challenger, raw and calibrated, PPR."""
+    from ffml.eval.harness import PREDICTIONS
+
+    path = comparators_run_dir(run) / PREDICTIONS
+    if not path.is_file():
+        return pl.DataFrame()
+    frame = pl.read_parquet(path)
+    if "scoring" in frame.columns:
+        frame = frame.filter(pl.col("scoring") == SCORING)
+    keep = ~pl.col("model").str.starts_with("chain")
+    return frame.filter((pl.col("season") == season) & (pl.col("week") == week) & keep)
+
+
+def comparators_available(run: str | Path | None, season: int, week: int) -> bool:
+    """True when the run holds the three line baselines' calibrated rows for the week."""
+    rows = baseline_rows(run or COMPARATORS_RUN, season, week)
+    present = set(rows["model"].unique().to_list()) if rows.height else set()
+    return all(label in present for label in COMPARATOR_LABELS)
+
+
+def final_pairs(dim_game: pl.DataFrame) -> tuple[set[tuple[int, int]], set[int]]:
+    """``(weeks fully final, seasons covered)`` from ``dim_game`` (regular season)."""
+    g = dim_game.filter(pl.col("game_type") == "REG") if "game_type" in dim_game.columns else dim_game
+    if "status" in g.columns:
+        done = (pl.col("status").cast(pl.String).str.to_lowercase() == "final").fill_null(False)
+    else:
+        done = pl.col("result").is_not_null()
+    agg = g.with_columns(done.alias("_f")).group_by("season", "week").agg(pl.len().alias("n"), pl.col("_f").sum().alias("f"))
+    pairs = {(int(s), int(w)) for s, w, n, f in agg.rows() if n > 0 and n == f}
+    return pairs, {int(x) for x in g["season"].unique().to_list()}
+
+
+def final_week_filter(actuals: pl.DataFrame, dim_game: pl.DataFrame, upto: tuple[int, int]) -> pl.DataFrame:
+    """Actual rows of weeks that are fully final in ``dim_game`` and not after ``upto``.
+
+    Seasons that ``dim_game`` does not cover are kept whole (history). This is
+    what the comparators run is scheduled from, so a partially final week can
+    never enter the baselines' history, and the schedule ends at the week
+    being scored (later weeks are added when their turn comes).
+    """
+    pairs, seasons = final_pairs(dim_game)
+    s, w = upto
+    key = pl.col("season") * 100 + pl.col("week")
+    ok = pl.struct("season", "week").map_elements(
+        lambda r: int(r["season"]) not in seasons or (int(r["season"]), int(r["week"])) in pairs,
+        return_dtype=pl.Boolean)
+    return actuals.filter(ok & (key <= s * 100 + w))
+
+
+def earlier_weeks_not_final(dim_game: pl.DataFrame, season: int, week: int) -> list[str]:
+    pairs, _ = final_pairs(dim_game)
+    g = dim_game.filter(pl.col("game_type") == "REG") if "game_type" in dim_game.columns else dim_game
+    all_pairs = {(int(s), int(w)) for s, w in g.select("season", "week").unique().rows()}
+    return [week_key(s, w) for s, w in sorted(all_pairs) if (s, w) < (season, week) and (s, w) not in pairs]
+
+
+def run_comparators(actuals: pl.DataFrame, run_id: str = COMPARATORS_RUN) -> Path:  # pragma: no cover - heavy
+    """Run or extend the ``livetest_comparators`` configuration from the given actuals (its only schedule input)."""
+    from ffml.eval.backtest_configs import get_config
+    from ffml.eval.harness import run_walk_forward
+
+    cfg = get_config(COMPARATORS_CONFIG)
+    return run_walk_forward(cfg.build_models(), cfg.seasons, cfg.weeks, cfg.scorings, cfg.refit_every, run_id,
+                            cfg.purpose, report_seasons=cfg.report_seasons, config_name=cfg.name,
+                            calibration=cfg.calibration, actuals=actuals)
+
+
+def load_actuals(season: int) -> pl.DataFrame:  # pragma: no cover - reads data
+    from ffml.scoring.actuals import actual_statlines
+
+    return actual_statlines(range(int(get_settings().first_season), season + 1), PURPOSE)
+
+
+def ensure_comparators(season: int, week: int, dim_game: pl.DataFrame, *, run: str | Path | None = None,
+                       runner: Callable[[pl.DataFrame, str], Path] = run_comparators,
+                       actuals_fn: Callable[[int], pl.DataFrame] = load_actuals) -> pl.DataFrame:
+    """The comparators' rows for the week; runs or extends ``livetest_comparators`` when they are missing.
+
+    Refuses when an earlier regular-season week is not fully final (its
+    outcomes would enter the baselines' history incomplete and the written
+    parts are never recomputed) or when the week itself is not final.
+    """
+    run_id = str(run or COMPARATORS_RUN)
+    if comparators_available(run_id, season, week):
+        return baseline_rows(run_id, season, week)
+    pending = earlier_weeks_not_final(dim_game, season, week)
+    if pending:
+        raise ScoreRefused(f"comparators cannot be extended to {week_key(season, week)}: earlier weeks not final "
+                           f"in dim_game: {pending[:6]}")
+    if not week_status(dim_game, season, week).is_final:
+        raise ScoreRefused(f"comparators cannot be extended: {week_key(season, week)} is not final in dim_game")
+    actuals = final_week_filter(actuals_fn(season), dim_game, (season, week))
+    runner(actuals, run_id)
+    if not comparators_available(run_id, season, week):
+        raise ScoreRefused(f"the comparators run holds no calibrated rows for {week_key(season, week)} after extension")
+    return baseline_rows(run_id, season, week)
 
 
 def consensus_rows(season: int, week: int) -> pl.DataFrame:  # pragma: no cover - restricted data
@@ -1030,7 +1132,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     ap.add_argument("--worktree", default=str(DEFAULT_WORKTREE), help=f"commitments worktree (else git show origin/{BRANCH})")
     ap.add_argument("--no-worktree", action="store_true", help="read the branch with git show only")
     ap.add_argument("--push-record", default=None, help="runner push_record.json (default data/livetest/runner/<week>/)")
-    ap.add_argument("--baselines-run", default=None, help="harness run holding the baselines' calibrated rows for the week")
+    ap.add_argument("--baselines-run", default=COMPARATORS_RUN,
+                    help="harness run with the comparators' calibrated rows (default data/backtests/livetest_comparators; "
+                         "run or extended by the livetest_comparators config when the week is missing)")
+    ap.add_argument("--no-comparators", action="store_true", help="score without L01-L12 comparators")
     ap.add_argument("--no-consensus", action="store_true")
     ap.add_argument("--allow-rehearsal", action="store_true", help="score a rehearsal commitment (information only)")
     ap.add_argument("--prereg", default=None)
@@ -1056,7 +1161,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     season, week = parse_week(args.week)
     rec_path = Path(args.push_record) if args.push_record else default_push_record(season, week)
     push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
-    baselines = baseline_rows(args.baselines_run, season, week) if args.baselines_run else None
+    dim_game = load_dim_game([season])
+    baselines = None
+    if not args.no_comparators:
+        try:
+            baselines = ensure_comparators(season, week, dim_game, run=args.baselines_run)
+        except ScoreRefused as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 3
     consensus = None
     if not args.no_consensus:
         try:
@@ -1064,7 +1176,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
         except Exception as exc:  # noqa: BLE001 - the weekly report says the lines are unavailable
             print(f"consensus unavailable: {exc}", file=sys.stderr)
     try:
-        rec, out = score_week(season, week, source=source, dim_game=load_dim_game([season]), push_record=push_record,
+        rec, out = score_week(season, week, source=source, dim_game=dim_game, push_record=push_record,
                               roots=[PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines,
                               consensus=consensus, prereg=prereg, allow_rehearsal=args.allow_rehearsal,
                               dim_game_id=dim_game_snapshot_id())
