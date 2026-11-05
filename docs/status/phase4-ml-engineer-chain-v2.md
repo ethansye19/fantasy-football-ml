@@ -338,3 +338,25 @@ Commits: 2cb9813 (chain_v2 definition), 8bb2ac8 (rehearsal sandbox and
 calibrator in `run_predict`), d24a43a (`ffml livetest build-week`), 56d2d77
 (`head_moved`), 7075790 (logical-root paths), b22973f (LF pins, D-106 as-of
 cap), plus this note.
+
+## 7. ML-4.2: D-108 thread fix applied (2026-11-05)
+
+`ffml/models/chain/lgbm.py` `BASE_PARAMS["num_threads"]`: 8 -> 4, docstring
+updated. Condition of D-108 checked at 4 threads with every other input
+pinned to what produced the stored rows (`scratchpad/identity_4threads.py`,
+345.8 s, peak 4.04 GB):
+
+| Check at 4 threads | Snapshot pinned | Rows | Result |
+| --- | --- | --- | --- |
+| 2022 w6 vs `default_20261102` raw part | features 20261102T2139xx | 1,530 / 1,530 | `DataFrame.equals` True, every column |
+| 2024 w15 vs `default_20261102` | same | 1,680 / 1,680 | True |
+| 2025 w9 vs `holdout_2025` | same | 1,524 / 1,524 | True |
+| 2026 w4 vs `forward_2026` | same | 1,734 / 1,734 | True |
+| 2026 w8 walk-forward part vs the rehearsal's cached part | features 20261104T2331xx | 1,533 / 1,533 | True; parquet SHA-256 `15c4b3feb81005e6addc279a9fcff0fff716fb6824567b3b098fd2b83f9ab3a5` on both |
+| Week 9 calibrator state (same history, outcomes from processed 20261104T2330xx, cutoff 2026-11-06 01:15 UTC, same meta) | | 126,102 PIT rows both | identical without meta; SHA-256 `f3fc0518c5690873d18e81342d08ca02ba9a2699f8487b15754a7a4a7be67094` recorded and recomputed |
+
+Fits at 4 threads: 43 / 68 / 58 / 62 / 71 s (8 threads earlier: 43 / 66 /
+119 / 113 / 180 s). The Week 9 rehearsal commitment still verifies after the
+change (`ffml livetest verify`: intact; it hashes files, not code). The CI
+test `test_default_feature_lists_are_unchanged` keeps its production
+parameters (no per-test pin was needed).

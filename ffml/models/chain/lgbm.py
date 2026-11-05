@@ -4,7 +4,18 @@ Hyperparameters are fixed (no search): learning rate 0.05, at most 600
 rounds, 31 leaves and at least 100 rows per leaf for player stages (15 leaves
 and 40 rows for team and DST stages, which have about 5,000 rows), feature
 fraction 0.7 (0.5 team/DST), bagging 0.8 every round, L2 penalty 1.0, 127 bins,
-deterministic training with a fixed seed and 8 threads.
+deterministic training with a fixed seed and 4 threads.
+
+Threads (D-108): ``num_threads`` was 8 through the validation, holdout and
+forward runs. With 8 OpenMP threads on Linux (libgomp) the weighted
+cross-entropy stages were not reproducible run to run (9 of 10 repeats on a
+4-vCPU CI runner, 6 of 8 at 8 vCPUs), while 4 or 1 threads were (0 of 32).
+It is 4 since 2026-11-05: on the development machine the four stored
+identity weeks (2022 w6, 2024 w15, 2025 w9, 2026 w4) and the 2026 week 8
+walk-forward part recomputed at 4 threads are byte-identical to the rows
+produced at 8, and the Week 9 calibrator state is unchanged
+(docs/status/phase4-ml-engineer-chain-v2.md). A determinism fix, not a
+model change.
 
 Early stopping uses only rows inside the training window: the last
 ``ES_WEEKS`` regular-season weeks before the cutoff are held out, the model is
@@ -46,7 +57,7 @@ BASE_PARAMS: dict[str, Any] = {
     "bagging_freq": 1,
     "lambda_l2": 1.0,
     "max_bin": 127,
-    "num_threads": 8,
+    "num_threads": 4,
     "verbosity": -1,
     "deterministic": True,
     "force_col_wise": True,
