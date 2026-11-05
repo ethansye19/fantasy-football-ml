@@ -119,7 +119,6 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "code_worktree": "a worktree pinned at the frozen commit with FFML_DATA_DIR and FFML_ARTIFACTS_DIR set to the main checkout; data refresh runs the pinned ffml.data.refresh module (a2f2af0)"
   },
   "frozen_paths": [
-    "ffml/",
     "ffml/models/",
     "ffml/models/calibration.py",
     "ffml/models/chain_v2.py",
@@ -281,7 +280,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "pit_bounds": "player_summary.parquet carries no pos_min/pos_max; outcomes and PIT bounds are attached with the ffml.eval.harness functions (outcome_table, position_bounds, week_cutoffs) on the processed snapshot current at scoring time, as in the holdout (position extremes of earlier seasons; for 2027 weeks those include 2026); the weekly scoring JSON records that snapshot id",
     "comparators": "rules.comparators: the livetest_comparators run at the frozen commit, ref_rank for the D-077 set, the consensus archive with the holdout's matching rules"
   },
-  "path_policy": "any path not listed in allowed_paths is frozen; allowed_paths and frozen_paths are prefixes (a directory entry ends with /); a path is allowed only if it starts with an allowed prefix, and an allowed prefix under a frozen one (ffml/data/ under ffml/) is allowed; frozen_paths spells out the frozen set, it adds nothing to the rule"
+  "path_policy": "any path not listed in allowed_paths is frozen (the scorer's path_allowed returns false for it); entries are prefixes (a directory entry ends with /); a frozen prefix takes precedence over an allowed one, so frozen_paths names the frozen set explicitly and never contains a prefix of an allowed entry (everything under ffml/ is frozen except ffml/data/, ffml/eval/power.py and ffml/eval/audits/)"
 }
 ```
 
@@ -307,7 +306,9 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
 the rule; this section explains them.
 
 Frozen (no change at all): everything under `ffml/` except the allowed
-entries below, in particular `ffml/models/` (with `calibration.py`,
+entries below (`frozen_paths` lists the frozen set file by file rather than
+as `ffml/`, because the scorer gives a frozen prefix precedence over an
+allowed one), in particular `ffml/models/` (with `calibration.py`,
 `chain_v2.py` and `chain/selection.json`, where the calibrator settings,
 pins and seeds live), `ffml/features/`, `ffml/sim/`, `ffml/scoring/`,
 `ffml/holdout.py`, `ffml/cli.py`, `ffml/config.py`, `ffml/season.py`, and
