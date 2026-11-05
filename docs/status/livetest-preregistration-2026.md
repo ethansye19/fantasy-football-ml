@@ -11,8 +11,9 @@ The JSON block is the machine-readable record. An evaluator-side check in the
 style of `ffml/eval/report_holdout.py` (`load_prereg` reads the first fenced
 `json` block) verifies it against each week's commitment before any metric
 is computed; any mismatch makes that week `INVALID`. `rules_sha256` is the
-SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
-`rules` object without the `rules_sha256` key.
+SHA-256 of the canonical JSON of the `rules` object without the
+`rules_sha256` key: `json.dumps(obj, sort_keys=True, separators=(",", ":"),
+ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
 
 ```json
 {
@@ -22,13 +23,44 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
   "raw_model_label": "chain_v1",
   "candidate_scheme": "chain_v2-primary-c{season}w{week:02d}-{UTC stamp YYYYMMDDTHHMMSSZ}",
   "commit": "<frozen commit>",
-  "frozen_commit_must_include": ["a2f2af0", "6e29122", "b22973f", "d24a43a"],
-  "commit_relation": "a build, a refresh and the scorer are valid at the frozen commit X, or at a descendant Y whose `git diff --name-only X Y` touches only allowed_paths (plus docs/status/livetest-preregistration-2026.md and docs/status/livetest-changelog-2026.md); any frozen_paths change invalidates the test unless the owner rules otherwise",
+  "frozen_commit_must_include": [
+    "a2f2af0",
+    "6e29122",
+    "b22973f",
+    "d24a43a"
+  ],
+  "commit_relation": "a build, a refresh and the scorer are valid at the frozen commit X, or at a descendant Y whose `git diff --name-only X Y` touches only paths under allowed_paths (any other path is frozen); a frozen-path change invalidates the test unless the owner rules otherwise; the scorer records X, Y and the diff for every week",
   "window": {
-    "seasons": [2026, 2027],
-    "weeks": {"2026": [10, 11, 12, 13, 14, 15, 16, 17, 18], "2027": [1, 2, 3, 4, 5, 6, 7, 8, 9]},
+    "seasons": [
+      2026,
+      2027
+    ],
+    "weeks": {
+      "2026": [
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ],
+      "2027": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    },
     "weeks_total": 18,
-    "verdict_after": "2027 week 9 (or the last scored week of the window)",
+    "verdict_after": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
     "weekly_scoring": "after the week's games are final, information only; a weekly report never prints a Verdict line"
   },
   "one_miss_rule": "D-106: one missed week is excluded from scoring and the window is not extended; a second missed week makes the test INVALID (not failed); a miss is a week with no valid commitment on livetest-2026 at its deadline, for a real technical failure or an offline machine, logged in {season}w{WW}/MISSED.json",
@@ -39,15 +71,28 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
     "lines_source": "ffml.eval.report_holdout.prereg_lines (lines_spec_sha256)",
     "forms": "calibrated chain_v2 rows against each comparator's calibrated form on identical player-weeks; 95% week-clustered paired bootstrap (D-078); metric seed 0",
     "applied": "once, over every scored week of the window (18 weeks, or 17 with one excluded miss)",
-    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a second miss or any failed integrity check; computed once by the Evaluator after 2027 week 9",
+    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a second miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 9's games are final in dim_game",
     "provisional_tier": "none (D-110); the app shows no approved model for the rest of 2026",
-    "rules_sha256": "d0f9d555e9122d16c87a8c7c56bbb43325ea96666bcdd5def2889052867e586a"
+    "rules_sha256": "1decb853252d5f4860a17b4cc68b8ea0269463d1caa6ef4482fbb352a6ed551f",
+    "rules_sha256_definition": "SHA-256 of the canonical JSON of this rules object without the rules_sha256 key: json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8",
+    "comparators": {
+      "run": "ffml.eval.harness run of the config livetest_comparators (ffml/eval/backtest_configs.py): the five transparent baselines plus the direct challenger (information only), no chain; online v3 calibration warmed from 2021 exactly as the default config; seasons through 2027; purpose livetest_score; resumable parts; run incrementally at scoring time at the frozen commit",
+      "rows_used": "each comparator's calibrated rows (rolling_avg_4+cal, prior_season+cal, rolling_median_8+cal; rolling_avg_3 and rolling_ew_035 reported) for the scored week",
+      "reference_ranking": "D-077 reference set computed from the same frame by ffml.eval.report_backtest.ref_rank, as in the holdout",
+      "consensus": "FantasyPros weekly consensus for 2026-2027 from the DynastyProcess archive via nflreadpy, matched with the holdout's rules (valid_for_game, same player-weeks); weeks without a consensus scrape are excluded from L13-L16 only, as week 18 was in validation, and the final report lists them"
+    }
   },
-  "deadline_rule": "the official schedule's first regular-season kickoff of the week, read from dim_game at build time (D-106); while a week's kickoff times are tentative (every game at one identical time), the runner's deadline is that time minus 24 h (D-109, scripts/livetest_core.py TENTATIVE_LEAD)",
+  "deadline_rule": "the binding deadline of a week is the earlier of (a) the first regular-season kickoff as scheduled in dim_game at build time, recorded as commitment.first_kickoff, and (b) the actual first kickoff per the final schedule; created_at and the GitHub push timestamp must precede both (D-106); while a week's kickoff times are tentative (every game at one identical time) the runner's deadline is that time minus 24 h (D-109, scripts/livetest_core.py TENTATIVE_LEAD)",
   "deadlines_utc_as_scheduled_2026-11-04": {
-    "2026w10": "2026-11-13T01:15:00Z", "2026w11": "2026-11-20T01:15:00Z", "2026w12": "2026-11-26T01:00:00Z",
-    "2026w13": "2026-12-04T01:15:00Z", "2026w14": "2026-12-11T01:15:00Z", "2026w15": "2026-12-18T01:15:00Z",
-    "2026w16": "2026-12-25T01:15:00Z", "2026w17": "2027-01-01T01:15:00Z", "2026w18": "2027-01-10T18:00:00Z (tentative: every game at one time)",
+    "2026w10": "2026-11-13T01:15:00Z",
+    "2026w11": "2026-11-20T01:15:00Z",
+    "2026w12": "2026-11-26T01:00:00Z",
+    "2026w13": "2026-12-04T01:15:00Z",
+    "2026w14": "2026-12-11T01:15:00Z",
+    "2026w15": "2026-12-18T01:15:00Z",
+    "2026w16": "2026-12-25T01:15:00Z",
+    "2026w17": "2027-01-01T01:15:00Z",
+    "2026w18": "2027-01-10T18:00:00Z (tentative: every game at one time)",
     "2027w01-09": "unknown until the 2027 schedule is published (May 2027); read from dim_game at build time"
   },
   "build": {
@@ -55,29 +100,65 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
     "timing": "D-109: window opens K-25h, first run K-24h15m, retries every 30 min, build cutoff K-30m, push deadline K-5m; K = the deadline above",
     "rows_as_of": "min(build start time, first kickoff)",
     "cutoff": "the week's first kickoff (game-derived features); training and calibration use only weeks before W whose games are final",
-    "exit_codes": {"0": "committed", "1": "failure", "2": "blocked (approval gate, or week not in dim_game)", "3": "at or after first kickoff", "4": "week already committed"},
+    "exit_codes": {
+      "0": "committed",
+      "1": "failure",
+      "2": "blocked (approval gate, or week not in dim_game)",
+      "3": "at or after first kickoff",
+      "4": "week already committed"
+    },
     "commitment": "data/livetest/{season}w{week:02d}/commitment.json",
     "digest": "SHA-256 of the canonical JSON (sorted keys, separators , and :) of every top-level field except digest",
     "branch": "livetest-2026",
-    "pushed_files": ["{season}w{WW}/commitment.json", "{season}w{WW}/player_summary.parquet (copy, when under 5 MB)"],
+    "pushed_files": [
+      "{season}w{WW}/commitment.json",
+      "{season}w{WW}/player_summary.parquet (copy, when under 5 MB)"
+    ],
     "external_timestamp": "GitHub push record: repos/{owner}/{repo}/activity?ref=refs/heads/livetest-2026, push_activity.timestamp",
     "one_commitment_per_week": true,
     "code_worktree": "a worktree pinned at the frozen commit with FFML_DATA_DIR and FFML_ARTIFACTS_DIR set to the main checkout; data refresh runs the pinned ffml.data.refresh module (a2f2af0)"
   },
   "frozen_paths": [
-    "ffml/models/", "ffml/features/", "ffml/sim/", "ffml/scoring/",
-    "ffml/eval/metrics.py", "ffml/eval/report_backtest.py", "ffml/eval/report_holdout.py",
-    "ffml/holdout.py", "ffml/models/chain/selection.json",
-    "tests/fixtures/features/feature_manifest_0.2.0.json",
-    "calibrator settings (ffml/models/calibration.py defaults, ffml/models/chain_v2.py pins)", "seeds"
+    "ffml/",
+    "ffml/models/",
+    "ffml/models/calibration.py",
+    "ffml/models/chain_v2.py",
+    "ffml/models/chain/selection.json",
+    "ffml/features/",
+    "ffml/sim/",
+    "ffml/scoring/",
+    "ffml/eval/livetest_score.py",
+    "ffml/eval/harness.py",
+    "ffml/eval/backtest_configs.py",
+    "ffml/eval/ecr_baseline.py",
+    "ffml/eval/metrics.py",
+    "ffml/eval/report_backtest.py",
+    "ffml/eval/report_holdout.py",
+    "ffml/holdout.py",
+    "ffml/cli.py",
+    "ffml/config.py",
+    "ffml/season.py",
+    "pyproject.toml",
+    "requirements.lock.txt",
+    "tests/fixtures/features/feature_manifest_0.2.0.json"
   ],
   "allowed_paths": {
-    "ffml/data/": "fixes for upstream nflverse or Sleeper schema or source changes only, each logged in docs/status/livetest-changelog-2026.md and verified by the Evaluator before use: the recomputed feature rows for every already-committed week must be byte-identical to the stored ones",
-    "scripts/": "runner, scheduler, watchdog and alert changes; logged; they do not affect commitments",
-    "api/, web/": "application changes; logged; they do not affect commitments",
-    "docs/status/livetest-preregistration-2026.md": "the commit field at the freeze only",
-    "docs/status/livetest-changelog-2026.md": "the change log itself",
-    "other docs/, reports/": "documentation and evaluator reports"
+    "ffml/data/": "logged in docs/status/livetest-changelog-2026.md before first use; upstream nflverse or Sleeper schema or source fixes only; the recomputed feature rows for every already-committed week must be byte-identical to the stored ones, verified by the Evaluator before first use",
+    "ffml/eval/power.py": "logged in docs/status/livetest-changelog-2026.md before first use; Evaluator power estimates; no effect on commitments or scoring",
+    "ffml/eval/audits/": "logged in docs/status/livetest-changelog-2026.md before first use; Evaluator audits; no effect on commitments or scoring",
+    "tests/": "logged in docs/status/livetest-changelog-2026.md before first use; tests only (the pinned manifest file under tests/fixtures/features/ is frozen)",
+    ".github/": "logged in docs/status/livetest-changelog-2026.md before first use; CI and watchdog workflows; no effect on commitments",
+    "scripts/": "logged in docs/status/livetest-changelog-2026.md before first use; runner, scheduler, watchdog, alerts; no effect on commitments",
+    "api/": "logged in docs/status/livetest-changelog-2026.md before first use; application; no effect on commitments",
+    "web/": "logged in docs/status/livetest-changelog-2026.md before first use; application; no effect on commitments",
+    "docs/": "logged in docs/status/livetest-changelog-2026.md before first use; documentation; the pre-registration itself changes only in its commit field at the freeze",
+    "reports/": "logged in docs/status/livetest-changelog-2026.md before first use; evaluator reports",
+    "README.md": "logged in docs/status/livetest-changelog-2026.md before first use; documentation",
+    ".env.example": "logged in docs/status/livetest-changelog-2026.md before first use; documentation of settings; no effect on commitments",
+    ".dockerignore": "logged in docs/status/livetest-changelog-2026.md before first use; packaging; no effect on commitments",
+    "docker-compose.yml": "logged in docs/status/livetest-changelog-2026.md before first use; deployment; no effect on commitments",
+    "Dockerfile.api": "logged in docs/status/livetest-changelog-2026.md before first use; deployment; no effect on commitments",
+    "Dockerfile.web": "logged in docs/status/livetest-changelog-2026.md before first use; deployment; no effect on commitments"
   },
   "pins": {
     "hash_rule": "tracked text files: SHA-256 of bytes with CRLF normalized to LF; artifact and data files: SHA-256 as they are",
@@ -119,9 +200,33 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
   },
   "history_sources": {
     "stored_runs": {
-      "default_20261102": {"seasons": [2021, 2022, 2023, 2024], "weeks": "1-18", "predictions_sha256": "58d782bfb3336b569974ef1704a0482f883b4e91b2e758c6cc9ee245a52b82d7", "git": "82b4f6f"},
-      "holdout_2025": {"seasons": [2025], "weeks": "1-18", "predictions_sha256": "181c22b6407cee10342485ee568e653efee00fb0a15c45b10d7db2abc7a1609e", "git": "294aac0"},
-      "forward_2026": {"seasons": [2026], "weeks": "1-7", "predictions_sha256": "409896a4ca6622bdd26641cd4bf8292fb0cbfccfd465ca109264cf02f5664902", "git": "294aac0"}
+      "default_20261102": {
+        "seasons": [
+          2021,
+          2022,
+          2023,
+          2024
+        ],
+        "weeks": "1-18",
+        "predictions_sha256": "58d782bfb3336b569974ef1704a0482f883b4e91b2e758c6cc9ee245a52b82d7",
+        "git": "82b4f6f"
+      },
+      "holdout_2025": {
+        "seasons": [
+          2025
+        ],
+        "weeks": "1-18",
+        "predictions_sha256": "181c22b6407cee10342485ee568e653efee00fb0a15c45b10d7db2abc7a1609e",
+        "git": "294aac0"
+      },
+      "forward_2026": {
+        "seasons": [
+          2026
+        ],
+        "weeks": "1-7",
+        "predictions_sha256": "409896a4ca6622bdd26641cd4bf8292fb0cbfccfd465ca109264cf02f5664902",
+        "git": "294aac0"
+      }
     },
     "stored_parts": {
       "paths": "data/backtests/<run>/parts/chain_v1/<season>_wNN.parquet",
@@ -137,7 +242,12 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
     },
     "outcomes": "ffml.eval.harness outcome_table, position_bounds, week_cutoffs on the latest processed data at build time"
   },
-  "labels": {"environment": "private_test", "approval_status": "not approved", "label": "not approved", "store": "data/predictions_private (never the public store; never shown in the app, D-099)"},
+  "labels": {
+    "environment": "private_test",
+    "approval_status": "not approved",
+    "label": "not approved",
+    "store": "data/predictions_private (never the public store; never shown in the app, D-099)"
+  },
   "missed_weeks": {
     "allowed": 1,
     "first_miss": "excluded from scoring; the window is not extended; the lower pass rate of a seventeen-week test is reported",
@@ -150,10 +260,28 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
   "metric_seed": 0,
   "scoring": {
     "when": "weekly, only after every regular-season game of the week is final in dim_game; information only",
-    "verdict": "once, by the Evaluator, after 2027 week 9",
-    "reads": ["livetest-2026:{season}w{WW}/commitment.json", "livetest-2026:{season}w{WW}/player_summary.parquet when present, else the local file the commitment lists (same SHA-256)", "actuals from ffml.scoring.actuals on the latest processed data"],
-    "verifies": ["digest", "every listed file hash (outputs and calibration_history.sources)", "created_at before first_kickoff", "GitHub push_activity.timestamp before the deadline", "code.commit at the frozen commit or an allowed descendant", "pins equal this block", "model_version matches the scheme and the week", "calibrator_state.history_last == the week before", "labels not approved / private_test", "the change log covers every descendant commit used"]
-  }
+    "verdict": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
+    "reads": [
+      "livetest-2026:{season}w{WW}/commitment.json",
+      "livetest-2026:{season}w{WW}/player_summary.parquet when present, else the local file the commitment lists (same SHA-256)",
+      "actuals from ffml.scoring.actuals on the latest processed data"
+    ],
+    "verifies": [
+      "digest",
+      "every listed file hash (outputs and calibration_history.sources)",
+      "created_at before the binding deadline (the earlier of commitment.first_kickoff and the final schedule's actual first kickoff)",
+      "GitHub push_activity.timestamp before the binding deadline",
+      "code.commit at the frozen commit or an allowed descendant (X, Y and the diff recorded)",
+      "pins equal this block",
+      "model_version matches the scheme and the week",
+      "calibrator_state.history_last == the week before",
+      "labels not approved / private_test",
+      "the change log covers every descendant commit used"
+    ],
+    "pit_bounds": "player_summary.parquet carries no pos_min/pos_max; outcomes and PIT bounds are attached with the ffml.eval.harness functions (outcome_table, position_bounds, week_cutoffs) on the processed snapshot current at scoring time, as in the holdout (position extremes of earlier seasons; for 2027 weeks those include 2026); the weekly scoring JSON records that snapshot id",
+    "comparators": "rules.comparators: the livetest_comparators run at the frozen commit, ref_rank for the D-077 set, the consensus archive with the holdout's matching rules"
+  },
+  "path_policy": "any path not listed in allowed_paths is frozen; allowed_paths and frozen_paths are prefixes (a directory entry ends with /); a path is allowed only if it starts with an allowed prefix, and an allowed prefix under a frozen one (ffml/data/ under ffml/) is allowed; frozen_paths spells out the frozen set, it adds nothing to the rule"
 }
 ```
 
@@ -175,29 +303,41 @@ SHA-256 of the canonical JSON (sorted keys, separators `,` and `:`) of the
 
 ## Frozen code policy for the window (2026-11 to 2027-11)
 
-Frozen, no change at all: `ffml/models/`, `ffml/features/`, `ffml/sim/`,
-`ffml/scoring/`, `ffml/eval/metrics.py`, `ffml/eval/report_backtest.py`,
-`ffml/eval/report_holdout.py`, `ffml/holdout.py`, `selection.json`, the
-features manifest, the calibrator settings and every seed. A change on a
-frozen path invalidates the test unless the owner rules otherwise.
+**Any path not listed as allowed is frozen.** The lists in the JSON block are
+the rule; this section explains them.
 
-Allowed, each entry logged in `docs/status/livetest-changelog-2026.md`
-(date, commit, paths, reason, who verified) and verified by the Evaluator
-before the first build that uses it:
+Frozen (no change at all): everything under `ffml/` except the allowed
+entries below, in particular `ffml/models/` (with `calibration.py`,
+`chain_v2.py` and `chain/selection.json`, where the calibrator settings,
+pins and seeds live), `ffml/features/`, `ffml/sim/`, `ffml/scoring/`,
+`ffml/holdout.py`, `ffml/cli.py`, `ffml/config.py`, `ffml/season.py`, and
+in `ffml/eval/` the scorer `livetest_score.py`, `harness.py`,
+`backtest_configs.py`, `ecr_baseline.py`, `metrics.py`,
+`report_backtest.py` and `report_holdout.py`; plus `pyproject.toml`,
+`requirements.lock.txt` and the features manifest pin
+`tests/fixtures/features/feature_manifest_0.2.0.json`. A change on a frozen
+path invalidates the test unless the owner rules otherwise.
 
-- `ffml/data/` fixes for upstream nflverse or Sleeper schema or source
-  changes, only if the recomputed feature rows for every already-committed
-  week are byte-identical to the stored ones (the check and its result go in
-  the log entry);
-- `scripts/`, `api/`, `web/` changes; they do not affect commitments;
-- documentation and evaluator reports.
+Allowed, one path per entry, each change logged in
+`docs/status/livetest-changelog-2026.md` (date, commit, paths, reason,
+verification, who verified, first week that uses it) before its first use:
+
+- `ffml/data/`: upstream nflverse or Sleeper schema or source fixes only,
+  and only if the recomputed feature rows for every already-committed week
+  are byte-identical to the stored ones, verified by the Evaluator before
+  first use;
+- `ffml/eval/power.py` and `ffml/eval/audits/`: Evaluator estimates and
+  audits; no effect on commitments or scoring;
+- `tests/`, `.github/`, `scripts/`, `api/`, `web/`, `docs/`, `reports/`,
+  `README.md`, `.env.example`, `.dockerignore`, `docker-compose.yml`,
+  `Dockerfile.api`, `Dockerfile.web`: no effect on commitments; the
+  pre-registration itself changes only in its commit field at the freeze.
 
 Commit relation, as for the holdout: a build, a data refresh or the scorer
 is valid at the frozen commit X or at a descendant Y whose
-`git diff --name-only X Y` touches only allowed paths (plus this file's
-commit field and the change log). The scorer records X, Y and the diff for
-every week; a diff that reaches a frozen path makes the week INVALID and
-stops the test pending the owner's ruling.
+`git diff --name-only X Y` touches only allowed paths. The scorer records
+X, Y and the diff for every week; a diff that reaches any other path makes
+the week INVALID and stops the test pending the owner's ruling.
 
 ## Candidate per week
 
@@ -242,12 +382,30 @@ identical player-weeks, 95% week-clustered paired bootstrap intervals
 (D-078), metric seed 0, bootstrap seed 0, 500 draws. Weekly scoring after a
 week's games are final is information only and never prints a verdict line.
 `Verdict: APPROVED` (all 22 lines pass over the scored weeks) or
-`Verdict: NOT APPROVED` is computed once, by the Evaluator, after 2027
-week 9; `Verdict: INVALID (<reason>)` on a second miss or a failed integrity
-check. Recorded before the freeze: the Evaluator's estimate for this design
-is a good-model pass rate of 0.557 (variance-corrected; 0.722 uncorrected)
-and 0.000 for a model with no edge, below the 70% floor that D-105 set for
-candidates; D-105 item 3 was fixed in advance and is followed as written.
+`Verdict: NOT APPROVED` is computed once, by the Evaluator, after every
+window week is final, at the earliest after 2027 week 9's games are final in
+`dim_game` (also when 2027 week 9 is the excluded miss; the scorer refuses
+the final before that); `Verdict: INVALID (<reason>)` on a second miss or a
+failed integrity check. Recorded before the freeze: the Evaluator's estimate
+for this design is a good-model pass rate of 0.557 (variance-corrected;
+0.722 uncorrected) and 0.000 for a model with no edge, below the 70% floor
+that D-105 set for candidates; D-105 item 3 was fixed in advance and is
+followed as written.
+
+**Comparators.** The baselines' calibrated rows for each scored week
+(`rolling_avg_4+cal`, `prior_season+cal`, `rolling_median_8+cal` for
+L01-L12; `rolling_avg_3` and `rolling_ew_035` reported) come from a harness
+run at the frozen commit with the config `livetest_comparators`
+(`ffml/eval/backtest_configs.py`): the five transparent baselines plus the
+direct challenger for information, no chain, online v3 calibration warmed
+from 2021 exactly as `default`, seasons through 2027, purpose
+`livetest_score`, resumable parts, run incrementally at scoring time. The
+D-077 reference ranking for L13-L16 is computed from the same frame by
+`report_backtest.ref_rank`, as in the holdout. The consensus for 2026-2027
+comes from the DynastyProcess archive via nflreadpy with the holdout's
+matching rules (`valid_for_game`, identical player-weeks); weeks without a
+consensus scrape are excluded from L13-L16 only, as week 18 was in
+validation, and the final report lists them.
 
 ## Missed weeks (D-106)
 
@@ -281,43 +439,49 @@ recomputed rows stops the test for the owner's ruling.
 
 ## Evaluator-side scoring (stub specification)
 
-The scorer is the Evaluator's; this fixes what it reads and checks.
+The scorer is `ffml/eval/livetest_score.py` (frozen with the code); this
+fixes what it reads and checks.
 
 - **When.** A week is scored only after every regular-season game of that
   week is final in `dim_game` (after the refresh that brings those finals);
   never before, and never from projections that are not on the branch.
   Weekly results are information only; no weekly report prints a `Verdict:`
-  line. The verdict is computed once, after 2027 week 9.
+  line. The final is computed once, after every window week is final, at
+  the earliest after 2027 week 9's games are final in `dim_game`, also when
+  2027 week 9 is the excluded miss; the scorer refuses the final before that.
 - **Reads.** From `livetest-2026`: `{season}w{WW}/commitment.json`, and
   `{season}w{WW}/player_summary.parquet` when present (else the local file
   the commitment lists, which must hash to the listed SHA-256). Actuals from
-  `ffml.scoring.actuals.actual_statlines` on the latest processed data,
-  scored under the `ppr`, `half` and `std` presets (`ffml/scoring`, the
-  scoring of record, D-079); outcomes and PIT bounds from the
-  `ffml.eval.harness` functions (`outcome_table`, `position_bounds`,
-  `week_cutoffs`); comparators (the three transparent baselines and, for
-  start/sit, the FantasyPros consensus under its validity rule) computed for
-  the same week on the same population, calibrated with the same
-  walk-forward method on their own history.
+  `ffml.scoring.actuals.actual_statlines` on the processed snapshot current
+  at scoring time, scored under the `ppr`, `half` and `std` presets
+  (`ffml/scoring`, the scoring of record, D-079). `player_summary.parquet`
+  carries no `pos_min` / `pos_max`: outcomes, week cutoffs and PIT bounds are
+  attached with the `ffml.eval.harness` functions (`outcome_table`,
+  `position_bounds`, `week_cutoffs`) on that same snapshot, as in the
+  holdout (position extremes of earlier seasons; for 2027 weeks those include
+  2026), and the weekly scoring JSON records the snapshot id. Comparators and
+  the consensus as under "Rules".
 - **Verifies before any metric** (any failure: `INVALID` for the week, with
   the reason): the commitment digest (canonical JSON of every other field);
   the SHA-256 of every file in `outputs` and in
-  `calibration_history.sources`; `created_at < first_kickoff`; the GitHub
-  push record `push_activity.timestamp` before the deadline for the commit
-  that added the file (`repos/{owner}/{repo}/activity?ref=refs/heads/livetest-2026`);
-  `code.commit` at the frozen commit or an allowed descendant (X, Y and the
-  diff recorded; the change log covers every descendant used); `pins` equal
-  this block; `model_version` matches the scheme and the week;
-  `calibrator_state.history_last` is the week before and
-  `calibrator_state.calibration_version == v3-tie-aware-quantile`; the
+  `calibration_history.sources`; `created_at` and the GitHub push record
+  `push_activity.timestamp` of the commit that added the file
+  (`repos/{owner}/{repo}/activity?ref=refs/heads/livetest-2026`) both before
+  the binding deadline, the earlier of the commitment's `first_kickoff`
+  (schedule at build time) and the actual first kickoff per the final
+  schedule, both reported; `code.commit` at the frozen commit or an allowed
+  descendant (X, Y and the diff recorded; the change log covers every
+  descendant used); `pins` equal this block; `model_version` matches the
+  scheme and the week; `calibrator_state.history_last` is the week before
+  and `calibrator_state.calibration_version == v3-tie-aware-quantile`; the
   stored parts listed under `stored:` origins hash as in the stored runs
   (digest `309ca749...fa54` over those 97); labels `private_test` /
   `not approved`; the file is immutable (same blob at scoring time as at
   push time).
 - **Computes.** The 22 lines on the calibrated rows (`model == chain_v2`),
   with `metric_seed 0`, `n_boot 500`, `seed 0`, cumulatively over the scored
-  weeks after each week (information), and once over the whole window after
-  2027 week 9 (the verdict). Weekly results go to
+  weeks after each week (information), and once over the whole window for
+  the final. Weekly results go to
   `reports/evaluator_livetest_2026_{season}w{WW}.md` and a running
   `reports/evaluator_livetest_2026.md`; the final report carries the single
   `Verdict:` line. An approval is recorded through
