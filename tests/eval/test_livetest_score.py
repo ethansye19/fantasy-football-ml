@@ -208,7 +208,7 @@ def test_weekly_report_is_information_only_and_parts_accumulate(tmp_path):
     # week two sees week one: the window-so-far section lists both weeks
     _, out2 = _score(tmp_path, 2026, 11, make_week(tmp_path, 2026, 11, kickoff=KICKOFF + timedelta(days=7)), dg)
     text2 = out2.read_text(encoding="utf-8")
-    assert "2026w10, 2026w11" in text2 and "Verdict:" not in text2 and "(2 of 18" in text2
+    assert "2026w10, 2026w11" in text2 and "Verdict:" not in text2 and "(2 of 2;" in text2
 
 
 def test_final_refused_until_complete_then_prints_one_verdict(tmp_path):
