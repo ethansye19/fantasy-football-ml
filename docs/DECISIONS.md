@@ -104,6 +104,9 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-102 | 2026-11-04 | accepted | API summaries are conditional on active; lineup values use the unconditional mean; trade value is max(0, ROS mean - replacement) |
 | D-103 | 2026-11-04 | accepted | Rest-of-season totals include the run week by default |
 | D-104 | 2026-11-04 | accepted | QB boom/bust is low confidence alongside K and DST until a live test shows otherwise; the set is read from the run manifest, default {QB, K, DST} |
+| D-105 | 2026-11-05 | accepted (owner) | Live-test rules resized to 9 weeks, chosen by pre-set limits (corrected estimates: no-edge pass <= 10%, good-model pass >= 70%, lowest false approval, simpler if close); pass = provisional approval; 22 rules still reported through 2027 w9 |
+| D-106 | 2026-11-05 | accepted (owner) | One missed week excluded without extension, a second makes the test INVALID; deadline = official first kickoff; runs start 24 h early; misses logged with reason |
+| D-107 | 2026-11-05 | accepted (owner) | Logged-off scheduled tasks with least privilege plus a GitHub watchdog at 6 h and 1 h; AC power, wake, catch-up; logged-off dry run on a test branch before Week 10 |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -731,6 +734,61 @@ confidence, as it already does for K and DST (D-089). The API reads
 `low_confidence_positions` from the run manifest when present and otherwise
 uses {QB, K, DST}. The model card discloses it.
 
+## D-105 to D-107 Live-test design, missed weeks, operations (owner, 2026-11-05)
+
+Decided after the owner saw the Evaluator's pass-probability estimate
+(reports/evaluator_live_test_power_2026w10-18.md): under the 22 lines as
+written, a well-calibrated model with the validated accuracy passes 2026
+weeks 10-18 about 10% of the time (4% after the variance correction), and
+about 77% over 18 weeks; the 12 per-position "beats" lines drive the failures.
+
+**D-105 Test design: resized rules chosen by pre-set limits.** The accuracy
+lines are resized to the 9-week window; coverage and start/sit lines, the
+metrics and the D-078 bootstrap are unchanged. The choice among candidate
+rule sets is made by these limits, fixed before any candidate result was
+seen:
+
+1. Corrected estimates (the variance-corrected scenario) are used. A
+   candidate qualifies only if a model with **no edge** passes at most 10%
+   of the time and a **good** model (validated accuracy, well calibrated)
+   passes at least 70% of the time.
+2. Among qualifying candidates, the one with the lowest false-approval rate
+   is chosen; if rates are close, the simpler design.
+3. If none qualifies, the limits are not weakened: "no approved model"
+   stays for the rest of 2026, and the unchanged 22 rules are applied over
+   2026 weeks 10-18 plus 2027 weeks 1-9.
+4. A pass under a resized design means **provisionally approved**, with
+   claims limited to what the rules tested. The original 22 rules keep being
+   reported through 2027 week 9; if that longer window fails, provisional
+   approval is removed and the app returns to "no approved model".
+5. The design is frozen before the Week 10 kickoff (2026-11-13 01:15 UTC).
+   The owner sees the candidate table and the choice the limits select.
+
+**D-106 Missed weeks.** One miss is allowed: the first missed week is
+excluded from scoring and the window is not extended; a second miss makes
+the test INVALID (not failed). Each deadline is the official schedule's
+first kickoff of the week, including Thanksgiving and other early games.
+Each run starts at least 24 hours before the deadline, with retries and a
+failure alert. A miss counts only for a real technical failure or an offline
+machine, and is logged with its reason. Projections that exist are never
+withheld. With one week excluded, the frozen rules are unchanged and the
+lower pass rate of an eight-week test is reported.
+
+**D-107 Operations.** Logged-off scheduled tasks on the owner's laptop plus
+a GitHub Actions watchdog:
+- the weekly run starts at least 24 hours before first kickoff and retries
+  every 30 minutes until a valid commitment is pushed;
+- the GitHub watchdog alerts at 6 hours and at 1 hour before kickoff;
+- the task has only the permissions it needs, no administrator rights
+  without a shown reason, runs only this project's weekly job, and the
+  owner's password is stored in no file or log;
+- the task runs on AC power, wakes the laptop if allowed, and catches up
+  after a missed start; required Windows sleep or power settings are shown
+  to the owner;
+- before Week 10, a logged-off dry run on a test branch proves build, push,
+  retry, failure alert and watchdog; it does not count as a live commitment;
+- the owner runs the registration command, shown and explained first.
+
 ## Owner answers received 2026-11-01
 
 1. Node.js LTS: install with winget (D-018).
@@ -744,5 +802,4 @@ uses {QB, K, DST}. The model card discloses it.
 
 ## Open questions
 
-- Live-test design for chain_v2 (rules, window, missed weeks), to be decided
-  by the owner after the evaluator's pass-probability estimate (D-098).
+- Which candidate rule set the D-105 limits select (Evaluator report pending).
