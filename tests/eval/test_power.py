@@ -251,3 +251,73 @@ def test_simulate_shapes_and_summary(built):
     assert 0.0 <= s["all22"] <= s["cov6"] <= 1.0 and s["all22"] <= s["acc16"]
     assert len(s["per_line"]) == 22 and s["lift_if_waived"].min() >= 0.0
     assert M.RAND_PIT == "pit_rand"
+
+
+# --------------------------------------------------------------------------- #
+# D-105 candidate rule sets: pooled lines, the no-edge null, rule evaluation, selection
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_pooled_fast_path_equals_real_bundle_on_thinned_windows(built, seed):
+    src, data = built
+    picks = _picks(data, seed)
+    real = PW.real_pooled_lines(src, picks, data, n_boot=N_BOOT)
+    fast = PW.line_stats(PW.aggregate(data, picks), "A", data, n_boot=N_BOOT)
+    assert PW.compare_pooled(fast, real) < 1e-9
+
+
+def test_rulesets_sizes_and_r0_matches_the_22_lines(built):
+    _, data = built
+    sizes = {k: len(v) for k, v in PW.RULESETS.items()}
+    assert sizes == {"R0": 22, "R1": 28, "R2": 31, "R3": 34}
+    assert [ln.id for ln in PW.RULESETS["R0"]] == list(PW.LINE_IDS)
+    for seed in range(3):
+        st = PW.line_stats(PW.aggregate(data, _picks(data, seed)), "A", data, n_boot=N_BOOT)
+        assert np.array_equal(PW.evaluate_rules(st, PW.RULESETS["R0"]), st.passed)
+        # beats implies not worse: R1's per-position lines pass whenever R0's do
+        r1 = PW.evaluate_rules(st, PW.RULESETS["R1"])
+        assert np.all(r1[:12] | ~st.passed[:12])
+
+
+def test_null_shift_centres_every_week_number(built):
+    _, data = built
+    assert PW.null_residual(data) < 1e-9
+    agg = PW.aggregate(data, PW.full_picks(data))
+    st = PW.line_stats(agg, "N0", data, n_boot=N_BOOT)
+    # on the whole pool every point delta is 0: per position, pooled and start/sit
+    assert np.abs(st.acc_delta).max() < 1e-9 and np.abs(st.pool_delta).max() < 1e-9
+    assert np.nanmax(np.abs(st.ss_delta)) < 1e-9
+    a = PW.line_stats(agg, "A", data, n_boot=N_BOOT)
+    assert np.array_equal(st.cov, a.cov)  # coverage is scenario A's
+    sv = PW.line_stats(agg, "N0_vc", data, n_boot=N_BOOT)
+    assert np.abs(sv.acc_delta).max() < 1e-9  # the stretch keeps the centring
+
+
+def test_one_miss_window_scores_one_week_fewer(built):
+    _, data = built
+    w = PW.Window("t8", "t", WEEKS, (3, None, 2), drop_one=True)
+    for seed in range(5):
+        picks = PW.draw_window(data, w, np.random.default_rng(seed))
+        assert len(picks) == len(WEEKS) - 1 and len({p.week for p in picks}) == len(picks)
+
+
+def test_select_d105_limits_and_tie_break():
+    rows = [
+        {"key": "R0", "n_lines": 22, "fa": 0.001, "fa_se": 0.0004, "good": 0.04, "good_se": 0.003},
+        {"key": "R1", "n_lines": 28, "fa": 0.030, "fa_se": 0.0024, "good": 0.80, "good_se": 0.006},
+        {"key": "R2", "n_lines": 31, "fa": 0.028, "fa_se": 0.0023, "good": 0.75, "good_se": 0.006},
+        {"key": "R3", "n_lines": 34, "fa": 0.010, "fa_se": 0.0014, "good": 0.60, "good_se": 0.007},
+    ]
+    sel = PW.select_d105(rows)
+    assert sel["qualifying"] == ["R1", "R2"] and sel["close"] == ["R1", "R2"] and sel["pick"] == "R1"
+    rows[2]["fa"] = 0.010
+    assert PW.select_d105(rows)["pick"] == "R2"
+    assert PW.select_d105(rows[:1])["pick"] is None
+
+
+def test_simulate_rules_shapes(built):
+    _, data = built
+    res = PW.simulate_rules(data, TEST_WINDOW, 4)
+    assert res.passed[("A", "R1")].shape == (4, 28) and res.passed[("N0_vc", "R3")].shape == (4, 34)
+    assert (res.weeks == 3).all()

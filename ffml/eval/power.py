@@ -77,7 +77,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from ffml.config import PROJECT_ROOT, ensure_utf8
+from ffml.config import PROJECT_ROOT, ensure_utf8, get_settings
 from ffml.eval import metrics as M
 from ffml.eval import report_backtest as RB
 from ffml.eval import report_holdout as H
@@ -117,6 +117,7 @@ class Window:
     label: str
     weeks: tuple[int, ...]
     games: tuple[int | None, ...]  # target game count per week; None keeps the full slate
+    drop_one: bool = False  # D-106: one week of the window, drawn at random, is excluded from scoring
 
 
 WINDOWS: dict[str, Window] = {
@@ -135,6 +136,7 @@ class Scenario:
     acc_mode: str = "none"  # "none", "scale" or "shift" (L01-L12 only)
     k: float = 1.0
     stretch: float = 1.0  # > 1: slate deviations from their week-number mean are stretched (variance correction)
+    null: bool = False  # no edge: every accuracy and start/sit difference has mean 0 at every week number
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -269,6 +271,8 @@ class PowerData:
     u_stream: np.ndarray  # default_rng(METRIC_SEED).random(n): the live test's PIT uniforms, in row order
     pooled_delta: np.ndarray  # (len(ACC_POSITIONS), len(COMPARATORS), len(METRICS)) 2022-2024 point deltas
     week_ratio: dict[int, dict[str, np.ndarray]]  # week number -> ratio of sums over the pool slates
+    pooled_delta_all: np.ndarray = field(
+        default_factory=lambda: np.zeros((len(COMPARATORS), len(METRICS))))  # QB-TE pooled 2022-2024 deltas
 
 
 def _num_array(frame: pl.DataFrame, col: str) -> np.ndarray:
@@ -470,6 +474,9 @@ def build_power_data(src: SourceFrames, max_rows: int = 400_000) -> PowerData:
             pit_game=es["g"].to_numpy().astype(np.int64),
             pit_left=es["_left"].to_numpy(), pit_right=es["_right"].to_numpy(), ss=ss,
         )
+    for sl in slates.values():
+        if (sl.loss_n[:, :, 1:, :] != sl.loss_n[:, :, :1, :]).any():
+            raise ValueError(f"row counts differ between models in {sl.season} week {sl.week}")
     u_stream = np.random.default_rng(METRIC_SEED).random(max_rows)
     data = PowerData(slates, u_stream, np.zeros((len(ACC_POSITIONS), len(COMPARATORS), len(METRICS))), {})
     full = aggregate(data, full_picks(data))
@@ -479,6 +486,9 @@ def build_power_data(src: SourceFrames, max_rows: int = 400_000) -> PowerData:
         p = POSITIONS.index(pos)
         for ci in range(len(COMPARATORS)):
             data.pooled_delta[pi, ci] = point[p, 0] - point[p, ci + 1]
+    acc_pos = [POSITIONS.index(q) for q in ACC_POSITIONS]
+    pooled_point = s_tot[acc_pos].sum(0) / n_tot[acc_pos].sum(0)
+    data.pooled_delta_all = pooled_point[0][None, :] - pooled_point[1:]
     data.week_ratio = _week_ratios(data)
     return data
 
@@ -519,6 +529,8 @@ def draw_window(data: PowerData, window: Window, rng: np.random.Generator) -> li
             keep = np.zeros(slate.n_games, dtype=bool)
             keep[rng.choice(slate.n_games, size=target, replace=False)] = True
         picks.append(Pick(season, week, keep, target is not None and slate.n_games < target))
+    if window.drop_one:
+        picks.pop(int(rng.integers(len(picks))))
     return picks
 
 
@@ -649,6 +661,9 @@ class LineStats:
     ss_hi: np.ndarray
     cov: np.ndarray  # (len(POSITIONS),)
     passed: np.ndarray  # (22,) in LINE_IDS order
+    pool_delta: np.ndarray = field(default_factory=lambda: np.full((len(COMPARATORS), len(METRICS)), np.nan))
+    pool_lo: np.ndarray = field(default_factory=lambda: np.full((len(COMPARATORS), len(METRICS)), np.nan))
+    pool_hi: np.ndarray = field(default_factory=lambda: np.full((len(COMPARATORS), len(METRICS)), np.nan))
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -684,6 +699,32 @@ def _stretch(agg: WindowAgg, data: PowerData, lam: float) -> WindowAgg:
     return out
 
 
+def _null_shift(agg: WindowAgg, data: PowerData) -> WindowAgg:
+    """No-edge null: move every comparator's week sums so chain minus comparator has mean 0 at each week number.
+
+    Per week j with week number w, comparator m and metric x the comparator
+    loss sum becomes ``S_m + N (r_chain - r_m)`` with ``r`` the 2022-2024
+    ratio of sums at week number w (``week_ratio``); the consensus start/sit
+    concordance becomes ``conc_cons + pairs (rc_chain - rc_cons)``. Counts are
+    identical across models (checked at build time), so the per-row chain
+    minus comparator difference is shifted by its week-number mean: zero in
+    expectation for every per-position and pooled line, noise kept. Coverage
+    is untouched.
+    """
+    out = WindowAgg(**{**agg.__dict__})
+    ls = agg.loss_sum.copy()
+    conc = agg.conc.copy()
+    for j, w in enumerate(agg.weeks):
+        r = data.week_ratio[w]
+        edge = r["loss"][:, :1, :] - r["loss"][:, 1:, :]  # (P, COMPARATORS, METRICS) chain minus comparator
+        ls[j, :, 1:, :] = agg.loss_sum[j, :, 1:, :] + agg.loss_n[j, :, 1:, :] * edge
+        ss_edge = r["conc"][:, 0] - r["conc"][:, 1]
+        conc[j, :, 1] = agg.conc[j, :, 1] + agg.pairs[j] * ss_edge
+    out.loss_sum = ls
+    out.conc = conc
+    return out
+
+
 def _week_ratios(data: PowerData) -> dict[int, dict[str, np.ndarray]]:
     out: dict[int, dict[str, np.ndarray]] = {}
     for w in sorted({k[1] for k in data.slates}):
@@ -711,6 +752,10 @@ def line_stats(agg: WindowAgg, scenario: Scenario | str = "A", data: PowerData |
         if data is None:
             raise ValueError("a stretched scenario needs the PowerData week ratios")
         agg = _stretch(agg, data, sc.stretch)
+    if sc.null:
+        if data is None:
+            raise ValueError("the null scenario needs the PowerData week ratios")
+        agg = _null_shift(agg, data)
     P = len(POSITIONS)
     # main bootstrap: universe = weeks with any aligned row at the position (same for every position here)
     acc_shape = (len(ACC_POSITIONS), len(COMPARATORS), len(METRICS))
@@ -735,6 +780,24 @@ def line_stats(agg: WindowAgg, scenario: Scenario | str = "A", data: PowerData |
             diff, d = diff - shift[None], d - shift
         lo, hi = _interval(diff)
         acc_delta[pi], acc_lo[pi], acc_hi[pi] = d, lo, hi
+    # pooled QB-TE (one ratio of sums over the four positions' rows; universe = weeks with any such row)
+    acc_pos = [POSITIONS.index(q) for q in ACC_POSITIONS]
+    present = agg.main_rows[:, acc_pos].sum(1) > 0
+    C = boot_counts(int(present.sum()), n_boot)
+    S = agg.loss_sum[present][:, acc_pos].sum(1)  # (K', MODELS, METRICS)
+    N = agg.loss_n[present][:, acc_pos].sum(1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        boots = np.einsum("bk,kmx->bmx", C, S) / np.einsum("bk,kmx->bmx", C, N)
+        point = S.sum(0) / N.sum(0)
+    diff = boots[:, :1, :] - boots[:, 1:, :]
+    d = point[0][None, :] - point[1:]
+    if sc.acc_mode == "scale":
+        diff, d = sc.k * diff, sc.k * d
+    elif sc.acc_mode == "shift":
+        shift = (1.0 - sc.k) * data.pooled_delta_all
+        diff, d = diff - shift[None], d - shift
+    pool_lo, pool_hi = _interval(diff)
+    pool_delta = d
     # start/sit (consensus population; universe = weeks with consensus rows at the position)
     ss_delta, ss_lo, ss_hi = (np.full(len(ACC_POSITIONS), np.nan) for _ in range(3))
     for pi in range(len(ACC_POSITIONS)):
@@ -769,7 +832,7 @@ def line_stats(agg: WindowAgg, scenario: Scenario | str = "A", data: PowerData |
             v = cov[POSITIONS.index(line.position)]
             passed[i] = bool(not math.isnan(v) and BAND[0] <= v <= BAND[1])
     assert P == cov.size
-    return LineStats(acc_delta, acc_lo, acc_hi, ss_delta, ss_lo, ss_hi, cov, passed)
+    return LineStats(acc_delta, acc_lo, acc_hi, ss_delta, ss_lo, ss_hi, cov, passed, pool_delta, pool_lo, pool_hi)
 
 
 # --------------------------------------------------------------------------- #
@@ -1092,6 +1155,522 @@ def format_fast_cells(stats: LineStats) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
+def _holdout_season() -> int:
+    """The locked holdout season, from settings (never written as a literal here; holdout audit)."""
+    return int(get_settings().holdout_season)
+
+
+# --------------------------------------------------------------------------- #
+# Candidate rule sets (D-105): resized accuracy lines, coverage and start/sit lines unchanged
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class RuleLine:
+    """One line of a candidate rule set.
+
+    Kinds: ``pos_beats`` (every metric's interval entirely below 0),
+    ``pos_notworse`` (no metric's interval entirely above 0),
+    ``pos_mae_beats_pin_notworse`` (MAE below 0, pinball not above 0),
+    ``pool_beats`` (QB-TE rows pooled, each metric's interval below 0),
+    ``startsit`` and ``coverage`` (the pre-registered L13-L22).
+    """
+
+    id: str
+    kind: str
+    position: str  # QB, RB, WR, TE, K, DST or ALL (QB-TE pooled)
+    comparator: str | None = None
+    metrics: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        comp = f"`{self.comparator}+cal`"
+        names = ", ".join(RB.METRIC_LABEL[m] for m in self.metrics)
+        if self.kind == "pos_beats":
+            return f"{self.position} beats {comp} on {names} (every interval below 0)"
+        if self.kind == "pos_notworse":
+            return f"{self.position} not worse than {comp} on {names} (no interval above 0)"
+        if self.kind == "pos_mae_beats_pin_notworse":
+            return f"{self.position} beats {comp} on MAE and is not worse on pinball q10, q50, q90"
+        if self.kind == "pool_beats":
+            return f"QB-TE pooled beats {comp} on {names} (interval below 0)"
+        if self.kind == "startsit":
+            return f"{self.position} start/sit not worse than consensus"
+        return f"{self.position} tie-aware coverage in [0.75, 0.85]"
+
+
+PINBALL: tuple[str, ...] = ("pinball_q10", "pinball_q50", "pinball_q90")
+
+
+def rulesets() -> dict[str, tuple[RuleLine, ...]]:
+    """R0 (the 22 lines), R1, R2 and R3 as the coordinator defined them (D-105 candidates)."""
+    pairs = [(c, p) for c in H.LINE_BASELINES for p in ACC_POSITIONS]
+    r0 = [RuleLine(line.id, "pos_beats", line.position, line.comparator, METRICS)
+          for line in LINES if line.kind == "beats_baseline"]
+    pos_nw = [RuleLine(f"N{i + 1:02d}", "pos_notworse", p, c, METRICS) for i, (c, p) in enumerate(pairs)]
+    pos_m = [RuleLine(f"M{i + 1:02d}", "pos_mae_beats_pin_notworse", p, c, METRICS) for i, (c, p) in enumerate(pairs)]
+
+    def pooled(ms: Sequence[str]) -> list[RuleLine]:
+        return [RuleLine(f"G{i + 1:02d}", "pool_beats", "ALL", c, (m,))
+                for i, (c, m) in enumerate((c, m) for c in H.LINE_BASELINES for m in ms)]
+
+    tail = ([RuleLine(line.id, "startsit", line.position) for line in LINES if line.kind == "startsit_consensus"]
+            + [RuleLine(line.id, "coverage", line.position) for line in LINES if line.kind == "coverage"])
+    return {
+        "R0": tuple(r0 + tail),
+        "R1": tuple(pos_nw + pooled(("mae", "pinball_q50")) + tail),
+        "R2": tuple(pos_m + pooled(PINBALL) + tail),
+        "R3": tuple(pos_nw + pooled(METRICS) + tail),
+    }
+
+
+RULESETS: dict[str, tuple[RuleLine, ...]] = rulesets()
+RULESET_TEXT: dict[str, str] = {
+    "R0": "the 22 lines as written: per position and baseline the chain beats on MAE, pinball q10, q50 and q90",
+    "R1": "per position and baseline not worse on all four metrics (12); QB-TE pooled beats on MAE and pinball q50 (6)",
+    "R2": "per position and baseline beats on MAE and not worse on the three pinball losses (12); "
+          "QB-TE pooled beats on pinball q10, q50, q90 (9)",
+    "R3": "R1 with QB-TE pooled beats on MAE, pinball q10, q50 and q90 (12)",
+}
+
+
+def _beats(lo: float, hi: float) -> bool:
+    return bool(not np.isnan(hi) and hi < 0)
+
+
+def _not_worse(lo: float, hi: float) -> bool:
+    return bool(not np.isnan(lo) and not (lo > 0))
+
+
+def evaluate_rules(stats: LineStats, lines: Sequence[RuleLine]) -> np.ndarray:
+    """Pass/fail of every line of a rule set from one window's statistics."""
+    out = np.zeros(len(lines), dtype=bool)
+    for i, line in enumerate(lines):
+        if line.kind in ("pos_beats", "pos_notworse", "pos_mae_beats_pin_notworse"):
+            pi, ci = ACC_POSITIONS.index(line.position), H.LINE_BASELINES.index(line.comparator)
+            ok = True
+            for m in line.metrics:
+                xi = METRICS.index(m)
+                lo, hi = stats.acc_lo[pi, ci, xi], stats.acc_hi[pi, ci, xi]
+                strict = line.kind == "pos_beats" or (line.kind == "pos_mae_beats_pin_notworse" and m == "mae")
+                ok = ok and (_beats(lo, hi) if strict else _not_worse(lo, hi))
+            out[i] = ok
+        elif line.kind == "pool_beats":
+            ci = H.LINE_BASELINES.index(line.comparator)
+            out[i] = all(_beats(stats.pool_lo[ci, METRICS.index(m)], stats.pool_hi[ci, METRICS.index(m)])
+                         for m in line.metrics)
+        elif line.kind == "startsit":
+            pi = ACC_POSITIONS.index(line.position)
+            out[i] = bool(not math.isnan(stats.ss_lo[pi]) and not (stats.ss_hi[pi] < 0))
+        else:
+            v = stats.cov[POSITIONS.index(line.position)]
+            out[i] = bool(not math.isnan(v) and BAND[0] <= v <= BAND[1])
+    return out
+
+
+CANDIDATE_SCENARIOS: tuple[Scenario, ...] = (
+    SCENARIO_BY_KEY["A"],
+    SCENARIO_BY_KEY["A_vc"],
+    Scenario("N0", "no edge: A's coverage; every accuracy and start/sit difference centred on 0 at each week number",
+             "A", null=True),
+    Scenario("N0_vc", "no edge, variance-corrected (x sqrt(3/2))", "A", stretch=math.sqrt(1.5), null=True),
+)
+SCENARIO_BY_KEY.update({sc.key: sc for sc in CANDIDATE_SCENARIOS})
+
+CANDIDATE_WINDOWS: dict[str, Window] = {
+    "i": WINDOWS["i"],
+    "ii": WINDOWS["ii"],
+    "ext18": Window("ext18", "18 weeks: 2026 weeks 10-18 (2026 game counts) plus 2027 weeks 1-9 (full slates)",
+                    (*range(10, 19), *range(1, 10)), (*(GAMES_2026[w] for w in range(10, 19)), *([None] * 9))),
+    "one_miss": Window("one_miss", "weeks 10-18 minus one week drawn at random (D-106, eight weeks scored)",
+                       tuple(range(10, 19)), tuple(GAMES_2026[w] for w in range(10, 19)), drop_one=True),
+}
+#: seed index per window; i, ii and iii keep the random streams of the first report
+WINDOW_SEED_INDEX: dict[str, int] = {"i": 0, "ii": 1, "iii": 2, "ext18": 3, "one_miss": 4}
+
+
+@dataclass
+class RuleSimResult:
+    window: Window
+    n_rep: int
+    passed: dict[tuple[str, str], np.ndarray]  # (scenario, ruleset) -> (R, lines) bool
+    weeks: np.ndarray  # (R,) weeks scored
+    games: np.ndarray  # (R,) games scored
+    seconds: float = 0.0
+
+
+def simulate_rules(data: PowerData, window: Window, n_rep: int, scenarios: Sequence[Scenario] = CANDIDATE_SCENARIOS,
+                   rules: Mapping[str, Sequence[RuleLine]] = RULESETS, seed: int = SIM_SEED,
+                   progress: bool = False) -> RuleSimResult:
+    """``n_rep`` replicates of ``window``; every scenario and rule set sees the same slates and dropped games."""
+    t0 = time.time()
+    rng = np.random.default_rng([seed, WINDOW_SEED_INDEX.get(window.key, 99)])
+    res = RuleSimResult(window, n_rep, {(sc.key, rk): np.zeros((n_rep, len(lines)), dtype=bool)
+                                        for sc in scenarios for rk, lines in rules.items()},
+                        np.zeros(n_rep), np.zeros(n_rep))
+    for r in range(n_rep):
+        picks = draw_window(data, window, rng)
+        agg = aggregate(data, picks)
+        res.weeks[r] = len(picks)
+        res.games[r] = agg.games.sum()
+        for sc in scenarios:
+            st = line_stats(agg, sc, data)
+            for rk, lines in rules.items():
+                res.passed[(sc.key, rk)][r] = evaluate_rules(st, lines)
+        if progress and (r + 1) % 1000 == 0:
+            print(f"  window {window.key}: {r + 1}/{n_rep} replicates, {time.time() - t0:.0f}s", flush=True)
+    res.seconds = time.time() - t0
+    return res
+
+
+def select_d105(rows: Sequence[Mapping[str, Any]], fa_max: float = 0.10, pass_min: float = 0.70,
+                close_se: float = 2.0) -> dict[str, Any]:
+    """Apply the D-105 limits to candidate rows (``key, n_lines, fa, fa_se, good, good_se``).
+
+    Qualify: ``fa <= fa_max`` and ``good >= pass_min``. Pick the lowest
+    false-approval rate; candidates whose rate is within ``close_se`` standard
+    errors of the difference from that minimum are "close", and the one with
+    the fewest lines among them wins.
+    """
+    qual = [r for r in rows if r["fa"] <= fa_max and r["good"] >= pass_min]
+    if not qual:
+        return {"pick": None, "qualifying": [], "close": [], "reason": "no candidate qualifies"}
+    best = min(qual, key=lambda r: r["fa"])
+    close = [r for r in qual if abs(r["fa"] - best["fa"]) <= close_se * math.hypot(r["fa_se"], best["fa_se"])]
+    pick = min(close, key=lambda r: (r["n_lines"], r["fa"]))
+    if len(close) > 1:
+        reason = (f"lowest false approval is {best['key']} ({best['fa']:.3f}); "
+                  f"{', '.join(r['key'] for r in close)} are within {close_se:g} SE of it, so the simplest, "
+                  f"{pick['key']} ({pick['n_lines']} lines), is selected")
+    else:
+        reason = (f"lowest false approval is {best['key']} ({best['fa']:.3f}); no other qualifying candidate is "
+                  f"within {close_se:g} SE, so {pick['key']} is selected")
+    return {"pick": pick["key"], "qualifying": [r["key"] for r in qual], "close": [r["key"] for r in close],
+            "reason": reason}
+
+
+def real_pooled_lines(src: SourceFrames, picks: Sequence[Pick], data: PowerData, n_boot: int = N_BOOT,
+                      seed: int = BOOT_SEED, relabel: bool = True) -> dict[tuple[str, str], tuple[float, float, float]]:
+    """QB-TE pooled deltas and intervals with the real metric bundle and paired bootstrap (slow; for the check)."""
+    keys = window_keys(src, picks, data)
+    main = {m: (_relabel(src.main[m], keys, LIVE_SEASON) if relabel
+                else src.main[m].join(keys, on=list(M.KEY_COLUMNS), how="semi")) for m in MAIN_LABELS}
+    prepared = RB.prepare_frames(main)
+    frames = {m: f.filter(pl.col("position").is_in(list(ACC_POSITIONS))) for m, f in prepared.items()}
+    columns = sorted(set().union(*(set(f.columns) for f in frames.values())))
+    bundle = M.metric_bundle(columns)
+    points = {m: bundle(f) for m, f in frames.items()}
+    boots = M.paired_bundle_bootstrap(frames, bundle, n_boot, seed=seed)
+    out = {}
+    for comp in COMPARATORS:
+        for metric in METRICS:
+            d = points[FOCUS_CAL][metric] - points[comp][metric]
+            lo, hi = M.percentile_interval(boots[FOCUS_CAL][metric] - boots[comp][metric])
+            out[(comp, metric)] = (float(d), float(lo), float(hi))
+    return out
+
+
+def compare_pooled(fast: LineStats, real: Mapping[tuple[str, str], tuple[float, float, float]]) -> float:
+    worst = 0.0
+    for ci, comp in enumerate(COMPARATORS):
+        for xi, metric in enumerate(METRICS):
+            for x, y in zip((fast.pool_delta[ci, xi], fast.pool_lo[ci, xi], fast.pool_hi[ci, xi]),
+                            real[(comp, metric)], strict=True):
+                worst = max(worst, abs(x - y))
+    return worst
+
+
+def null_residual(data: PowerData) -> float:
+    """Largest |week-number sum of chain minus comparator| left after the null shift on all 54 slates."""
+    agg = _null_shift(aggregate(data, full_picks(data)), data)
+    worst = 0.0
+    for w in sorted(set(agg.weeks)):
+        j = [i for i, x in enumerate(agg.weeks) if x == w]
+        d = (agg.loss_sum[j, :, :1, :] - agg.loss_sum[j, :, 1:, :]).sum(0)
+        worst = max(worst, float(np.abs(d).max()))
+        dss = (agg.conc[j, :, 0] - agg.conc[j, :, 1]).sum(0)
+        worst = max(worst, float(np.abs(dss).max()))
+    return worst
+
+
+def _rule_summary(res: RuleSimResult, sc: str, rk: str) -> dict[str, Any]:
+    passed = res.passed[(sc, rk)]
+    p = float(passed.all(1).mean())
+    return {"p": p, "se": mc_se(p, res.n_rep), "per_line": passed.mean(0), "fail_rate": 1 - passed.mean(0),
+            "n_lines": passed.shape[1]}
+
+
+def run_candidates(n_rep: int = 5000, out_json: Path | None = None, progress: bool = True,
+                   pooled_check: bool = True) -> dict[str, Any]:  # pragma: no cover - full data
+    """D-105 candidate rule sets on the candidate windows; aggregates for the candidates report."""
+    t0 = time.time()
+    src = load_source_frames()
+    data = build_power_data(src)
+    out: dict[str, Any] = {"n_rep": n_rep, "sim_seed": SIM_SEED, "n_boot": N_BOOT, "boot_seed": BOOT_SEED,
+                           "metric_seed": METRIC_SEED,
+                           "rulesets": {rk: [{"id": ln.id, "kind": ln.kind, "position": ln.position,
+                                              "comparator": ln.comparator, "metrics": list(ln.metrics),
+                                              "text": ln.describe()} for ln in lines]
+                                        for rk, lines in RULESETS.items()}}
+    out["null_residual"] = null_residual(data)
+    if progress:
+        print(f"inputs ready in {time.time() - t0:.0f}s; null residual {out['null_residual']:.2e}", flush=True)
+    if pooled_check:
+        rng = np.random.default_rng([SIM_SEED, 8])
+        picks = draw_window(data, WINDOWS["i"], rng)
+        t = time.time()
+        real = real_pooled_lines(src, picks, data)
+        fast = line_stats(aggregate(data, picks), "A", data)
+        out["pooled_check"] = {"max_abs_diff": compare_pooled(fast, real), "seconds": time.time() - t,
+                               "slates": [f"{p.season}w{p.week}" + ("" if p.keep is None else
+                                                                     f"-{int((~p.keep).sum())}g") for p in picks]}
+        if progress:
+            print(f"pooled real check: max diff {out['pooled_check']['max_abs_diff']:.2e} "
+                  f"({out['pooled_check']['seconds']:.0f}s)", flush=True)
+    out["windows"] = {}
+    for wk, window in CANDIDATE_WINDOWS.items():
+        res = simulate_rules(data, window, n_rep, progress=progress)
+        w: dict[str, Any] = {"label": window.label, "weeks": list(window.weeks), "seconds": res.seconds,
+                             "weeks_scored_mean": res.weeks.mean(), "games_mean": res.games.mean(), "cells": {}}
+        for sc in CANDIDATE_SCENARIOS:
+            for rk in RULESETS:
+                w["cells"][f"{sc.key}|{rk}"] = _rule_summary(res, sc.key, rk)
+        out["windows"][wk] = w
+        if progress:
+            print(f"window {wk}: {res.seconds:.0f}s; " + ", ".join(
+                f"{rk} A_vc {w['cells'][f'A_vc|{rk}']['p']:.3f} N0_vc {w['cells'][f'N0_vc|{rk}']['p']:.3f}"
+                for rk in RULESETS), flush=True)
+    rows = []
+    for rk in RULESETS:
+        c = out["windows"]["i"]["cells"]
+        rows.append({"key": rk, "n_lines": len(RULESETS[rk]), "fa": c[f"N0_vc|{rk}"]["p"],
+                     "fa_se": c[f"N0_vc|{rk}"]["se"], "good": c[f"A_vc|{rk}"]["p"], "good_se": c[f"A_vc|{rk}"]["se"]})
+    out["selection"] = select_d105(rows)
+    out["selection"]["rows"] = rows
+    out["meta"] = _meta()
+    out["seconds_total"] = time.time() - t0
+    out = _jsonable(out)
+    if out_json is not None:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    return out
+
+
+CANDIDATES_REPORT_NAME = "evaluator_live_test_power_candidates"
+_CAND_SCEN = ("A", "A_vc", "N0", "N0_vc")
+
+
+def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one linear document
+    n = int(out["n_rep"])
+    W = out["windows"]
+    meta = out.get("meta", {})
+    hs = _holdout_season()
+    sel = out["selection"]
+    pick = sel["pick"]
+    shown = pick or "R0"
+    L: list[str] = []
+    a = L.append
+
+    def cell(wk: str, sc: str, rk: str) -> Mapping[str, Any]:
+        return W[wk]["cells"][f"{sc}|{rk}"]
+
+    def pp(c: Mapping[str, Any]) -> str:
+        return f"{c['p']:.3f} ({c['se']:.3f})"
+
+    def window_table(wk: str, mark: str | None = None) -> str:
+        rows = [[f"`{rk}`" + (" (selected)" if rk == mark else ""), str(len(RULESETS[rk]))]
+                + [pp(cell(wk, sc, rk)) for sc in _CAND_SCEN] for rk in RULESETS]
+        return RB._md_table(["candidate", "lines", "P(pass | A)", "P(pass | A_vc)", "P(pass | N0)",
+                             "P(pass | N0_vc)"], rows)
+
+    def per_line_table(wk: str, rk: str) -> str:
+        lines = RULESETS[rk]
+        rows = [[ln.id, ln.describe()] + [f"{cell(wk, sc, rk)['per_line'][i]:.3f}" for sc in _CAND_SCEN]
+                for i, ln in enumerate(lines)]
+        return RB._md_table(["line", "statement", "A", "A_vc", "N0", "N0_vc"], rows)
+
+    a("# Candidate rule sets for the live test, 2026 weeks 10-18 (D-105)")
+    a("")
+    a(f"Independent Evaluator, {meta.get('written_at', '')[:10]}. Generated by "
+      f"`python -m ffml.eval.power --candidates` (git `{meta.get('git', '?')}`). Same simulator, data and seeds as "
+      "`reports/evaluator_live_test_power_2026w10-18.md`: purpose `backtest`, 2022-2024 rows only, no "
+      f"{hs} or {LIVE_SEASON} outcome read, unlock not set, consensus in aggregate only (D-007). "
+      f"{n:,} replicates per window; Monte Carlo standard errors in parentheses.")
+    a("")
+    a("This report applies the D-105 limits, which the owner fixed before any candidate result was seen. It "
+      "makes no recommendation of its own; the design is the owner's.")
+    a("")
+    a("## Summary")
+    a("")
+    rows = []
+    for r in sel["rows"]:
+        rk = r["key"]
+        q_fa, q_good = r["fa"] <= 0.10, r["good"] >= 0.70
+        rows.append([f"`{rk}`", str(r["n_lines"]), pp(cell("i", "A", rk)), pp(cell("i", "A_vc", rk)),
+                     pp(cell("i", "N0", rk)), pp(cell("i", "N0_vc", rk)),
+                     "yes" if q_fa else "no", "yes" if q_good else "no", "yes" if (q_fa and q_good) else "no"])
+    a(RB._md_table(["candidate", "lines", "good model, A", "good model, A_vc", "no edge, N0", "no edge, N0_vc",
+                    "false approval <= 10% (N0_vc)", "good-model pass >= 70% (A_vc)", "qualifies"], rows))
+    a("")
+    if pick:
+        a(f"**Under D-105 the limits select `{pick}`.** {sel['reason']}. Qualifying: "
+          f"{', '.join(f'`{k}`' for k in sel['qualifying'])}.")
+    else:
+        a("**Under D-105 no candidate qualifies.** " + sel["reason"] + ". Under D-105 item 3 the limits are not "
+          "weakened: the unchanged 22 rules apply over 2026 weeks 10-18 plus 2027 weeks 1-9 (section 4).")
+    a("")
+    a("Reading the columns: the false-approval rate is the pass rate of a model with no edge (N0_vc); the "
+      "good-model pass rate is that of a well-calibrated model with the validated accuracy (A_vc). Both use the "
+      "variance-corrected scenario as D-105 item 1 requires; the uncorrected A and N0 are shown alongside.")
+    a("")
+    a("## 1. Method: what changed against the first report")
+    a("")
+    a("**Rule sets.** Coverage (L17-L22), start/sit (L13-L16), the D-078 bootstrap (500 week-clustered paired "
+      "draws, seed 0, 95% percentile intervals), the metric seed and the populations are unchanged in every "
+      "candidate. Only the accuracy lines differ:")
+    a("")
+    for rk, text in RULESET_TEXT.items():
+        a(f"- `{rk}` ({len(RULESETS[rk])} lines): {text}; plus L13-L22.")
+    a("")
+    a("**Not worse** on a metric means the 95% interval of chain minus comparator is not entirely above 0 "
+      "(the mirror of **beats**, entirely below 0); a missing interval fails either way, as in `evaluate_lines`. "
+      "A per-position \"not worse on all four metrics\" line fails when any one metric's interval lies entirely "
+      "above 0.")
+    a("")
+    a("**Pooled QB-TE lines.** The rows of QB, RB, WR and TE are pooled into one population; MAE and the "
+      "pinball losses are then one ratio of sums over all those rows, bootstrapped over the same week clusters "
+      "with the same draws (every week has rows at each of the four positions, so the cluster universe is the "
+      "window's weeks). This is what `metric_bundle` gives on the pooled frame; the fast path reproduces it "
+      "(section 2).")
+    a("")
+    a("**No-edge null (N0).** The brief's shifted-C construction with k = 0, made exact per week number: for "
+      "each week number w, comparator and metric, every per-row chain-minus-comparator loss difference is "
+      "moved by its 2022-2024 mean at week w (the ratio of sums over the three slates of that week number), so "
+      "its expectation is 0 at every week number, for the per-position and the pooled lines alike, while the "
+      "week-to-week noise is kept. Start/sit differences against the consensus are centred the same way. "
+      "Coverage is scenario A's (well calibrated). The variance-corrected null (N0_vc) applies the sqrt(3/2) "
+      "stretch of A_vc first; the stretch keeps every week-number mean, so the centring is unchanged.")
+    a("")
+    a("**Windows.** (i) weeks 10-18 and (ii) weeks 11-18 with the 2026 game counts, as before; (ext18) 2026 weeks "
+      "10-18 plus 2027 weeks 1-9 drawn the same way, full slates for weeks 1-9 (the 2027 schedule is unknown); "
+      "(one miss) weeks 10-18 with one week, drawn uniformly, excluded from scoring (D-106: eight weeks, no "
+      "extension). Windows (i) and (ii) use the random streams of the first report, so `R0` here is that "
+      f"report's first {n:,} replicates.")
+    a("")
+    a("**Selection (D-105).** A candidate qualifies if its no-edge pass rate (N0_vc, weeks 10-18) is at most 10% "
+      "and its good-model pass rate (A_vc, weeks 10-18) is at least 70%. Among qualifying candidates the lowest "
+      "false-approval rate wins; a candidate whose rate is within 2 standard errors of the difference from that "
+      "minimum counts as close, and among close candidates the one with the fewest lines wins.")
+    a("")
+    a("## 2. Checks")
+    a("")
+    pc = out.get("pooled_check")
+    if pc:
+        a(f"- **Pooled lines against the real functions.** One simulated weeks 10-18 window "
+          f"({', '.join(pc['slates'])}; -Ng: N games dropped) was evaluated with `metric_bundle` on the pooled "
+          "QB-TE frames and `paired_bundle_bootstrap` (500 draws, seed 0) and with the fast path: largest "
+          "absolute difference over the 36 pooled values (3 comparators x 4 metrics x point, low, high) "
+          f"{pc['max_abs_diff']:.1e} ({pc['seconds']:.0f} s for the real path).")
+    a(f"- **Null centring.** After the shift, on all 54 slates, the largest absolute week-number sum of chain "
+      f"minus comparator (loss sums and start/sit concordances) is {out['null_residual']:.1e}.")
+    r0 = cell("i", "A", "R0")
+    a(f"- **R0 reproduces the first report.** Weeks 10-18, scenario A: {r0['p']:.3f} here against 0.104 there "
+      f"(10,000 replicates); A_vc {cell('i', 'A_vc', 'R0')['p']:.3f} against 0.043.")
+    a("- `tests/eval/test_power.py` checks the pooled fast path against the real bundle on synthetic thinned "
+      "windows (1e-9), the null centring, the rule-set sizes, that R0 under `evaluate_rules` equals the "
+      "22-line verdicts, and the selection rule.")
+    a("")
+    a("## 3. Candidates by window")
+    a("")
+    for wk in ("i", "ii"):
+        a(f"**Window ({wk}): {W[wk]['label']}.**")
+        a("")
+        a(window_table(wk))
+        a("")
+    a("## 4. The 18-week window (D-105 item 3 fallback; R1 extension requested)")
+    a("")
+    a(f"{W['ext18']['label']}: {W['ext18']['games_mean']:.1f} games on average.")
+    a("")
+    a(window_table("ext18"))
+    a("")
+    a("## 5. One missed week (D-106): eight weeks scored")
+    a("")
+    a(f"{W['one_miss']['label']}: {W['one_miss']['games_mean']:.1f} games on average. "
+      + ("The selected candidate is marked; the others are for reference." if pick else
+         "With no selection, `R0` is the fallback design.")
+      + " The last two columns repeat the nine-week values.")
+    a("")
+    rows = [[f"`{rk}`" + (" (selected)" if rk == pick else ""), str(len(RULESETS[rk]))]
+            + [pp(cell("one_miss", sc, rk)) for sc in _CAND_SCEN]
+            + [pp(cell("i", "A_vc", rk)), pp(cell("i", "N0_vc", rk))] for rk in RULESETS]
+    a(RB._md_table(["candidate", "lines", "8 weeks: A", "8 weeks: A_vc", "8 weeks: N0", "8 weeks: N0_vc",
+                    "9 weeks: A_vc", "9 weeks: N0_vc"], rows))
+    a("")
+    a(f"## 6. Per-line pass probabilities, `{shown}`" + ("" if pick else " (no selection; the fallback design)"))
+    a("")
+    for wk in ("i", "ii"):
+        a(f"**Window ({wk}): {W[wk]['label']}.** Monte Carlo SE at most {mc_se(0.5, n):.3f}.")
+        a("")
+        a(per_line_table(wk, shown))
+        a("")
+    if shown != "R1":
+        a("**`R1`, window (i), as requested in the first brief.**")
+        a("")
+        a(per_line_table("i", "R1"))
+        a("")
+    a(f"## 7. What drives `{shown}` on weeks 10-18")
+    a("")
+    lines = RULESETS[shown]
+    c = cell("i", "A_vc", shown)
+    order = np.argsort(-np.array(c["fail_rate"]))
+    rows = [[lines[i].id, lines[i].describe(), f"{c['fail_rate'][i]:.3f}"] for i in order if c["fail_rate"][i] > 0.005]
+    a(f"**Good-model failures (A_vc)**, lines failing in more than 0.5% of replicates; P(pass) = {c['p']:.3f}:")
+    a("")
+    a(RB._md_table(["line", "statement", "fails"], rows))
+    a("")
+    c = cell("i", "N0_vc", shown)
+    acc = [i for i, ln in enumerate(lines) if ln.kind not in ("startsit", "coverage")]
+    rows = [[lines[i].id, lines[i].describe(), f"{c['per_line'][i]:.3f}"] for i in acc]
+    a(f"**False approvals (N0_vc)**: how often a no-edge model passes each accuracy line; P(all lines pass) = "
+      f"{c['p']:.3f}. With no edge a one-metric beats line passes about 2.5% of the time and a one-metric "
+      "not-worse line about 97.5%:")
+    a("")
+    a(RB._md_table(["line", "statement", "P(pass | no edge)"], rows))
+    a("")
+    a("## 8. Assumptions, in addition to the first report's")
+    a("")
+    items = [
+        "**The null is a construction.** A no-edge model is represented by the validated rows with each "
+        "accuracy and start/sit difference centred on 0 per week number; its week-to-week noise is the chain's "
+        "and the baselines' real noise. The centring is exact for full slates; with games dropped it holds to "
+        "within the thinning's rounding (the three seasons of a week number are thinned by slightly different "
+        "shares).",
+        "**Coverage under the null is scenario A's.** The false-approval rate therefore counts a no-edge model "
+        "that is well calibrated; a no-edge model with poor coverage would fail L17-L22 more often.",
+        "**Variance correction.** A_vc and N0_vc stretch each simulated week's deviation from its week-number "
+        "mean by sqrt(3/2), the expected shortfall of a pick among three slates; the correction is approximate "
+        "and applied to every statistic alike.",
+        "**The 18-week window** uses full 2022-2024 slates for weeks 1-9 because the 2027 schedule is not known; "
+        "weeks 1-9 are drawn independently of weeks 10-18 (no season-level carry-over).",
+        "**One miss** is drawn uniformly over the nine weeks; a real miss is more likely in some weeks than "
+        "others (holiday weeks), which is not modelled.",
+        "**Pooled lines are new code paths.** The holdout report (`report_holdout.py`) does not compute a "
+        "pooled QB-TE group; adopting R1-R3 requires adding that group to the real report. The simulation "
+        "evaluates it with `metric_bundle` on the pooled frame, which is the definition the report would use.",
+        "**Selection operationalisation.** \"Close\" in D-105 item 2 is read as within 2 standard errors of the "
+        "difference between two candidates' false-approval rates, fixed here before the numbers were seen.",
+    ]
+    for i, t in enumerate(items, start=1):
+        a(f"{i}. {t}")
+    a("")
+    a("## 9. Reproduction")
+    a("")
+    a(f"`python -m ffml.eval.power --candidates --reps {n}` (about {out.get('seconds_total', 0) / 60:.0f} minutes, "
+      "one process) writes `data/reports/live_test_power_candidates.json` (gitignored) and this report. Run time "
+      "per window: " + ", ".join(f"({k}) {W[k]['seconds']:.0f}s" for k in W) + ".")
+    a("")
+    return "\n".join(L) + "\n"
+
+
 def _jsonable(x: Any) -> Any:
     if isinstance(x, np.ndarray):
         return x.tolist()
@@ -1243,12 +1822,13 @@ def render_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one linear doc
     n = int(out["n_rep"])
     W = out["windows"]
     meta = out.get("meta", {})
+    hs = _holdout_season()
     L: list[str] = []
     a = L.append
     a("# Live-test pass probability for the 22 lines, 2026 weeks 10-18 (D-098 item 3)")
     a("")
     a(f"Independent Evaluator, {meta.get('written_at', '')[:10]}. Generated by `python -m ffml.eval.power` "
-      f"(git `{meta.get('git', '?')}`). Purpose `backtest`, 2022-2024 rows only; no 2025 or 2026 outcome was "
+      f"(git `{meta.get('git', '?')}`). Purpose `backtest`, 2022-2024 rows only; no {hs} or {LIVE_SEASON} outcome was "
       "read and `FFML_HOLDOUT_UNLOCK` was not set. The FantasyPros consensus is used in aggregate only (D-007).")
     a("")
     a("This report estimates; it does not recommend. The owner decides the test design (D-098 item 3).")
@@ -1591,12 +2171,12 @@ def render_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one linear doc
         "deviation from its week-number mean by sqrt(3/2) to undo this in expectation; compare A and A_vc for "
         "the size of the effect.",
         "**Season-level shifts are not simulated.** Weeks are drawn independently across 2022-2024, so a "
-        "shift shared by every week of 2026 (as in 2025, when QB coverage of the frozen chain fell from 0.779 in "
+        f"shift shared by every week of {LIVE_SEASON} (as in {hs}, when QB coverage of the frozen chain fell from 0.779 in "
         "validation to 0.739) is not represented; section 3.4 shows the coverage lines' pass probability as a "
         "function of the true coverage level instead.",
-        "**chain_v1+cal stands in for chain_v2.** chain_v2 adds 2025 to training and uses the walk-forward "
+        f"**chain_v1+cal stands in for chain_v2.** chain_v2 adds {hs} to training and uses the walk-forward "
         "calibrator; chain_v1+cal is that calibrator on chain_v1 (D-098 item 2b). The live test's calibrator "
-        "starts from 2025 weeks rather than 2021, which is not simulated.",
+        f"starts from {hs} weeks rather than 2021, which is not simulated.",
         "**Scenario A keeps the validation PIT draws.** u' is a fixed function of each row's seed-0 validation "
         "PIT, as the brief defines it; it is not redrawn per window. Scenario B redraws exactly as the live test "
         "will; B_fixed shows that the redraw changes little.",
@@ -1616,8 +2196,8 @@ def render_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one linear doc
         "is reported as the operative accuracy sensitivity; both are shown.",
         "**Data read.** Only 2022-2024 PPR rows of `default_20261102` and the consensus for 2022-2024 "
         "(`consensus_predictions(purpose='backtest')`, which, as in the v3 report, fits its rank-to-points curve "
-        "on earlier archive seasons up to 2024). Nothing from 2025, 2026, `data/backtests/holdout_2025` or "
-        "`data/backtests/forward_2026` was read.",
+        f"on earlier archive seasons up to 2024). Nothing from {hs}, {LIVE_SEASON}, `data/backtests/holdout_{hs}` or "
+        f"`data/backtests/forward_{LIVE_SEASON}` was read.",
     ]
     for i, t in enumerate(items, start=1):
         a(f"{i}. {t}")
@@ -1644,16 +2224,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover
     ap.add_argument("--reps", type=int, default=2000)
     ap.add_argument("--equiv-windows", type=int, default=4)
     ap.add_argument("--full-real", action="store_true", help="also check all 54 weeks with the real functions")
-    ap.add_argument("--out", default=str(PROJECT_ROOT / "data" / "reports" / "live_test_power.json"))
+    ap.add_argument("--candidates", action="store_true", help="D-105 candidate rule sets instead of the 22-line report")
+    ap.add_argument("--out", default=None, help="aggregates JSON (default under data/reports/)")
     ap.add_argument("--render-only", action="store_true", help="re-render the report from an existing --out file")
-    ap.add_argument("--report", default=str(PROJECT_ROOT / "reports" / f"{REPORT_NAME}.md"))
+    ap.add_argument("--report", default=None, help="report path (default under reports/)")
     args = ap.parse_args(argv)
+    name = CANDIDATES_REPORT_NAME if args.candidates else REPORT_NAME
+    out_json = Path(args.out) if args.out else PROJECT_ROOT / "data" / "reports" / (
+        "live_test_power_candidates.json" if args.candidates else "live_test_power.json")
+    report = Path(args.report) if args.report else PROJECT_ROOT / "reports" / f"{name}.md"
     if args.render_only:
-        out = json.loads(Path(args.out).read_text(encoding="utf-8"))
+        out = json.loads(out_json.read_text(encoding="utf-8"))
+    elif args.candidates:
+        out = run_candidates(args.reps, out_json)
     else:
-        out = run_all(args.reps, args.equiv_windows, args.full_real, Path(args.out))
-    Path(args.report).write_text(render_report(out), encoding="utf-8")
-    print(f"wrote {args.report}")
+        out = run_all(args.reps, args.equiv_windows, args.full_real, out_json)
+    report.write_text((render_candidates_report if args.candidates else render_report)(out), encoding="utf-8")
+    print(f"wrote {report}")
     return 0
 
 
