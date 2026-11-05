@@ -22,6 +22,14 @@ The pin records the season it was taken from. Partitions from earlier seasons
 whose layout differs (depth charts changed format in 2025) only produce a
 warning: the check guards the current season's feed, not history.
 
+Where pins live (:func:`resolve_pin_path`): a routine ingest reads and updates
+the working copy ``Settings.schema_pin_path`` (``<data_dir>/schema_pins/
+expected_schemas.json``), seeded from the tracked package file
+``SCHEMA_PIN_PATH`` (``ffml/data/schemas/expected_schemas.json``). The tracked
+file changes only on request (``update_schema_pin=True``, env
+``FFML_UPDATE_SCHEMA_PIN=1``), so a checkout pinned for the live test is never
+made dirty by a data refresh, and a re-pin is a deliberate, reviewable change.
+
 Missing seasons: when nflverse has no file for a season (HTTP 404 or the
 loader's own range check) and no earlier season of that dataset loaded either,
 the season is treated as "before the data start" and skipped with a warning
@@ -115,6 +123,41 @@ def save_pins(path: Path, pins: dict[str, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(ordered, indent=1) + "\n", encoding="utf-8", newline="\n")
     tmp.replace(path)
+
+
+def resolve_pin_path(
+    pin_path: Path | str | None = None, *, update_tracked: bool | None = None
+) -> Path:
+    """Where a run reads and writes schema pins.
+
+    An explicit ``pin_path`` wins. Otherwise the tracked package file
+    :data:`SCHEMA_PIN_PATH` is used only when ``update_tracked`` (default
+    ``Settings.update_schema_pin``) is true. The default is the working copy
+    ``Settings.schema_pin_path``: it is created from the tracked file when
+    missing, and any dataset the tracked file pins that the copy lacks is
+    added to it, so new pins shipped in code reach the copy while the copy's
+    own, newer observations are kept.
+    """
+    if pin_path is not None:
+        return Path(pin_path)
+    from ffml.config import get_settings
+
+    settings = get_settings()
+    use_tracked = settings.update_schema_pin if update_tracked is None else update_tracked
+    if use_tracked:
+        return SCHEMA_PIN_PATH
+    working = settings.schema_pin_path
+    current = load_pins(working)
+    merged = {**load_pins(SCHEMA_PIN_PATH), **current}
+    if merged != current:
+        save_pins(working, merged)
+        log.info(
+            "schema pins: working copy %s %s from %s",
+            working,
+            "seeded" if not current else "topped up",
+            SCHEMA_PIN_PATH,
+        )
+    return working
 
 
 def _format_drift(report: DriftReport) -> str:
@@ -359,18 +402,24 @@ def run_ingest(
     store: SnapshotStore | None = None,
     pin_path: Path | None = None,
     timeout_seconds: float | None = None,
+    update_schema_pin: bool | None = None,
 ) -> dict[str, DatasetResult]:
     """Ingest the given datasets (all when ``None``) for ``seasons``.
 
     Returns per-dataset results. Raises :class:`SchemaDriftError` or
     :class:`IngestError` after all datasets were attempted if any failed.
+    Pins go to ``pin_path``, else the working copy under the data directory,
+    else (``update_schema_pin=True``) the tracked package file, which is then
+    mirrored into the working copy (see :func:`resolve_pin_path`).
     """
     if not seasons:
         raise ValueError("seasons is empty")
     seasons = sorted(set(int(s) for s in seasons))
     specs = select_specs(datasets)
     store = store or SnapshotStore()
-    pin_path = Path(pin_path) if pin_path is not None else SCHEMA_PIN_PATH
+    mirror_to_working = pin_path is None
+    pin_path = resolve_pin_path(pin_path, update_tracked=update_schema_pin)
+    mirror_to_working = mirror_to_working and pin_path == SCHEMA_PIN_PATH
     pins = load_pins(pin_path)
     pins_before = json.dumps(pins, sort_keys=True)
 
@@ -398,6 +447,11 @@ def run_ingest(
             if json.dumps(pins, sort_keys=True) != pins_before:
                 save_pins(pin_path, pins)
                 pins_before = json.dumps(pins, sort_keys=True)
+
+    if mirror_to_working and pin_path.exists():
+        from ffml.config import get_settings
+
+        save_pins(get_settings().schema_pin_path, pins)
 
     _log_summary(results)
 
@@ -439,6 +493,7 @@ __all__ = [
     "check_schema",
     "ingest_dataset",
     "load_pins",
+    "resolve_pin_path",
     "run_ingest",
     "save_pins",
     "select_specs",

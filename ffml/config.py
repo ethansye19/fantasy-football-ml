@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     holdout_season: int = 2025
     holdout_unlock: bool = False  # must be True (and is logged) to read the holdout season
 
+    # Schema pins. A routine ingest records newly seen columns in the working
+    # copy under data_dir (``schema_pin_path``); the tracked package file
+    # ffml/data/schemas/expected_schemas.json changes only when this is True
+    # (or ``ffml ingest`` is asked explicitly), so a pinned worktree stays clean.
+    update_schema_pin: bool = False
+
     # External services
     sleeper_base_url: str = "https://api.sleeper.app/v1"
     http_timeout_seconds: float = 60.0
@@ -76,6 +82,11 @@ class Settings(BaseSettings):
     def private_predictions_dir(self) -> Path:
         """Private test store: runs labeled "not approved", never the public LATEST (D-099)."""
         return self.data_dir / "predictions_private"
+
+    @property
+    def schema_pin_path(self) -> Path:
+        """Working copy of the schema pins, seeded from the tracked package file."""
+        return self.data_dir / "schema_pins" / "expected_schemas.json"
 
     @property
     def warehouse_path(self) -> Path:

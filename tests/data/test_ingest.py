@@ -324,3 +324,28 @@ def test_network_ingest_teams_and_schedules_2026(tmp_settings, tmp_path) -> None
     assert store.read("teams").height == 36
     assert results["teams"].drift.status == "pinned"
     assert set(load_pins(tmp_path / "pins.json")) == {"teams", "schedules"}
+
+
+def test_default_pin_path_is_the_working_copy_not_the_tracked_file(
+    registry, store, tmp_settings, tmp_path, monkeypatch
+) -> None:
+    """A routine ingest never rewrites the tracked pin file, so a pinned worktree stays clean."""
+    import shutil
+
+    add_weekly(registry, Loader(extra=True))
+    tracked = ingest_mod.SCHEMA_PIN_PATH
+    before = hashlib.sha256(tracked.read_bytes()).hexdigest()
+    run_ingest([2024, 2025], ["fake_weekly"], store=store)  # no pin_path: the working copy
+    working = tmp_settings.schema_pin_path
+    assert working == tmp_settings.data_dir / "schema_pins" / "expected_schemas.json"
+    pins = load_pins(working)
+    assert "new_col" in pins["fake_weekly"]["columns"]
+    assert "schedules" in pins  # seeded from the tracked file
+    assert hashlib.sha256(tracked.read_bytes()).hexdigest() == before
+    # a deliberate re-pin goes to the tracked file (a temporary copy stands in for it here)
+    copy = tmp_path / "tracked.json"
+    shutil.copyfile(tracked, copy)
+    monkeypatch.setattr(ingest_mod, "SCHEMA_PIN_PATH", copy)
+    run_ingest([2024, 2025], ["fake_weekly"], store=store, update_schema_pin=True)
+    assert "fake_weekly" in load_pins(copy)
+    assert load_pins(working)["fake_weekly"] == load_pins(copy)["fake_weekly"]  # mirrored

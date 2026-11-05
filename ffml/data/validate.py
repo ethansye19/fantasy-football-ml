@@ -60,7 +60,7 @@ from typing import Any
 import polars as pl
 
 from ffml.config import get_settings
-from ffml.data.ingest import SCHEMA_PIN_PATH, SchemaDriftError, check_schema, load_pins
+from ffml.data.ingest import SchemaDriftError, check_schema, load_pins, resolve_pin_path
 from ffml.data.nflverse import DATASETS, RESTRICTED_PREFIX
 from ffml.data.process.base import RESTRICTED_TABLES, SKILL_POSITIONS, TEAM_ALIASES
 from ffml.data.store import ALL_KEY, MANIFEST_NAME, SnapshotStore
@@ -1407,7 +1407,7 @@ def run_suite(
         processed=SnapshotStore(
             Path(processed_root) if processed_root is not None else settings.processed_dir
         ),
-        pin_path=Path(pin_path) if pin_path is not None else SCHEMA_PIN_PATH,
+        pin_path=resolve_pin_path(pin_path),
         now=now,
     )
     log.info(
