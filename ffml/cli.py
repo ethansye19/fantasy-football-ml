@@ -71,11 +71,21 @@ def info() -> None:
 def ingest(
     seasons: str = typer.Option("2016-2026", help="Season range, e.g. 2016-2026 or 2025,2026"),
     datasets: str = typer.Option("all", help="Comma-separated dataset names or 'all'"),
+    update_schema_pin: bool = typer.Option(
+        False,
+        "--update-schema-pin",
+        help="Write newly seen columns to the tracked ffml/data/schemas/expected_schemas.json "
+        "(default: the working copy under data/schema_pins/)",
+    ),
 ) -> None:
     """Download nflverse datasets into the raw snapshot store."""
     from ffml.data.ingest import run_ingest
 
-    run_ingest(seasons=_parse_seasons(seasons), datasets=None if datasets == "all" else datasets.split(","))
+    run_ingest(
+        seasons=_parse_seasons(seasons),
+        datasets=None if datasets == "all" else datasets.split(","),
+        update_schema_pin=update_schema_pin or None,
+    )
 
 
 @app.command()
@@ -281,9 +291,13 @@ def livetest_verify(path: str = typer.Argument(..., help="Path to a commitment.j
 @app.command()
 def refresh(step: str = typer.Option("all", help="all | data | injuries | retrain-check | predict")) -> None:
     """Scheduled refresh entry point used by the scheduler and CI."""
-    from ffml.data.refresh import run_refresh
+    from ffml.data.refresh import RefreshError, run_refresh
 
-    run_refresh(step=step)
+    try:
+        run_refresh(step=step)
+    except RefreshError as exc:
+        typer.echo(f"refresh failed: {exc}", err=True)
+        raise typer.Exit(code=1) from None
 
 
 if __name__ == "__main__":

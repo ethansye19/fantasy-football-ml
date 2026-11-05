@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -32,9 +33,17 @@ def cli():
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     runner = CliRunner()
-    yield lambda args: runner.invoke(app, args)
+    env = {"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}  # plain help output on any terminal
+    yield lambda args: runner.invoke(app, args, env=env)
     root.handlers[:] = handlers
     root.setLevel(level)
+
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def plain(text: str) -> str:
+    return ANSI.sub("", text)
 
 
 @pytest.fixture
@@ -67,7 +76,24 @@ def fake_registry(monkeypatch) -> dict[str, DatasetSpec]:
 def test_cli_help_resolves(cli):
     result = cli(["refresh", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--step" in result.output
+    assert "--step" in plain(result.output)
+
+
+def test_cli_refused_and_unknown_steps_exit_1_with_a_message(cli):
+    nonsense = cli(["refresh", "--step", "nonsense"])
+    assert nonsense.exit_code == 1 and "unknown step" in plain(nonsense.output)
+    predict = cli(["refresh", "--step", "predict"])
+    assert predict.exit_code == 1 and "refused" in plain(predict.output)
+    assert "Traceback" not in predict.output
+
+
+def test_cli_ingest_update_schema_pin_option(cli, monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(ingest_mod, "run_ingest", lambda **kw: calls.append(kw) or {})
+    assert cli(["ingest", "--seasons", "2026", "--datasets", "teams"]).exit_code == 0
+    assert cli(["ingest", "--seasons", "2026", "--datasets", "teams", "--update-schema-pin"]).exit_code == 0
+    assert [c["update_schema_pin"] for c in calls] == [None, True]
+    assert calls[0]["seasons"] == [2026] and calls[0]["datasets"] == ["teams"]
 
 
 def test_every_step_name_resolves_or_is_refused_clearly():
