@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+import respx
+from sleeper_mock import USERNAME, directory, mock_sleeper, no_sleep_factory
 
 BASE_LEAGUE = {
     "name": "Hardening league",
@@ -79,3 +81,25 @@ def test_settings_update_is_bounded_too(make_client):
     assert bad.status_code == 422
     ok = client.put(f"/leagues/{lg['id']}/settings", json={"settings": {"playoff_week_start": 16}})
     assert ok.status_code == 200 and ok.json()["settings"]["playoff_week_start"] == 16
+
+
+# --------------------------------------------------------------------------- QA-F04 shared Sleeper client
+
+
+def test_sleeper_client_is_process_wide_and_closed_at_shutdown(make_client):
+    with respx.mock(assert_all_called=False) as router:
+        mock_sleeper(router)
+        client = make_client()
+        client.app.state.players.set(directory())
+        client.app.state.sleeper_factory = no_sleep_factory
+        for _ in range(3):
+            r = client.get(f"/sleeper/users/{USERNAME}/leagues", params={"season": 2026})
+            assert r.status_code == 200, r.text
+        holder = client.app.state.sleeper
+        shared = holder.get(no_sleep_factory)
+        assert holder.get(lambda: None) is shared  # built once; later factories are ignored
+        http = shared._client
+        assert not http.is_closed
+        client.__exit__(None, None, None)  # lifespan shutdown closes it
+        assert http.is_closed
+        client.__enter__()  # the fixture tears the client down again

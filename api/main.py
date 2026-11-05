@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import __version__
 from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
 from api.db.session import Database
+from api.deps import SleeperHolder
 from api.errors import install_error_handlers
 from api.middleware import BodyLimitMiddleware
 from api.services.players import DirectoryHolder
@@ -47,6 +48,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            app.state.sleeper.close()
             app.state.db.dispose()
 
     app = FastAPI(
@@ -60,6 +62,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.db = Database(settings.resolved_database_url)
     app.state.players = DirectoryHolder(settings.processed_dir)
     app.state.sleeper_factory = SleeperClient
+    app.state.sleeper = SleeperHolder()  # one client and token bucket per process (D-025)
     app.state.season = SeasonService(settings.raw_dir)
     app.state.projections = ProjectionService(settings.scoring_cache_size)
 

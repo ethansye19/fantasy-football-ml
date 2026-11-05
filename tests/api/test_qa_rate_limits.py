@@ -49,15 +49,6 @@ def test_one_lookup_makes_at_most_two_sleeper_calls(client, sleeper):
     assert 1 <= len(sleeper.calls) <= 2
 
 
-QA_F04 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F04: api/deps.py:24-29 builds a new SleeperClient (and TokenBucket) per "
-    "request, so D-025's process-wide 300/min budget with burst 30 is not enforced. "
-    "Remove this marker with the fix.",
-)
-
-
-@QA_F04
 def test_sleeper_budget_is_shared_across_requests(client, sleeper, monkeypatch):
     buckets: list[object] = []  # the objects themselves, so no id() is reused after GC
     original = sleeper_module.TokenBucket.acquire
