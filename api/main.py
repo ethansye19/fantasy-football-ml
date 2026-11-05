@@ -51,11 +51,15 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             app.state.sleeper.close()
             app.state.db.dispose()
 
+    docs = settings.docs_on  # QA-F08: no public Swagger/ReDoc pages in production
     app = FastAPI(
         title="ffml API",
         version=__version__,
         description="League tools and projections. See docs/API.md.",
         lifespan=lifespan,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
     )
     app.state.settings = settings
     app.state.gate = ApprovalGate(settings)
@@ -84,6 +88,15 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        content_type = response.headers.get("content-type", "")
+        if content_type.startswith("text/html"):  # the docs pages load Swagger UI from a CDN
+            response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        else:
+            response.headers.setdefault(
+                "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+            )
         if settings.is_private_test:
             # every response in a private test environment is labeled (D-099)
             response.headers[HEADER] = HEADER_NOT_APPROVED

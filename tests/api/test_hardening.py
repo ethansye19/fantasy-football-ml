@@ -279,3 +279,38 @@ def test_production_refuses_wildcard_and_odd_cors_origins():
     ok = ApiSettings(app_env="production", cors_origins=["http://localhost:3000", "https://ffml.example"])
     assert len(ok.cors_origins) == 2
     assert ApiSettings(app_env="private_test", cors_origins=["*"]).cors_origins == ["*"]
+
+
+# --------------------------------------------------------------------------- QA-F08 headers and docs pages
+
+
+def test_docs_pages_are_off_in_production_and_on_in_private_test(make_client):
+    prod = make_client()
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert prod.get(path).status_code == 404, path
+    private = make_client(app_env="private_test")
+    assert private.get("/openapi.json").status_code == 200
+    page = private.get("/docs")
+    assert page.status_code == 200
+    assert page.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+    assert page.headers["X-Frame-Options"] == "DENY"
+    forced_on = make_client(docs_enabled=True)
+    assert forced_on.get("/openapi.json").status_code == 200
+    forced_off = make_client(app_env="private_test", docs_enabled=False)
+    assert forced_off.get("/docs").status_code == 404
+
+
+def test_json_responses_carry_frame_referrer_and_csp_headers(make_client):
+    client = make_client()
+    responses = [
+        client.get("/meta/health"),
+        client.get("/projections"),  # 503 gate
+        client.get("/leagues/nope"),  # 404 envelope
+        client.post("/leagues", json={}),  # 422
+        client.get("/no/such/route"),  # router 404
+    ]
+    for r in responses:
+        assert r.headers["Referrer-Policy"] == "no-referrer", r.url
+        assert r.headers["X-Frame-Options"] == "DENY", r.url
+        assert r.headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
+        assert r.headers["X-Content-Type-Options"] == "nosniff"

@@ -54,6 +54,9 @@ class ApiSettings(BaseSettings):
     api_fixture_predictions_dir: Path | None = None
     api_replay_run: str | None = None  # "<season>/<week>/<run_id>" pins one replay run
 
+    # interactive docs (/docs, /redoc, /openapi.json): None = private_test only (QA-F08)
+    docs_enabled: bool | None = None
+
     # largest accepted request body in bytes (413 above it; QA-F02); 0 disables the check
     body_max_bytes: int = 256 * 1024
 
@@ -109,6 +112,10 @@ class ApiSettings(BaseSettings):
     @property
     def is_private_test(self) -> bool:
         return self.app_env == PRIVATE_TEST
+
+    @property
+    def docs_on(self) -> bool:
+        return self.is_private_test if self.docs_enabled is None else bool(self.docs_enabled)
 
     # -- paths shared with the pipeline -------------------------------------- #
 

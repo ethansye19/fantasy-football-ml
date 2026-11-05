@@ -41,6 +41,7 @@ these limits, which the API enforces:
 | `FFML_API_FIXTURE_PREDICTIONS_DIR` | unset | `private_test` only: a predictions store holding fixture runs. |
 | `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>`. |
 | `FFML_APPROVAL_TTL_SECONDS` | `5` | How long one gate evaluation is reused. |
+| `FFML_DOCS_ENABLED` | unset | Interactive docs (`/docs`, `/redoc`, `/openapi.json`). Unset: on in `private_test`, off in `production`. |
 | `FFML_BODY_MAX_BYTES` | `262144` | Largest accepted request body (413 above it; `0` disables the check). |
 | `FFML_RATE_LIMIT_ENABLED` | `true` | Inbound rate limiting per client and route family (section 4.1). |
 | `FFML_RATE_LIMIT_SLEEPER`, `_WRITE`, `_HEAVY`, `_READ`, `_META` | `10/5`, `30/10`, `30/10`, `120/30`, `300/60` | Per-minute rate and burst per family; `0` disables one family. |
@@ -183,6 +184,15 @@ All errors other than the gate's 503 use one envelope:
 | 502 | `sleeper_unavailable` | Sleeper failed after retries |
 | 503 | `no_approved_model` | gate (3.2); body shape is the fixed one above, not this envelope |
 | 500 | `internal_error` | anything unexpected (no stack traces in responses) |
+
+### 4.0 Response headers
+
+Every response carries `X-Content-Type-Options: nosniff`, `Cache-Control:
+no-store` (except `/players`, which is cacheable), `Referrer-Policy:
+no-referrer`, `X-Frame-Options: DENY` and `Content-Security-Policy:
+default-src 'none'; frame-ancestors 'none'` (the docs HTML pages get
+`frame-ancestors 'none'` only, because Swagger UI loads from a CDN). The
+interactive docs pages are off in production unless `FFML_DOCS_ENABLED=true`.
 
 ### 4.1 Rate limits
 
