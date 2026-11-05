@@ -109,6 +109,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-107 | 2026-11-05 | accepted (owner) | Logged-off scheduled tasks with least privilege plus a GitHub watchdog at 6 h and 1 h; AC power, wake, catch-up; logged-off dry run on a test branch before Week 10 |
 | D-108 | 2026-11-05 | accepted (conditional) | LightGBM `num_threads` 8 -> 4 for determinism on Linux CI, only if all four identity weeks stay byte-identical; otherwise threads stay 8 and the CI test pins 1 thread |
 | D-109 | 2026-11-05 | accepted | Live-test timing constants: window opens K-25h, first run K-24h15m, retries every 30 min, build cutoff K-30m, push deadline K-5m; GitHub watchdog windows [6.5h, 5.5h) and [1.5h, 0) before kickoff; MISSED.json format missed/2 |
+| D-110 | 2026-11-05 | recorded | D-105 selects no candidate (best good-model pass 0.614 < 0.70); fallback applies: unchanged 22 rules over 2026 w10-18 + 2027 w1-9; no approved model for the rest of 2026; no provisional approval tier |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -821,6 +822,41 @@ goes under `<week>/late/` with the MISSED marker and is never withheld. The
 GitHub watchdog runs hourly and alerts inside [6.5h, 5.5h) and [1.5h, 0)
 before K. Rehearsals and dry runs never write to `livetest-2026`.
 
+## D-110 Outcome of the D-105 selection: fallback design (orchestrator, 2026-11-05)
+
+The Evaluator's candidate report (reports/evaluator_live_test_power_candidates.md,
+5,000 replicates each) gives, on 2026 weeks 10-18 with the variance-corrected
+estimates D-105 requires:
+
+| Candidate | Lines | Good model passes | No-edge model passes | Qualifies |
+| --- | --- | --- | --- | --- |
+| R0, the 22 rules as written | 22 | 0.044 | 0.000 | no |
+| R1, per-position not-worse + pooled beats on MAE and q50 | 28 | 0.614 | 0.000 | no |
+| R2, per-position beats on MAE + pooled beats on pinball | 31 | 0.124 | 0.000 | no |
+| R3, R1 with pooled beats on all four metrics | 34 | 0.614 | 0.000 | no |
+
+No candidate reaches the 70% floor, so under D-105 item 3 the limits are not
+weakened and the fallback applies:
+
+- the unchanged 22 rules (docs/status/holdout-preregistration.md) are
+  applied once, over 2026 weeks 10-18 plus 2027 weeks 1-9, with the D-106
+  one-miss rule;
+- the app shows "no approved model" for the rest of 2026; there is no
+  provisional-approval tier, because no resized design was selected;
+- weekly commitments start at Week 10 under the frozen chain_v2 code and
+  continue through 2027 week 9; weekly scoring after games are final is
+  information only, and the verdict line is computed once, after 2027 week 9;
+- the Evaluator's estimate for this fallback: a good model passes 0.557
+  (corrected; 0.722 uncorrected) and a no-edge model 0.000. The owner is
+  told that the fallback's own pass rate is below the 70% floor set for
+  candidates; D-105 item 3 was fixed in advance and is followed as written.
+
+The Evaluator also reports a ceiling: any nine-week design that changes
+only the accuracy lines cannot pass a good model more than about 61% of
+the time, because the unchanged start/sit and coverage lines (WR start/sit
+0.815, QB coverage 0.859, DST coverage 0.959) set that limit. This is
+recorded as information, not as a proposal.
+
 ## Owner answers received 2026-11-01
 
 1. Node.js LTS: install with winget (D-018).
@@ -834,4 +870,4 @@ before K. Rehearsals and dry runs never write to `livetest-2026`.
 
 ## Open questions
 
-- Which candidate rule set the D-105 limits select (Evaluator report pending).
+None at this time.
