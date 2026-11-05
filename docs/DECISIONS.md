@@ -107,6 +107,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-105 | 2026-11-05 | accepted (owner) | Live-test rules resized to 9 weeks, chosen by pre-set limits (corrected estimates: no-edge pass <= 10%, good-model pass >= 70%, lowest false approval, simpler if close); pass = provisional approval; 22 rules still reported through 2027 w9 |
 | D-106 | 2026-11-05 | accepted (owner) | One missed week excluded without extension, a second makes the test INVALID; deadline = official first kickoff; runs start 24 h early; misses logged with reason |
 | D-107 | 2026-11-05 | accepted (owner) | Logged-off scheduled tasks with least privilege plus a GitHub watchdog at 6 h and 1 h; AC power, wake, catch-up; logged-off dry run on a test branch before Week 10 |
+| D-108 | 2026-11-05 | accepted (conditional) | LightGBM `num_threads` 8 -> 4 for determinism on Linux CI, only if all four identity weeks stay byte-identical; otherwise threads stay 8 and the CI test pins 1 thread |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -788,6 +789,24 @@ a GitHub Actions watchdog:
 - before Week 10, a logged-off dry run on a test branch proves build, push,
   retry, failure alert and watchdog; it does not count as a live commitment;
 - the owner runs the registration command, shown and explained first.
+
+## D-108 LightGBM thread count and determinism (ML Engineer diagnosis, orchestrator ruling, 2026-11-05)
+
+Diagnosis: `test_default_feature_lists_are_unchanged` fails intermittently on
+Linux CI because LightGBM with `num_threads: 8` on a 4-vCPU runner gives
+run-to-run differences in 1-3 weighted cross-entropy stages (OpenMP
+reduction order, inferred). Reproduced in WSL2 (9 of 10 repeats at 4 vCPUs
+and 8 threads; 0 of 32 at 4 or 1 threads). Not reproducible on the
+development machine, where real-data refits are byte-identical, and a 2026
+week 4 refit with 4 threads or 1 thread equals the stored 8-thread rows.
+
+Ruling: set `num_threads` to 4 in `ffml/models/chain/lgbm.py` **only if**
+the four stored identity weeks (2022 w6, 2024 w15, 2025 w9, 2026 w4)
+recomputed at 4 threads remain byte-identical to the stored raw rows; the
+calibrator state for 2026 week 8 must also be unchanged. If any row
+differs, threads stay at 8 and the CI test pins 1 thread for itself only.
+This is a determinism fix with zero measured effect on predictions, not a
+model change; the evidence goes in the chain_v2 pre-registration.
 
 ## Owner answers received 2026-11-01
 
