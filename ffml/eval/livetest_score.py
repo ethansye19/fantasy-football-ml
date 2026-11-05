@@ -316,6 +316,19 @@ def dim_game_snapshot_id() -> str | None:  # pragma: no cover - reads data
     return pointer.read_text(encoding="utf-8").strip() if pointer.exists() else None
 
 
+PROCESSED_DATASETS: tuple[str, ...] = ("fact_player_game", "fact_dst_game", "dim_game", "dim_player")
+
+
+def processed_snapshot_ids() -> dict[str, str | None]:  # pragma: no cover - reads data
+    """LATEST snapshot id of every processed dataset the outcomes and PIT bounds are built from."""
+    root = get_settings().processed_dir
+    out = {}
+    for ds in PROCESSED_DATASETS:
+        pointer = root / ds / "LATEST"
+        out[ds] = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else None
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Commit relation under the pre-registration's allowed paths
 # --------------------------------------------------------------------------- #
@@ -340,6 +353,41 @@ def path_allowed(path: str, allowed: Sequence[str], frozen: Sequence[str]) -> bo
     if any(p == f or p.startswith(f.rstrip("/") + "/") for f in frozen):
         return False
     return any(p == a or (a.endswith("/") and p.startswith(a)) for a in allowed)
+
+
+CHANGELOG_DOC = "docs/status/livetest-changelog-2026.md"
+_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
+
+
+def changelog_commits(text: str) -> set[str]:
+    """Commit shas (7 to 40 hex) in the ``Commit`` column of the change log's table."""
+    out: set[str] = set()
+    header: list[str] | None = None
+    for line in text.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if header is None:
+            header = [c.lower() for c in cells]
+            continue
+        if all(set(c) <= {"-", ":", " "} for c in cells):
+            continue
+        try:
+            cell = cells[header.index("commit")]
+        except (ValueError, IndexError):
+            continue
+        out.update(m.group(0).lower() for m in _SHA_RE.finditer(cell))
+    return out
+
+
+def uncovered_commits(x: str, y: str, root: Path, logged: set[str]) -> list[str]:
+    """Commits in ``x..y`` without an entry (prefix match) in the change log."""
+    fx, fy = H._full_sha(x, root), H._full_sha(y, root)
+    if fx is None or fy is None or fx == fy:
+        return []
+    out = _run_git(root, "rev-list", f"{fx}..{fy}")
+    shas = out.stdout.split() if out.returncode == 0 else []
+    return [sha for sha in shas if not any(sha.startswith(tok) for tok in logged)]
 
 
 def commit_relation_allowed(x: str | None, y: str | None, root: Path, allowed: Sequence[str],
@@ -385,6 +433,7 @@ class WeekRecord:
     external_timestamp: str | None = None
     external_source: str | None = None
     dim_game_first_kickoff: str | None = None
+    deadline: str | None = None  # the earlier of the committed and the actual first kickoff
     games: int = 0
     games_final: int = 0
     summary_sha256: str | None = None
@@ -492,13 +541,17 @@ def verify_week(
     check("summary present", summary_bytes is not None and raw_path is not None,
           "calibrated and raw summaries found" if summary_bytes is not None and raw_path is not None else
           "player_summary.parquet or player_summary_raw.parquet not available", refuse=True)
-    # timing
-    k = c.first_kickoff
-    check("created before kickoff", k is not None and c.created_at is not None and c.created_at < k,
-          f"created_at {rec.created_at}, first_kickoff {rec.first_kickoff}", refuse=True)
-    if status.first_kickoff is not None and k is not None and status.first_kickoff != k:
-        check("kickoff agrees with dim_game", False,
-              f"commitment {iso(k)} against dim_game {iso(status.first_kickoff)} (the committed time is the deadline)")
+    # timing: the binding deadline is the earlier of the committed first kickoff (dim_game at build time)
+    # and the actual first kickoff per the final schedule (pre-registration deadline_rule)
+    kicks = [t for t in (c.first_kickoff, status.first_kickoff) if t is not None]
+    k = min(kicks) if kicks else None
+    rec.deadline = iso(k)
+    check("deadline", k is not None,
+          f"binding {iso(k)}: committed first kickoff {rec.first_kickoff}, dim_game first kickoff "
+          f"{rec.dim_game_first_kickoff}" if k is not None else "no first kickoff in the commitment or dim_game",
+          refuse=True)
+    check("created before the deadline", k is not None and c.created_at is not None and c.created_at < k,
+          f"created_at {rec.created_at}, deadline {rec.deadline}", refuse=True)
     pr = push_record or {}
     stamp = parse_time(pr.get("external_timestamp"))
     pa = ((pr.get("github") or {}).get("push_activity") or {})
@@ -508,8 +561,8 @@ def verify_week(
     check("push record matches the commitment",
           bool(pr) and pr.get("commitment_sha256") == c.sha256 and pr.get("commitment_digest") == c.digest,
           "push_record.json names this commitment's sha256 and digest" if pr else "no push_record.json", refuse=True)
-    check("pushed before kickoff (GitHub timestamp)", external and k is not None and stamp < k,
-          f"GitHub push_activity.timestamp {iso(stamp)} against first kickoff {iso(k)}" if external else
+    check("pushed before the deadline (GitHub timestamp)", external and k is not None and stamp < k,
+          f"GitHub push_activity.timestamp {iso(stamp)} against the deadline {iso(k)}" if external else
           f"no GitHub push timestamp ({src or 'none'})", refuse=True)
     if branch_commit is not None:
         check("branch commit matches the push record", pr.get("commit_sha") == branch_commit,
@@ -869,6 +922,7 @@ def score_week(
     repo_root: Path = PROJECT_ROOT,
     n_boot: int = H.SPEC_N_BOOT,
     dim_game_id: str | None = None,
+    snapshot_ids: Mapping[str, Any] | None = None,
 ) -> tuple[WeekRecord, Path]:
     """Verify, score and write one week. Raises :class:`ScoreRefused` on any refusal."""
     root = Path(root) if root is not None else scoring_root()
@@ -901,7 +955,8 @@ def score_week(
     so_far = pl.concat([f for f in (earlier, week_all.filter(pl.col("scoring") == SCORING) if "scoring" in week_all.columns else week_all) if not f.is_empty()], how="diagonal_relaxed")
     cons_all = consensus
     scored_so_far = score_frames(so_far, cons_all, n_boot=n_boot) if len(found) else None
-    extra = {"dim_game_snapshot": dim_game_id, "rows": frame.height, "comparators": scored.comparators_present,
+    extra = {"dim_game_snapshot": dim_game_id, "processed_snapshots": dict(snapshot_ids or {}),
+             "rows": frame.height, "comparators": scored.comparators_present,
              "consensus": scored.consensus_present, "n_boot": n_boot, "scoring": SCORING,
              "window_weeks_scored": sorted(found + [(season, week)]), "window_total": len(window)}
     write_week(root, rec, week_all, extra)
@@ -1007,10 +1062,12 @@ def rules_hash(rules: Mapping[str, Any]) -> str:
 
 def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int], Mapping[str, Any]],
                               window: Sequence[tuple[int, int]], misses: Mapping[tuple[int, int], Any], *,
-                              repo_root: Path = PROJECT_ROOT) -> list[Check]:
+                              repo_root: Path = PROJECT_ROOT, changelog: Path | None = None) -> list[Check]:
     """The pre-metric checks of the final evaluation (the live-test counterpart of ``integrity_checks``)."""
     data = prereg.data
     checks: list[Check] = []
+    log_path = Path(changelog) if changelog is not None else repo_root / CHANGELOG_DOC
+    logged = changelog_commits(log_path.read_text(encoding="utf-8")) if log_path.is_file() else set()
     rules = data.get("rules") or {}
     pinned = rules.get("lines_sha256") or data.get("lines_sha256")
     checks.append(Check("approval lines", pinned == H.lines_spec_sha256(),
@@ -1034,6 +1091,10 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
         dirty = _run_git(repo_root, "status", "--porcelain", "--untracked-files=no").stdout.strip()
         checks.append(Check("final evaluation commit", rel.ok, f"HEAD {head[:12]}: {rel.detail}"
                             + ("; tracked files modified" if dirty else "; working tree clean")))
+        missing = uncovered_commits(commit, head, repo_root, logged)
+        checks.append(Check("final evaluation change log", not missing,
+                            f"{len(logged)} logged commits; every commit in X..HEAD is logged" if not missing
+                            else f"commits in X..HEAD without a change-log entry: {[m[:12] for m in missing[:5]]}"))
     scored = [w for w in window if w in records]
     missed = [w for w in window if w in misses]
     unknown = [w for w in window if w not in records and w not in misses]
@@ -1050,6 +1111,11 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
         if commit and r.get("code_commit"):
             rel = commit_relation_allowed(commit, r["code_commit"], repo_root, allowed, frozen)
             failed = [c for c in failed if c["name"] != "code commit"] + ([] if rel.ok else [{"name": "code commit", "detail": rel.detail}])
+        if commit and r.get("code_commit") and H._full_sha(str(r["code_commit"]), repo_root) not in (None, H._full_sha(commit, repo_root)):
+            missing = uncovered_commits(commit, str(r["code_commit"]), repo_root, logged)
+            checks.append(Check(f"{wk} change log", not missing,
+                                "every commit between X and the build commit is logged" if not missing
+                                else f"unlogged commits: {[m[:12] for m in missing[:5]]}"))
         checks.append(Check(f"{wk} commitment", not failed,
                             f"commitment {str(r.get('commitment_sha256'))[:12]}, GitHub push {r.get('external_timestamp')}, "
                             f"kickoff {r.get('first_kickoff')}, {r.get('files_verified')} files"
@@ -1179,7 +1245,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
         rec, out = score_week(season, week, source=source, dim_game=dim_game, push_record=push_record,
                               roots=[PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines,
                               consensus=consensus, prereg=prereg, allow_rehearsal=args.allow_rehearsal,
-                              dim_game_id=dim_game_snapshot_id())
+                              dim_game_id=dim_game_snapshot_id(), snapshot_ids=processed_snapshot_ids())
     except ScoreRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3

@@ -177,8 +177,12 @@ def test_refusals_digest_hash_push_and_rehearsal(tmp_path):
     with pytest.raises(LS.ScoreRefused, match="file hashes"):
         _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10, tamper="raw"), dg)
     late = make_week(tmp_path, 2026, 10, pushed=KICKOFF + timedelta(minutes=1))
-    with pytest.raises(LS.ScoreRefused, match="pushed before kickoff"):
+    with pytest.raises(LS.ScoreRefused, match="pushed before the deadline"):
         _score(tmp_path, 2026, 10, late, dg)
+    # the binding deadline is the earlier kickoff: a game moved two hours earlier makes this push late
+    early = dim_game(2026, [10]).with_columns((pl.col("kickoff_utc") - timedelta(hours=2)).alias("kickoff_utc"))
+    with pytest.raises(LS.ScoreRefused, match="pushed before the deadline"):
+        _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10, pushed=KICKOFF - timedelta(hours=1)), early)
     record = make_week(tmp_path, 2026, 10)
     with pytest.raises(LS.ScoreRefused, match="push record"):
         _score(tmp_path, 2026, 10, None, dg)
@@ -199,7 +203,8 @@ def test_weekly_report_is_information_only_and_parts_accumulate(tmp_path):
     assert "Verdict:" not in text and "information only" in text
     assert rec.refusals == [] and rec.files_verified == 2
     names = {c.name: c.ok for c in rec.checks}
-    assert names["digest"] and names["pushed before kickoff (GitHub timestamp)"] and names["pin: selection.json"]
+    assert names["digest"] and names["pushed before the deadline (GitHub timestamp)"] and names["pin: selection.json"]
+    assert rec.deadline == KICKOFF.isoformat(timespec="seconds").replace("+00:00", "+00:00")
     assert names["code commit"] is False  # the pre-registration has no frozen commit yet
     part = LS.part_path(tmp_path / "scoring", 2026, 10)
     assert part.is_file() and json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text())["part_sha256"]
@@ -295,6 +300,42 @@ def test_commit_relation_allowed_paths(tmp_path):
     rel = LS.commit_relation_allowed(x, z, tmp_path, allowed, frozen)
     assert not rel.ok and "ffml/models/a.py" in rel.detail
     assert not LS.commit_relation_allowed(y, x, tmp_path, allowed, frozen).ok  # not a descendant
+
+
+def test_changelog_commits_and_descendant_coverage(tmp_path):
+    _g(tmp_path, "init", "-q")
+    _g(tmp_path, "config", "user.email", "t@example.com")
+    _g(tmp_path, "config", "user.name", "t")
+
+    def commit(rel, msg):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(msg + "\n", encoding="utf-8")
+        _g(tmp_path, "add", rel)
+        _g(tmp_path, "commit", "-q", "-m", msg)
+        return _g(tmp_path, "rev-parse", "HEAD")
+
+    x = commit("ffml/models/a.py", "X")
+    y = commit("scripts/run.py", "logged change")
+    z = commit("scripts/other.py", "unlogged change")
+    text = ("# log\n\n| Date (UTC) | Commit | Paths | Reason | Verification | Verified by | First week |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| 2026-11-20 | `{y[:9]}` | scripts/run.py | runner fix | no effect on commitments | Evaluator | 2026w11 |\n")
+    logged = LS.changelog_commits(text)
+    assert logged == {y[:9]}
+    assert LS.uncovered_commits(x, x, tmp_path, logged) == [] and LS.uncovered_commits(x, y, tmp_path, logged) == []
+    assert LS.uncovered_commits(x, z, tmp_path, logged) == [z]
+    # the final's checks use the log: a week built at z fails coverage, one built at y passes
+    log_file = tmp_path / "changelog.md"
+    log_file.write_text(text, encoding="utf-8")
+    prereg = _prereg(tmp_path, commit=x, frozen_paths=["ffml/models/"], allowed_paths={"scripts/": "runner"})
+    records = {(2026, 10): {"code_commit": y, "checks": [], "commitment_sha256": "a" * 64, "files_verified": 2},
+               (2026, 11): {"code_commit": z, "checks": [], "commitment_sha256": "b" * 64, "files_verified": 2}}
+    checks = LS.livetest_integrity_checks(prereg, records, [(2026, 10), (2026, 11)], {}, repo_root=tmp_path,
+                                          changelog=log_file)
+    by = {c.name: c for c in checks}
+    assert by["frozen commit"].ok and by["2026w10 change log"].ok and not by["2026w11 change log"].ok
+    assert by["2026w10 commitment"].ok and by["2026w11 commitment"].ok  # the path rule itself is satisfied at z
 
 
 def test_prereg_window_and_week_parsing():
