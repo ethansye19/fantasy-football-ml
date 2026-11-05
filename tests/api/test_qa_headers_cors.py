@@ -82,8 +82,15 @@ def test_simple_requests_from_other_origins_get_no_cors_grant(make_client):
 
 
 def test_wildcard_origin_setting_never_allows_credentials(make_client):
-    """Even a misconfigured ``["*"]`` cannot be combined with credentials."""
-    client = make_client(cors_origins=["*"])
+    """Production refuses ``["*"]`` (QA-F21); private_test still never adds credentials."""
+    import pytest
+    from pydantic import ValidationError
+
+    from api.settings import ApiSettings
+
+    with pytest.raises(ValidationError):
+        ApiSettings(app_env="production", cors_origins=["*"])
+    client = make_client(app_env="private_test", cors_origins=["*"])
     r = client.get("/meta/health", headers={"Origin": "https://evil.example"})
     assert r.headers.get("access-control-allow-origin") == "*"
     assert "access-control-allow-credentials" not in r.headers
