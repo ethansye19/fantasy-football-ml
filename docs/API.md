@@ -42,6 +42,9 @@ these limits, which the API enforces:
 | `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>`. |
 | `FFML_APPROVAL_TTL_SECONDS` | `5` | How long one gate evaluation is reused. |
 | `FFML_BODY_MAX_BYTES` | `262144` | Largest accepted request body (413 above it; `0` disables the check). |
+| `FFML_RATE_LIMIT_ENABLED` | `true` | Inbound rate limiting per client and route family (section 4.1). |
+| `FFML_RATE_LIMIT_SLEEPER`, `_WRITE`, `_HEAVY`, `_READ`, `_META` | `10/5`, `30/10`, `30/10`, `120/30`, `300/60` | Per-minute rate and burst per family; `0` disables one family. |
+| `FFML_TRUSTED_PROXIES` | `[]` | Peers whose `X-Forwarded-For` first entry names the client (set it to the web proxy's address). |
 | `FFML_DATA_DIR`, `FFML_ARTIFACTS_DIR` | repo `data/`, `artifacts/` | Shared with the pipeline (`ffml.config`). |
 
 ## 3. The approval gate
@@ -170,6 +173,7 @@ All errors other than the gate's 503 use one envelope:
 | 404 | `sleeper_not_found` | Sleeper has no such user or league |
 | 409 | `multiple_leagues` | a username with several leagues and no `league_id`; `details.leagues` lists them |
 | 413 | `payload_too_large` | request body over `FFML_BODY_MAX_BYTES` (256 KiB by default), checked before parsing |
+| 429 | `rate_limited` | the client's bucket for the route family is empty; `Retry-After` in whole seconds, `details.family` and `details.retry_after_seconds` |
 | 409 | `no_team_selected` | waivers or trades without a "my team" choice or `league_team_id` |
 | 409 | `not_a_sleeper_league` | sync on a manual league |
 | 409 | `offseason` | start/sit or weekly projections when no regular-season game remains (live runs only) |
@@ -179,6 +183,26 @@ All errors other than the gate's 503 use one envelope:
 | 502 | `sleeper_unavailable` | Sleeper failed after retries |
 | 503 | `no_approved_model` | gate (3.2); body shape is the fixed one above, not this envelope |
 | 500 | `internal_error` | anything unexpected (no stack traces in responses) |
+
+### 4.1 Rate limits
+
+Token buckets per client and route family, checked before parsing and before
+the gate (so the gate's 503 is unaffected). The client is the socket peer, or
+the first `X-Forwarded-For` entry when the peer is listed in
+`FFML_TRUSTED_PROXIES` (the web proxy should forward it). Families and
+defaults (per minute / burst):
+
+| Family | Routes | Default |
+| --- | --- | --- |
+| `sleeper` | `POST /leagues/import/sleeper`, `POST /leagues/{id}/sync`, `GET /sleeper/users/{u}/leagues` | 10 / 5 |
+| `write` | other `POST`, `PUT`, `DELETE` on `/leagues*` | 30 / 10 |
+| `heavy` | waivers, trade evaluation | 30 / 10 |
+| `read` | projections, start/sit, rest of season, `/players` | 120 / 30 |
+| `meta` | `/meta/*`, docs pages | 300 / 60 |
+
+CORS preflights are not counted. On top of this the API keeps one Sleeper
+client per process (300 requests per minute, burst 30, D-025), so the total
+outbound Sleeper traffic stays bounded whatever the client mix.
 
 ## 5. Meta endpoints (never gated)
 

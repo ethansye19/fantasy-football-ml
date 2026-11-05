@@ -56,6 +56,17 @@ class ApiSettings(BaseSettings):
     # largest accepted request body in bytes (413 above it; QA-F02); 0 disables the check
     body_max_bytes: int = 256 * 1024
 
+    # inbound rate limits per client and route family (QA-F03, docs/SECURITY.md section 5):
+    # "<per_minute>/<burst>"; "0" disables one family, rate_limit_enabled=False disables all
+    rate_limit_enabled: bool = True
+    rate_limit_sleeper: str = "10/5"
+    rate_limit_write: str = "30/10"
+    rate_limit_heavy: str = "30/10"
+    rate_limit_read: str = "120/30"
+    rate_limit_meta: str = "300/60"
+    # peers whose X-Forwarded-For first entry identifies the client (the web proxy)
+    trusted_proxies: list[str] = []
+
     # seconds an approval/source resolution is reused (0 disables the cache)
     approval_ttl_seconds: float = 5.0
     # in-memory scored-run cache entries (run x scoring hash)

@@ -73,6 +73,7 @@ def make_client(api_dirs: dict[str, Path]) -> Iterator[Callable[..., TestClient]
             "app_env": app_env,
             "approval_ttl_seconds": 0,
             "database_url": url,
+            "rate_limit_enabled": False,  # QA-F03 limiter: tests opt in explicitly
         }
         values.update(overrides)
         client = TestClient(create_app(ApiSettings(**values)))

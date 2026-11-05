@@ -24,7 +24,7 @@ from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
 from api.db.session import Database
 from api.deps import SleeperHolder
 from api.errors import install_error_handlers
-from api.middleware import BodyLimitMiddleware
+from api.middleware import BodyLimitMiddleware, RateLimitMiddleware, limiter_from_settings
 from api.services.players import DirectoryHolder
 from api.services.projection import ProjectionService
 from api.services.season import SeasonService
@@ -65,9 +65,11 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.sleeper = SleeperHolder()  # one client and token bucket per process (D-025)
     app.state.season = SeasonService(settings.raw_dir)
     app.state.projections = ProjectionService(settings.scoring_cache_size)
+    app.state.rate_limiter = limiter_from_settings(settings)
 
     install_error_handlers(app)
     app.add_middleware(BodyLimitMiddleware, max_bytes=settings.body_max_bytes)
+    app.add_middleware(RateLimitMiddleware, limiter=app.state.rate_limiter)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),

@@ -6,6 +6,8 @@ import pytest
 import respx
 from sleeper_mock import USERNAME, directory, mock_sleeper, no_sleep_factory
 
+from api.middleware import Limit, route_family
+
 BASE_LEAGUE = {
     "name": "Hardening league",
     "season": 2026,
@@ -103,3 +105,105 @@ def test_sleeper_client_is_process_wide_and_closed_at_shutdown(make_client):
         client.__exit__(None, None, None)  # lifespan shutdown closes it
         assert http.is_closed
         client.__enter__()  # the fixture tears the client down again
+
+
+# --------------------------------------------------------------------------- QA-F03 rate limits
+
+
+def _limited(make_client, **overrides):
+    client = make_client(
+        rate_limit_enabled=True,
+        rate_limit_meta="60/2",
+        rate_limit_read="60/2",
+        rate_limit_sleeper="60/1",
+        rate_limit_write="60/2",
+        rate_limit_heavy="60/1",
+        **overrides,
+    )
+    now = [1000.0]
+    client.app.state.rate_limiter.clock = lambda: now[0]
+    return client, now
+
+
+def test_rate_limit_429_with_retry_after_and_refill(make_client):
+    client, now = _limited(make_client)
+    assert client.get("/meta/health").status_code == 200
+    assert client.get("/meta/health").status_code == 200
+    r = client.get("/meta/health")
+    assert r.status_code == 429, r.text
+    assert r.headers["Retry-After"] == "1"  # 60 per minute: one token per second
+    err = r.json()["error"]
+    assert err["code"] == "rate_limited" and err["details"]["family"] == "meta"
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["Cache-Control"] == "no-store"
+    now[0] += 1.0
+    assert client.get("/meta/health").status_code == 200
+    assert client.get("/meta/health").status_code == 429
+
+
+def test_rate_limit_families_are_independent_and_run_before_the_gate(make_client):
+    client, _ = _limited(make_client)
+    for _ in range(2):
+        client.get("/meta/health")
+    assert client.get("/meta/health").status_code == 429
+    assert client.get("/players", params={"search": "ab"}).status_code == 200  # read family
+    assert client.get("/projections").status_code == 503  # gate, counted as read
+    assert client.get("/projections").status_code == 429  # read bucket empty before the gate
+    assert client.post("/leagues/import/sleeper", json={}).status_code == 422  # sleeper family
+    assert client.post("/leagues/import/sleeper", json={}).status_code == 429
+    assert client.post("/leagues", json={}).status_code == 422  # write family, still open
+    r = client.options(
+        "/leagues",
+        headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"},
+    )
+    assert r.status_code != 429  # preflights are not counted
+
+
+def test_rate_limit_is_per_client_behind_a_trusted_proxy(make_client):
+    client, _ = _limited(make_client, trusted_proxies=["testclient"])
+    a = {"X-Forwarded-For": "203.0.113.1, 10.0.0.2"}
+    b = {"X-Forwarded-For": "203.0.113.2"}
+    assert [client.get("/meta/health", headers=a).status_code for _ in range(3)] == [200, 200, 429]
+    assert client.get("/meta/health", headers=b).status_code == 200
+    assert client.get("/meta/health").status_code == 200  # the proxy itself is a client too
+    untrusted, _ = _limited(make_client)  # no trusted proxies: the header is ignored
+    codes = [
+        untrusted.get("/meta/health", headers={"X-Forwarded-For": f"203.0.113.{i}"}).status_code
+        for i in range(3)
+    ]
+    assert codes == [200, 200, 429]
+
+
+def test_rate_limits_are_off_in_tests_and_on_by_default(make_client):
+    client = make_client()
+    assert not client.app.state.rate_limiter.enabled
+    assert all(client.get("/meta/health").status_code == 200 for _ in range(70))
+    from api.settings import ApiSettings
+
+    defaults = ApiSettings(app_env="production")
+    assert defaults.rate_limit_enabled and defaults.rate_limit_sleeper == "10/5"
+
+
+def test_limit_parsing_and_route_families():
+    assert Limit.parse("10/5") == Limit(10.0, 5)
+    assert Limit.parse("12") == Limit(12.0, 2)  # burst defaults to a tenth of a minute
+    assert not Limit.parse("0").enabled and not Limit.parse("").enabled
+    cases = {
+        ("POST", "/leagues/import/sleeper"): "sleeper",
+        ("POST", "/leagues/abc/sync"): "sleeper",
+        ("GET", "/sleeper/users/x/leagues"): "sleeper",
+        ("POST", "/leagues"): "write",
+        ("PUT", "/leagues/abc/settings"): "write",
+        ("DELETE", "/leagues/abc"): "write",
+        ("GET", "/leagues/abc/waivers"): "heavy",
+        ("POST", "/leagues/abc/trades/evaluate"): "heavy",
+        ("GET", "/leagues/abc/projections"): "read",
+        ("POST", "/leagues/abc/start-sit"): "read",
+        ("GET", "/leagues/abc/ros"): "read",
+        ("GET", "/leagues"): "read",
+        ("GET", "/projections"): "read",
+        ("GET", "/players"): "read",
+        ("GET", "/meta/health"): "meta",
+        ("GET", "/docs"): "meta",
+    }
+    assert {k: route_family(*k) for k in cases} == cases
