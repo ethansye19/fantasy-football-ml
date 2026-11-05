@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
@@ -10,6 +10,48 @@ PlayerId = Annotated[
     str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,32}$")
 ]
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+#: League settings the app stores (copied from Sleeper, editable in the manual form). Free-form
+#: keys and unbounded values are refused (QA-F02).
+SLEEPER_SETTINGS_KEYS: tuple[str, ...] = (
+    "num_teams",
+    "playoff_week_start",
+    "playoff_teams",
+    "start_week",
+    "leg",
+    "last_scored_leg",
+    "trade_deadline",
+    "waiver_type",
+    "waiver_budget",
+    "reserve_slots",
+    "taxi_slots",
+    "best_ball",
+    "type",
+)
+SettingKey = Literal[
+    "num_teams",
+    "playoff_week_start",
+    "playoff_teams",
+    "start_week",
+    "leg",
+    "last_scored_leg",
+    "trade_deadline",
+    "waiver_type",
+    "waiver_budget",
+    "reserve_slots",
+    "taxi_slots",
+    "best_ball",
+    "type",
+    "status",
+]
+SettingValue = (
+    bool
+    | Annotated[int, Field(ge=-1_000_000, le=1_000_000)]
+    | Annotated[float, Field(allow_inf_nan=False, ge=-1_000_000, le=1_000_000)]
+    | Annotated[str, StringConstraints(max_length=100)]
+    | None
+)
+LeagueSettings = dict[SettingKey, SettingValue]
 
 
 class _Body(BaseModel):
@@ -68,7 +110,7 @@ class ManualLeagueRequest(_Body):
     num_teams: int = Field(ge=2, le=32)
     scoring: ScoringInput
     roster_positions: list[str] = Field(min_length=1, max_length=40)
-    settings: dict[str, Any] = Field(default_factory=dict, max_length=50)
+    settings: LeagueSettings = Field(default_factory=dict, max_length=50)
     teams: list[ManualTeamInput] = Field(default_factory=list, max_length=32)
 
 
@@ -76,7 +118,7 @@ class LeagueSettingsUpdate(_Body):
     name: ShortText | None = None
     scoring: ScoringInput | None = None
     roster_positions: list[str] | None = Field(default=None, min_length=1, max_length=40)
-    settings: dict[str, Any] | None = Field(default=None, max_length=50)
+    settings: LeagueSettings | None = Field(default=None, max_length=50)
 
 
 class MyTeamRequest(_Body):
@@ -84,6 +126,8 @@ class MyTeamRequest(_Body):
 
 
 __all__ = [
+    "SLEEPER_SETTINGS_KEYS",
+    "LeagueSettings",
     "LeagueSettingsUpdate",
     "ManualLeagueRequest",
     "ManualTeamInput",

@@ -41,6 +41,7 @@ these limits, which the API enforces:
 | `FFML_API_FIXTURE_PREDICTIONS_DIR` | unset | `private_test` only: a predictions store holding fixture runs. |
 | `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>`. |
 | `FFML_APPROVAL_TTL_SECONDS` | `5` | How long one gate evaluation is reused. |
+| `FFML_BODY_MAX_BYTES` | `262144` | Largest accepted request body (413 above it; `0` disables the check). |
 | `FFML_DATA_DIR`, `FFML_ARTIFACTS_DIR` | repo `data/`, `artifacts/` | Shared with the pipeline (`ffml.config`). |
 
 ## 3. The approval gate
@@ -168,6 +169,7 @@ All errors other than the gate's 503 use one envelope:
 | 422 | `player_not_found` | unknown player ids in a request body (manual-league `teams[].players`, start/sit `player_ids`); `details.player_ids` lists them |
 | 404 | `sleeper_not_found` | Sleeper has no such user or league |
 | 409 | `multiple_leagues` | a username with several leagues and no `league_id`; `details.leagues` lists them |
+| 413 | `payload_too_large` | request body over `FFML_BODY_MAX_BYTES` (256 KiB by default), checked before parsing |
 | 409 | `no_team_selected` | waivers or trades without a "my team" choice or `league_team_id` |
 | 409 | `not_a_sleeper_league` | sync on a manual league |
 | 409 | `offseason` | start/sit or weekly projections when no regular-season game remains (live runs only) |
@@ -339,7 +341,12 @@ Sleeper (D-020).
 ```
 
 `scoring` is either `{"preset": "ppr"|"half"|"std", "overrides": {...}}` or
-`{"settings": {<Sleeper key>: points}}`. Roster slots: `QB, RB, WR, TE, FLEX,
+`{"settings": {<Sleeper key>: points}}`. League `settings` accepts only the
+known keys (`num_teams`, `playoff_week_start`, `playoff_teams`, `start_week`,
+`leg`, `last_scored_leg`, `trade_deadline`, `waiver_type`, `waiver_budget`,
+`reserve_slots`, `taxi_slots`, `best_ball`, `type`, `status`) with scalar
+values: booleans, numbers within one million, strings up to 100 characters,
+or null; anything else is 422. Roster slots: `QB, RB, WR, TE, FLEX,
 SUPER_FLEX, WRRB_FLEX, REC_FLEX, K, DEF, BN, IR, TAXI` (IDP slots are accepted
 and ignored). `players` accepts gsis ids, Sleeper ids or team codes. Returns
 201 with the League object.

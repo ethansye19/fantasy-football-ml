@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.db.models import League, LeagueRosterSlot, LeagueTeam
 from api.errors import ApiError
-from api.schemas import ManualLeagueRequest, ScoringInput
+from api.schemas import SLEEPER_SETTINGS_KEYS, ManualLeagueRequest, ScoringInput
 from api.services.players import PlayerDirectory, PlayerInfo
 from ffml.data.sleeper import (
     SleeperClient,
@@ -37,22 +37,6 @@ log = logging.getLogger(__name__)
 
 NON_STARTING = frozenset({"BN", "IR", "TAXI"})
 IDP_SLOTS = frozenset({"DL", "LB", "DB", "IDP_FLEX"})
-#: League settings copied from Sleeper (others are not used by the app).
-SLEEPER_SETTINGS_KEYS = (
-    "num_teams",
-    "playoff_week_start",
-    "playoff_teams",
-    "start_week",
-    "leg",
-    "last_scored_leg",
-    "trade_deadline",
-    "waiver_type",
-    "waiver_budget",
-    "reserve_slots",
-    "taxi_slots",
-    "best_ball",
-    "type",
-)
 SLOT_KINDS = ("starter", "bench", "ir", "taxi")
 
 

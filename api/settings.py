@@ -53,6 +53,9 @@ class ApiSettings(BaseSettings):
     api_fixture_predictions_dir: Path | None = None
     api_replay_run: str | None = None  # "<season>/<week>/<run_id>" pins one replay run
 
+    # largest accepted request body in bytes (413 above it; QA-F02); 0 disables the check
+    body_max_bytes: int = 256 * 1024
+
     # seconds an approval/source resolution is reused (0 disables the cache)
     approval_ttl_seconds: float = 5.0
     # in-memory scored-run cache entries (run x scoring hash)

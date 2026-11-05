@@ -404,15 +404,6 @@ def test_long_lists_and_strings_are_refused(client):
     _assert_clean_error(r, {422})
 
 
-QA_F02 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F02: no request body size limit, and free-form league `settings` values are "
-    "unbounded, so a multi-megabyte value is stored and returned on every league read "
-    "(api/schemas.py:71,79; no limit in api/main.py). Remove this marker with the fix.",
-)
-
-
-@QA_F02
 def test_oversized_body_is_refused(client):
     body = {**LEAGUE, "settings": {"notes": "x" * 2_000_000}}
     r = client.post("/leagues", json=body)
@@ -420,7 +411,6 @@ def test_oversized_body_is_refused(client):
     assert client.get("/leagues").json()["leagues"] == []
 
 
-@QA_F02
 def test_free_form_setting_values_are_bounded(client):
     r = client.post("/leagues", json={**LEAGUE, "settings": {"playoff_week_start": "x" * 10_000}})
     assert r.status_code == 422, r.status_code
