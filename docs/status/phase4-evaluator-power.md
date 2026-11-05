@@ -53,3 +53,47 @@ Decisions proposed:
 
 Next:
 - The owner reviews the estimate and decides the test design before chain_v2 is frozen (Week 10 kickoff 2026-11-13 01:15 UTC).
+
+## Follow-up 2026-11-05: D-105 candidate rule sets (EV-4.2)
+
+Scope: the coordinator's candidate rule sets R0-R3 under the D-105 limits
+(fixed by the owner before any candidate result was seen), on weeks 10-18
+and 11-18, with a no-edge null, the 18-week fallback window and the D-106
+one-miss case. Same simulator, data and seeds as the first report; 5,000
+replicates per window. Also the CI item: the holdout audit flagged the
+holdout-season literal in `power.py` report prose; the season now comes from
+settings and the audit's eval-code check passes.
+
+Done:
+- `ffml/eval/power.py` (d1a5163 and this commit): pooled QB-TE accuracy lines, the not-worse rule, the no-edge null `N0` (every chain-minus-comparator and start/sit difference centred on 0 at each week number, noise kept) and `N0_vc`, windows `ext18`, `one_miss`, `ext18_one_miss`, `RULESETS` R0-R3, `evaluate_rules`, `select_d105`, `real_pooled_lines` (check against `metric_bundle` plus `paired_bundle_bootstrap`), `null_calibration`, `render_candidates_report`, CLI `--candidates`.
+- `tests/eval/test_power.py`: 7 new tests (26 in all): pooled fast path equals the real bundle on thinned windows (1e-9), null centring, rule-set sizes 22/28/31/34, R0 under `evaluate_rules` equals the 22-line verdicts, one-miss draws, selection rule.
+- `reports/evaluator_live_test_power_candidates.md`: method deltas, checks, one table per window, the 18-week and one-miss tables, per-line tables, assumptions. No recommendation; the D-105 pick is stated.
+
+Evidence:
+- `pytest -q tests/eval/test_power.py`: 26 passed in 112 s. `pytest -q tests/eval/test_audits.py`: 20 passed (the eval-code check included). `ruff check`: clean.
+- Real-data checks: pooled lines against the real bundle on one thinned window, largest difference 6.7e-16 over 36 values; null centring residual 5.7e-13 over all 54 slates; R0 reproduces the first report (A 0.106 against 0.104 at 10,000 replicates; A_vc 0.044 against 0.043).
+- `python -m ffml.eval.power --candidates --reps 5000`: about 12 minutes, one process (the run on disk).
+
+Results, weeks 10-18 (MC SE in parentheses; D-105 uses the A_vc and N0_vc columns):
+
+| candidate | lines | good model, A_vc | no edge, N0_vc | good model, A | no edge, N0 | qualifies |
+| --- | --- | --- | --- | --- | --- | --- |
+| R0 | 22 | 0.044 (0.003) | 0.000 (0.000) | 0.106 (0.004) | 0.000 (0.000) | no: pass < 0.70 |
+| R1 | 28 | 0.614 (0.007) | 0.000 (0.000) | 0.659 (0.007) | 0.000 (0.000) | no: pass < 0.70 |
+| R2 | 31 | 0.124 (0.005) | 0.000 (0.000) | 0.192 (0.006) | 0.000 (0.000) | no: pass < 0.70 |
+| R3 | 34 | 0.614 (0.007) | 0.000 (0.000) | 0.659 (0.007) | 0.000 (0.000) | no: pass < 0.70 |
+
+- **Under D-105 no candidate qualifies.** Every false-approval rate is 0.000 (within the 10% limit), but the highest good-model pass rate is 0.614 (R1 and R3; 0.659 before the variance correction), below the 70% floor. Under D-105 item 3 the unchanged 22 rules apply over 2026 weeks 10-18 plus 2027 weeks 1-9; on that window R0 passes a good model 0.557 (A_vc; 0.722 uncorrected) with false approval 0.000. Weeks 11-18: R1/R3 0.520, R2 0.088, R0 0.024 (A_vc).
+- **Why R1 and R3 stop at 0.61.** Their 18 accuracy lines each pass in at least 99.9% of good-model replicates; the shortfall is the ten unchanged lines, L13-L22, whose joint pass rate under A_vc is about 0.61 (WR start/sit L15 0.815, QB coverage L17 0.859, DST coverage L22 0.959, the other start/sit lines 0.96-0.98). Resizing only the accuracy lines cannot lift a 9-week design above that ceiling; this is a description of the candidates, not a proposal.
+- **One miss (D-106).** Eight of nine weeks: R0 0.030, R1/R3 0.558, R2 0.093 (A_vc), null 0.000. The fallback's one-miss case (17 of 18 weeks): R0 0.518 (A_vc; 0.696 uncorrected), null 0.000; R1/R3 0.821.
+- **Null calibration.** A lone one-metric beats line passes a no-edge model 4.2-6.5% of the time on nine weeks, not the nominal 2.5%, and a lone not-worse line fails it 3.9-6.1%; the two tails are equal in size, so the null is centred and the excess is the width of the D-078 percentile interval with nine clusters. Reported, not corrected.
+- R1 and R3 have identical pass rates on every window: the added pooled q10 and q90 lines do not change a verdict at this precision.
+
+Not done / blocked:
+- `report_holdout.py` has no pooled QB-TE group; adopting R1-R3 would need one. Not built, since no candidate qualifies.
+
+Decisions proposed:
+- None. The D-105 limits select no candidate; item 3 (the 22 rules over 18 weeks, "no approved model" meanwhile) applies unless the owner decides otherwise.
+
+Next:
+- The owner sees the candidate table and the fallback numbers before the Week 10 kickoff.

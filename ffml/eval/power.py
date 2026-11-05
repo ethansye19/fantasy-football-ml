@@ -1283,9 +1283,12 @@ CANDIDATE_WINDOWS: dict[str, Window] = {
                     (*range(10, 19), *range(1, 10)), (*(GAMES_2026[w] for w in range(10, 19)), *([None] * 9))),
     "one_miss": Window("one_miss", "weeks 10-18 minus one week drawn at random (D-106, eight weeks scored)",
                        tuple(range(10, 19)), tuple(GAMES_2026[w] for w in range(10, 19)), drop_one=True),
+    "ext18_one_miss": Window("ext18_one_miss", "the 18-week window minus one week drawn at random (17 weeks scored)",
+                             (*range(10, 19), *range(1, 10)),
+                             (*(GAMES_2026[w] for w in range(10, 19)), *([None] * 9)), drop_one=True),
 }
 #: seed index per window; i, ii and iii keep the random streams of the first report
-WINDOW_SEED_INDEX: dict[str, int] = {"i": 0, "ii": 1, "iii": 2, "ext18": 3, "one_miss": 4}
+WINDOW_SEED_INDEX: dict[str, int] = {"i": 0, "ii": 1, "iii": 2, "ext18": 3, "one_miss": 4, "ext18_one_miss": 5}
 
 
 @dataclass
@@ -1333,7 +1336,15 @@ def select_d105(rows: Sequence[Mapping[str, Any]], fa_max: float = 0.10, pass_mi
     """
     qual = [r for r in rows if r["fa"] <= fa_max and r["good"] >= pass_min]
     if not qual:
-        return {"pick": None, "qualifying": [], "close": [], "reason": "no candidate qualifies"}
+        parts = []
+        for r in rows:
+            why = []
+            if r["fa"] > fa_max:
+                why.append(f"false approval {r['fa']:.3f} > {fa_max:.2f}")
+            if r["good"] < pass_min:
+                why.append(f"good-model pass {r['good']:.3f} < {pass_min:.2f}")
+            parts.append(f"{r['key']}: " + " and ".join(why))
+        return {"pick": None, "qualifying": [], "close": [], "reason": "; ".join(parts)}
     best = min(qual, key=lambda r: r["fa"])
     close = [r for r in qual if abs(r["fa"] - best["fa"]) <= close_se * math.hypot(r["fa_se"], best["fa_se"])]
     pick = min(close, key=lambda r: (r["n_lines"], r["fa"]))
@@ -1392,6 +1403,31 @@ def null_residual(data: PowerData) -> float:
     return worst
 
 
+def null_calibration(data: PowerData, window: Window, n_rep: int = 5000, seed: int = SIM_SEED) -> dict[str, Any]:
+    """How a single one-sided line behaves with no edge: tails of the D-078 interval per cell.
+
+    Under ``N0`` on ``window``: P(interval entirely below 0), P(entirely above 0),
+    the mean and realized sd of the window delta, and the mean bootstrap
+    half-width, for the pooled QB-TE cells and the per-position cells.
+    """
+    rng = np.random.default_rng([seed, 5])
+    store: dict[str, dict[str, list[np.ndarray]]] = {k: {"delta": [], "lo": [], "hi": []} for k in ("pool", "acc")}
+    for _ in range(n_rep):
+        agg = aggregate(data, draw_window(data, window, rng))
+        st = line_stats(agg, "N0", data)
+        for k, (d, lo, hi) in (("pool", (st.pool_delta, st.pool_lo, st.pool_hi)),
+                               ("acc", (st.acc_delta, st.acc_lo, st.acc_hi))):
+            store[k]["delta"].append(d)
+            store[k]["lo"].append(lo)
+            store[k]["hi"].append(hi)
+    out: dict[str, Any] = {"n_rep": n_rep}
+    for k, v in store.items():
+        D, LO, HI = (np.array(v[x]) for x in ("delta", "lo", "hi"))
+        out[k] = {"p_hi_below0": (HI < 0).mean(0), "p_lo_above0": (LO > 0).mean(0), "mean_delta": D.mean(0),
+                  "sd_delta": D.std(0, ddof=1), "mean_halfwidth": ((HI - LO) / 2).mean(0)}
+    return out
+
+
 def _rule_summary(res: RuleSimResult, sc: str, rk: str) -> dict[str, Any]:
     passed = res.passed[(sc, rk)]
     p = float(passed.all(1).mean())
@@ -1414,6 +1450,11 @@ def run_candidates(n_rep: int = 5000, out_json: Path | None = None, progress: bo
     out["null_residual"] = null_residual(data)
     if progress:
         print(f"inputs ready in {time.time() - t0:.0f}s; null residual {out['null_residual']:.2e}", flush=True)
+    out["null_calibration"] = null_calibration(data, WINDOWS["i"], n_rep)
+    if progress:
+        pc0 = out["null_calibration"]["pool"]
+        print(f"null one-sided tails, pooled cells: hi<0 {np.round(pc0['p_hi_below0'], 3).tolist()}, "
+              f"lo>0 {np.round(pc0['p_lo_above0'], 3).tolist()}", flush=True)
     if pooled_check:
         rng = np.random.default_rng([SIM_SEED, 8])
         picks = draw_window(data, WINDOWS["i"], rng)
@@ -1515,12 +1556,28 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
         a(f"**Under D-105 the limits select `{pick}`.** {sel['reason']}. Qualifying: "
           f"{', '.join(f'`{k}`' for k in sel['qualifying'])}.")
     else:
-        a("**Under D-105 no candidate qualifies.** " + sel["reason"] + ". Under D-105 item 3 the limits are not "
+        a("**Under D-105 no candidate qualifies** (" + sel["reason"] + "). Under D-105 item 3 the limits are not "
           "weakened: the unchanged 22 rules apply over 2026 weeks 10-18 plus 2027 weeks 1-9 (section 4).")
     a("")
     a("Reading the columns: the false-approval rate is the pass rate of a model with no edge (N0_vc); the "
       "good-model pass rate is that of a well-calibrated model with the validated accuracy (A_vc). Both use the "
       "variance-corrected scenario as D-105 item 1 requires; the uncorrected A and N0 are shown alongside.")
+    a("")
+    r1 = cell("i", "A_vc", "R1")
+    r1_lines = RULESETS["R1"]
+    acc_idx = [i for i, ln in enumerate(r1_lines) if ln.kind not in ("startsit", "coverage")]
+    tail_idx = [i for i, ln in enumerate(r1_lines) if ln.kind in ("startsit", "coverage")]
+    acc_min = min(r1["per_line"][i] for i in acc_idx)
+    slack = sum(1.0 - r1["per_line"][i] for i in acc_idx)
+    bound = ("in every replicate, so its pass rate of {p:.3f} is exactly" if slack == 0 else
+             "in at least {m:.1%} of replicates, so its pass rate of {p:.3f} is, to within {s:.3f},").format(
+        p=r1["p"], m=acc_min, s=slack)
+    a("**Where the good-model shortfall comes from.** Under A_vc on weeks 10-18 each of `R1`'s 18 accuracy lines "
+      f"passes {bound} the joint pass rate of the ten unchanged lines L13-L22 ("
+      + ", ".join(f"{r1_lines[i].id} {r1['per_line'][i]:.3f}" for i in tail_idx)
+      + "). The same ten lines bound `R3` (identical verdicts) and `R2`. A nine-week design that changes only "
+      "the accuracy lines cannot pass a good model more often than those ten lines do together. This describes "
+      "the candidates; it is not a proposal.")
     a("")
     a("## 1. Method: what changed against the first report")
     a("")
@@ -1548,7 +1605,10 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
       "its expectation is 0 at every week number, for the per-position and the pooled lines alike, while the "
       "week-to-week noise is kept. Start/sit differences against the consensus are centred the same way. "
       "Coverage is scenario A's (well calibrated). The variance-corrected null (N0_vc) applies the sqrt(3/2) "
-      "stretch of A_vc first; the stretch keeps every week-number mean, so the centring is unchanged.")
+      "stretch of A_vc first; the stretch keeps every week-number mean, so the centring is unchanged. With the "
+      "mean at zero the stretch is a pure scale of every accuracy and start/sit difference and of its bootstrap "
+      "draws, and the sign rule is scale-invariant, so N0_vc and N0 give the same accuracy and start/sit "
+      "verdicts; they differ only through coverage (L17-L22), as the tables show.")
     a("")
     a("**Windows.** (i) weeks 10-18 and (ii) weeks 11-18 with the 2026 game counts, as before; (ext18) 2026 weeks "
       "10-18 plus 2027 weeks 1-9 drawn the same way, full slates for weeks 1-9 (the 2027 schedule is unknown); "
@@ -1579,6 +1639,32 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
       "windows (1e-9), the null centring, the rule-set sizes, that R0 under `evaluate_rules` equals the "
       "22-line verdicts, and the selection rule.")
     a("")
+    nc = out.get("null_calibration")
+    if nc:
+        a(f"**A single one-sided line with no edge (weeks 10-18, N0, {int(nc['n_rep']):,} replicates).** The "
+          "nominal one-sided tail of a 95% interval is 2.5%. With nine week clusters the D-078 percentile "
+          "bootstrap understates the spread of the window delta, so a lone beats line passes more often than "
+          "that with no edge, and a lone not-worse line fails more often. Pooled QB-TE cells:")
+        a("")
+        pcx = nc["pool"]
+        rows = []
+        for ci, comp in enumerate(H.LINE_BASELINES):
+            for xi, m in enumerate(METRICS):
+                sd, hw = pcx["sd_delta"][ci][xi], pcx["mean_halfwidth"][ci][xi]
+                rows.append([f"`{comp}`", RB.METRIC_LABEL[m], f"{pcx['p_hi_below0'][ci][xi]:.3f}",
+                             f"{pcx['p_lo_above0'][ci][xi]:.3f}", RB._num(pcx["mean_delta"][ci][xi], 4, True),
+                             f"{sd:.4f}", f"{hw:.4f}", f"{1.96 * sd / hw:.2f}"])
+        a(RB._md_table(["comparator", "metric", "P(interval below 0)", "P(interval above 0)", "mean delta",
+                        "sd of delta", "mean half-width", "1.96 sd / half-width"], rows))
+        a("")
+        acx = nc["acc"]
+        lo_t, hi_t = np.array(acx["p_hi_below0"]), np.array(acx["p_lo_above0"])
+        a(f"Per-position cells (12 comparator-position pairs x 4 metrics): P(interval below 0) ranges "
+          f"{lo_t.min():.3f} to {lo_t.max():.3f} (median {np.median(lo_t):.3f}); P(interval above 0) "
+          f"{hi_t.min():.3f} to {hi_t.max():.3f} (median {np.median(hi_t):.3f}). The two tails are of similar "
+          "size, so the null is centred; the excess over 2.5% is the interval's width, not a bias. This is a "
+          "property of the pre-registered D-078 interval on a 9-week window; it is reported, not corrected.")
+        a("")
     a("## 3. Candidates by window")
     a("")
     for wk in ("i", "ii"):
@@ -1605,6 +1691,15 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
     a(RB._md_table(["candidate", "lines", "8 weeks: A", "8 weeks: A_vc", "8 weeks: N0", "8 weeks: N0_vc",
                     "9 weeks: A_vc", "9 weeks: N0_vc"], rows))
     a("")
+    if "ext18_one_miss" in W:
+        a(f"For the D-105 fallback (the 22 rules over 18 weeks) one miss leaves 17 weeks: "
+          f"{W['ext18_one_miss']['games_mean']:.1f} games on average.")
+        a("")
+        rows = [[f"`{rk}`", str(len(RULESETS[rk]))] + [pp(cell("ext18_one_miss", sc, rk)) for sc in _CAND_SCEN]
+                + [pp(cell("ext18", "A_vc", rk)), pp(cell("ext18", "N0_vc", rk))] for rk in RULESETS]
+        a(RB._md_table(["candidate", "lines", "17 weeks: A", "17 weeks: A_vc", "17 weeks: N0", "17 weeks: N0_vc",
+                        "18 weeks: A_vc", "18 weeks: N0_vc"], rows))
+        a("")
     a(f"## 6. Per-line pass probabilities, `{shown}`" + ("" if pick else " (no selection; the fallback design)"))
     a("")
     for wk in ("i", "ii"):
@@ -1631,8 +1726,8 @@ def render_candidates_report(out: Mapping[str, Any]) -> str:  # noqa: C901 - one
     acc = [i for i, ln in enumerate(lines) if ln.kind not in ("startsit", "coverage")]
     rows = [[lines[i].id, lines[i].describe(), f"{c['per_line'][i]:.3f}"] for i in acc]
     a(f"**False approvals (N0_vc)**: how often a no-edge model passes each accuracy line; P(all lines pass) = "
-      f"{c['p']:.3f}. With no edge a one-metric beats line passes about 2.5% of the time and a one-metric "
-      "not-worse line about 97.5%:")
+      f"{c['p']:.3f}. A lone one-metric beats line passes a no-edge model 3-7% of the time on this window and a "
+      "lone not-worse line fails it 3-7% of the time (section 2); a line over several metrics compounds this:")
     a("")
     a(RB._md_table(["line", "statement", "P(pass | no edge)"], rows))
     a("")
