@@ -75,9 +75,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build and start api + postgres
+        # Only the api service (postgres comes with it through depends_on); the
+        # web image is built in its own job once one exists (proposal P-CI-WEB).
         run: |
           mkdir -p data artifacts reports
-          docker compose up -d --build --wait --wait-timeout 240
+          docker compose up -d --build --wait --wait-timeout 240 api
       - name: Health and approval state (production, no approved model)
         run: |
           set -euo pipefail
