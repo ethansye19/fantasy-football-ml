@@ -109,7 +109,7 @@ def client(make_client, api_dirs, sleeper):
 
 def _api_routes(client) -> list[tuple[str, str]]:
     """``(method, path template)`` of every API operation, from the OpenAPI schema."""
-    paths = client.get("/openapi.json").json()["paths"]
+    paths = client.app.openapi()["paths"]  # in-process: /openapi.json is off in production (QA-F08)
     return sorted((m.upper(), path) for path, ops in paths.items() for m in ops
                   if m.upper() in ("GET", "POST", "PUT", "DELETE", "PATCH"))
 

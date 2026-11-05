@@ -150,7 +150,7 @@ def _sweep(client) -> tuple[list[tuple[str, Any]], set[tuple[str, str]]]:
 
 
 def _operations(client) -> set[tuple[str, str]]:
-    paths = client.get("/openapi.json").json()["paths"]
+    paths = client.app.openapi()["paths"]  # in-process: /openapi.json is off in production (QA-F08)
     return {(m.upper(), p) for p, ops in paths.items() for m in ops}
 
 
