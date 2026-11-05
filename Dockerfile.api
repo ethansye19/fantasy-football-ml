@@ -1,5 +1,8 @@
 # API image (FastAPI + uvicorn). Built and verified in CI only (no Docker locally, D-004).
-FROM python:3.11-slim
+# Reproducible build (QA-F09): the base image is pinned by digest (python:3.11-slim as
+# published on 2026-11-05), dependencies come from the audited requirements.lock.txt, and
+# the package itself is installed without resolving anything.
+FROM python:3.11-slim@sha256:db20d8506e2f15b6db39b40b6015ca46bae855dec6dd326d462cfe79ae972893
 
 ENV PYTHONUTF8=1 \
     PYTHONIOENCODING=utf-8 \
@@ -8,10 +11,14 @@ ENV PYTHONUTF8=1 \
     FFML_APP_ENV=production
 
 WORKDIR /app
+COPY requirements.lock.txt ./
+RUN pip install --no-cache-dir -r requirements.lock.txt \
+    && pip install --no-cache-dir "setuptools==80.9.0" \
+    && useradd --create-home --uid 10001 ffml
 COPY pyproject.toml README.md ./
 COPY ffml ./ffml
 COPY api ./api
-RUN pip install ".[api]" && useradd --create-home --uid 10001 ffml
+RUN pip install --no-cache-dir --no-deps .
 USER ffml
 
 # data/ and artifacts/ are mounted from the host (see docker-compose.yml)

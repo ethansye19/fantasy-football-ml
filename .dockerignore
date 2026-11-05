@@ -1,0 +1,25 @@
+# Build context for Dockerfile.api and Dockerfile.web (QA-F22). The images copy only
+# what they need; the data lake, artifacts, reports and tooling never reach the daemon.
+.git/
+.github/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+data/
+artifacts/
+reports/
+docs/
+tests/
+scripts/
+*.duckdb
+*.duckdb.wal
+.env
+.env.*
+web/node_modules/
+web/.next/
+web/out/
+web/playwright-report/
+web/test-results/

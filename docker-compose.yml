@@ -1,6 +1,13 @@
 # Local/CI stack: web (Next.js), api (FastAPI) and PostgreSQL (D-004). The
 # scheduler service is added in Phase 6 (BE-6.1). Projection routes stay off
 # (HTTP 503 no_approved_model) unless an approved live model is published.
+#
+# The API has no authentication yet (QA-F14, D-011), so its port is published on
+# the loopback interface only; the browser talks to the web service, which
+# proxies to the API over the compose network. The API container sees only the
+# data it serves: predictions, the three identity tables and the schedules
+# (QA-F13). The restricted FantasyPros/ECR tables under data/*/restricted are
+# never mounted (D-007).
 services:
   postgres:
     image: postgres:16-alpine
@@ -25,11 +32,17 @@ services:
       FFML_DATABASE_URL: postgresql+psycopg://ffml:${FFML_POSTGRES_PASSWORD:-ffml-local-only}@postgres:5432/ffml
       FFML_CORS_ORIGINS: '["http://localhost:3000"]'
     volumes:
-      - ./data:/app/data:ro
+      - ./data/predictions:/app/data/predictions:ro
+      - ./data/processed/dim_player:/app/data/processed/dim_player:ro
+      - ./data/processed/dim_team:/app/data/processed/dim_team:ro
+      - ./data/processed/sleeper_players:/app/data/processed/sleeper_players:ro
+      - ./data/raw/schedules:/app/data/raw/schedules:ro
       - ./artifacts:/app/artifacts:ro
       - ./reports:/app/reports:ro
+      # private test environments only (FFML_APP_ENV=private_test):
+      # - ./data/predictions_private:/app/data/predictions_private:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
