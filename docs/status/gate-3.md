@@ -53,3 +53,15 @@ calibration).
 Phase 4 does not start, and no projections are published as approved. The
 owner is asked how the model track continues and whether app work may begin
 with projections switched off (D-097, open question).
+
+## Erratum (2026-11-05): line endings and documented hashes
+
+`core.autocrlf=true` on the development machine checks tracked text files
+out with CRLF, so a SHA-256 of a working-copy file differs from the SHA-256
+of the same file as git and CI store it (LF). The pre-registration's
+documented `selection.json` SHA-256 `d6c1891828657b76...` is the CRLF form;
+the LF form is `75477b2b97bc7d9b...`. The holdout integrity checks hashed
+only git-ignored artifact files (FROZEN.json and the calibrators), which
+have no line-ending conversion, so the holdout verdict is unaffected. From
+chain_v2 on, pins of tracked text files are computed over LF-normalized
+bytes so they are identical on every platform.
