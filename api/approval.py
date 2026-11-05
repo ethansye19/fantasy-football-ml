@@ -12,8 +12,10 @@ production
        exact line ``Verdict: APPROVED`` (``ffml.models.registry.check_report``);
     2. ``data/predictions/LATEST`` points at a readable run whose manifest has
        ``approval_status == "approved"`` (top level or under ``extra``) and
-       ``environment == "live"`` (the prediction mode; a missing key is accepted
-       for older manifests), not ``"private_test"`` or ``"replay"``;
+       ``environment == "live"`` (the prediction mode; only an absent key is
+       accepted, for older manifests; an explicit null is refused), not
+       ``"private_test"`` or ``"replay"``; labels are compared exactly, with no
+       case folding or whitespace stripping;
     3. that manifest's ``model_version`` equals the live version.
 
     Anything missing, unreadable or malformed means no serving. Nothing else
@@ -205,7 +207,17 @@ def manifest_field(manifest: dict[str, Any], key: str) -> Any:
 def manifest_is_approved(manifest: dict[str, Any]) -> bool:
     """True only for the exact string ``"approved"``; anything else is not approved."""
     value = manifest_field(manifest, "approval_status")
-    return isinstance(value, str) and value.strip().lower() == APPROVED
+    return isinstance(value, str) and value == APPROVED
+
+
+def manifest_has(manifest: dict[str, Any], key: str) -> bool:
+    """Whether ``key`` is present at the top level or under ``extra`` (even when null)."""
+    if not isinstance(manifest, dict):
+        return False
+    if key in manifest:
+        return True
+    extra = manifest.get("extra")
+    return isinstance(extra, dict) and key in extra
 
 
 def _read_json(path: Path, missing: str, malformed: str) -> dict[str, Any]:
@@ -361,9 +373,10 @@ def _production(settings: ApiSettings) -> ApprovalState:
     # ``environment`` is the prediction mode written by ``ffml predict``: "live",
     # "private_test" or "replay". Only "live" serves; a missing key is accepted for
     # older manifests because every other condition must still hold.
-    environment = manifest_field(src.manifest, "environment")
-    if environment is not None and environment != LIVE_ENVIRONMENT:
-        return blocked("snapshot_not_live", version)
+    if manifest_has(src.manifest, "environment") and (
+        manifest_field(src.manifest, "environment") != LIVE_ENVIRONMENT
+    ):
+        return blocked("snapshot_not_live", version)  # an explicit null is not a missing key
     if "environment" in pointer and pointer.get("environment") != LIVE_ENVIRONMENT:
         return blocked("snapshot_not_live", version)
     if src.is_replay:
@@ -490,5 +503,6 @@ __all__ = [
     "load_latest",
     "load_run",
     "manifest_field",
+    "manifest_has",
     "manifest_is_approved",
 ]

@@ -358,17 +358,7 @@ def test_accepted_inputs_reach_exactly_the_expected_sleeper_urls(client, sleeper
     assert all(c.request.method == "GET" for c in sleeper.calls)  # read-only (D-020)
 
 
-QA_F06 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F06: GET /sleeper/users/{username}/leagues validates with str.isalnum(), which "
-    "accepts non-ASCII letters and digits, so they are sent to Sleeper; the import body uses "
-    "^[A-Za-z0-9_]{1,40}$ (api/routers/leagues.py:30). Remove this marker with the fix.",
-)
-
-
-@pytest.mark.parametrize(
-    "name", [pytest.param(n, marks=QA_F06) for n in ("١٢٣", "café", "Ａdmin")]
-)
+@pytest.mark.parametrize("name", ["١٢٣", "café", "Ａdmin"])
 def test_lookup_refuses_non_ascii_usernames(client, sleeper, name):
     before = len(sleeper.calls)
     r = client.get(f"/sleeper/users/{quote(name, safe='')}/leagues")
@@ -416,16 +406,7 @@ def test_free_form_setting_values_are_bounded(client):
     assert r.status_code == 422, r.status_code
 
 
-QA_F05 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F05: scoring weights accept Infinity and overflow values (1e309); they are "
-    "stored as inf and shown as null (api/schemas.py:55-56; ffml/data/sleeper.py:473-478 "
-    "rejects only NaN). Remove this marker with the fix.",
-)
-
-
-@pytest.mark.parametrize("literal", [pytest.param(v, marks=QA_F05)
-                                     for v in ("Infinity", "-Infinity", "1e309")])
+@pytest.mark.parametrize("literal", ["Infinity", "-Infinity", "1e309"])
 def test_non_finite_scoring_weights_are_refused(client, literal):
     raw = json.dumps({**LEAGUE, "scoring": {"preset": "ppr", "overrides": {"pass_td": 0.5}}})
     raw = raw.replace('"pass_td": 0.5', f'"pass_td": {literal}')

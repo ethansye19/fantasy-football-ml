@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import respx
+from api_factory import APPROVED_LABELS, live_entry, write_registry, write_snapshot
+from pydantic import ValidationError
 from sleeper_mock import USERNAME, directory, mock_sleeper, no_sleep_factory
 
 from api.middleware import Limit, route_family
@@ -207,3 +211,71 @@ def test_limit_parsing_and_route_families():
         ("GET", "/docs"): "meta",
     }
     assert {k: route_family(*k) for k in cases} == cases
+
+
+# --------------------------------------------------------------------------- QA-F11, F12, F05, F06, F21
+
+
+def _approved_world(api_dirs, labels):
+    write_registry(api_dirs["artifacts"], [live_entry()])
+    return write_snapshot(api_dirs["predictions"], labels=labels)
+
+
+@pytest.mark.parametrize(
+    "labels,reason",
+    [
+        ({**APPROVED_LABELS, "approval_status": "Approved"}, "snapshot_not_approved"),
+        ({**APPROVED_LABELS, "approval_status": " approved "}, "snapshot_not_approved"),
+        ({**APPROVED_LABELS, "environment": None}, "snapshot_not_live"),
+        ({**APPROVED_LABELS, "environment": "Live"}, "snapshot_not_live"),
+    ],
+)
+def test_labels_are_compared_exactly(make_client, api_dirs, labels, reason):
+    _approved_world(api_dirs, labels)
+    meta = make_client().get("/meta/approval").json()
+    assert (meta["serving"], meta["reason"]) == (False, reason)
+
+
+def test_exact_labels_still_serve(make_client, api_dirs):
+    _approved_world(api_dirs, APPROVED_LABELS)
+    assert make_client().get("/meta/approval").json()["serving"] is True
+
+
+@pytest.mark.parametrize("models", ["live", [None], [1], [[]], ["live"], [{"status": "live"}]])
+def test_model_card_skips_malformed_registry_entries(make_client, api_dirs, models):
+    path = api_dirs["artifacts"] / "models" / "REGISTRY.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"format": "ffml.registry/1", "models": models}), encoding="utf-8")
+    r = make_client().get("/meta/model-card")
+    assert r.status_code == 200, r.text
+    assert all(isinstance(m, dict) and "registry_status" in m for m in r.json()["models"])
+
+
+@pytest.mark.parametrize("literal", ["Infinity", "-Infinity", "NaN", "1e309", "101", "-100.5"])
+def test_scoring_weights_must_be_finite_and_bounded(make_client, literal):
+    client = make_client()
+    raw = json.dumps({**BASE_LEAGUE, "scoring": {"preset": "ppr", "overrides": {"pass_td": 0.5}}})
+    raw = raw.replace('"pass_td": 0.5', f'"pass_td": {literal}')
+    r = client.post("/leagues", content=raw.encode(), headers={"content-type": "application/json"})
+    assert r.status_code == 422, (literal, r.text[:200])
+    ok = client.post("/leagues", json={**BASE_LEAGUE, "scoring": {"preset": "ppr", "overrides": {"pass_td": 6}}})
+    assert ok.status_code == 201
+
+
+@pytest.mark.parametrize("name", ["caf%C3%A9", "%D9%A1%D9%A2%D9%A3", "a%20b", "x" * 41, "a.b"])
+def test_username_lookup_is_ascii_only(make_client, name):
+    client = make_client()
+    r = client.get(f"/sleeper/users/{name}/leagues")
+    assert r.status_code == 422, (name, r.status_code)
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+def test_production_refuses_wildcard_and_odd_cors_origins():
+    from api.settings import ApiSettings
+
+    for bad in (["*"], ["http://localhost:3000", "*"], ["ftp://x"], ["localhost:3000"], ["http://a/b"]):
+        with pytest.raises(ValidationError):
+            ApiSettings(app_env="production", cors_origins=bad)
+    ok = ApiSettings(app_env="production", cors_origins=["http://localhost:3000", "https://ffml.example"])
+    assert len(ok.cors_origins) == 2
+    assert ApiSettings(app_env="private_test", cors_origins=["*"]).cors_origins == ["*"]

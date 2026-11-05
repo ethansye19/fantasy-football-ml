@@ -116,13 +116,17 @@ def registry_status_word(entry: dict[str, Any], state: Any) -> str:
 def registry_summary(state: Any) -> list[dict[str, Any]]:
     """Registry entries for the model card (production only)."""
     try:
-        from ffml.models.registry import list_models
+        from ffml.models.registry import load_registry
 
-        models = list_models()
+        models = load_registry().get("models")
     except Exception:  # noqa: BLE001 - the card still renders without the registry
+        return []
+    if not isinstance(models, list):
         return []
     out = []
     for m in models:
+        if not isinstance(m, dict):  # QA-F12: hand-edited registries with non-object entries
+            continue
         word = registry_status_word(m, state)
         out.append(
             {

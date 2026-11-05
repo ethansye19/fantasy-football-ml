@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Path, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from api.deps import DbSession, Directory, Sleeper
 from api.errors import ApiError
 from api.schemas import (
+    USERNAME_PATTERN,
     LeagueSettingsUpdate,
     ManualLeagueRequest,
     MyTeamRequest,
@@ -23,12 +24,10 @@ router = APIRouter(tags=["leagues"])
 
 @router.get("/sleeper/users/{username}/leagues")
 def sleeper_user_leagues(
-    username: str,
+    username: Annotated[str, Path(pattern=USERNAME_PATTERN)],  # ASCII only (QA-F06)
     client: Sleeper,
     season: int | None = Query(default=None, ge=2017, le=2100),
 ) -> dict[str, Any]:
-    if not username.replace("_", "").isalnum() or len(username) > 40:
-        raise ApiError(422, "validation_error", "Invalid Sleeper username.")
     user, season_used, leagues = svc.user_leagues(client, username, season)
     return {
         "user": {

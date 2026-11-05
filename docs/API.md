@@ -37,7 +37,7 @@ these limits, which the API enforces:
 | `FFML_APP_ENV` | `production` | `production` or `private_test`. Any other value is treated as `production`. |
 | `FFML_DATABASE_URL` | `sqlite:///data/app.db` | SQLAlchemy URL. PostgreSQL in compose and CI (`postgresql+psycopg://...`). |
 | `FFML_DB_AUTO_MIGRATE` | `true` | Run Alembic `upgrade head` at startup. |
-| `FFML_CORS_ORIGINS` | `["http://localhost:3000","http://127.0.0.1:3000"]` | JSON list of allowed browser origins. |
+| `FFML_CORS_ORIGINS` | `["http://localhost:3000","http://127.0.0.1:3000"]` | JSON list of allowed browser origins. In production each entry must be an explicit `http(s)://host[:port]`; `*` is refused and the API does not start. |
 | `FFML_API_FIXTURE_PREDICTIONS_DIR` | unset | `private_test` only: a predictions store holding fixture runs. |
 | `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>`. |
 | `FFML_APPROVAL_TTL_SECONDS` | `5` | How long one gate evaluation is reused. |
@@ -337,8 +337,9 @@ that weekly features are paused and rankings are season-level.
               "num_teams": 8, "status": "in_season", "preset_like": "ppr"}]}
 ```
 
-`season` defaults to the current season. 404 `sleeper_not_found` for an
-unknown user.
+`season` defaults to the current season. `username` is ASCII letters, digits
+and underscore (1 to 40 characters); anything else is 422 and is never sent
+to Sleeper. 404 `sleeper_not_found` for an unknown user.
 
 ### POST /leagues/import/sleeper
 
@@ -365,7 +366,8 @@ Sleeper (D-020).
 ```
 
 `scoring` is either `{"preset": "ppr"|"half"|"std", "overrides": {...}}` or
-`{"settings": {<Sleeper key>: points}}`. League `settings` accepts only the
+`{"settings": {<Sleeper key>: points}}`; every weight is a finite number
+between -100 and 100 (NaN, Infinity and overflowing literals are 422). League `settings` accepts only the
 known keys (`num_teams`, `playoff_week_start`, `playoff_teams`, `start_week`,
 `leg`, `last_scored_leg`, `trade_deadline`, `waiver_type`, `waiver_budget`,
 `reserve_slots`, `taxi_slots`, `best_ball`, `type`, `status`) with scalar

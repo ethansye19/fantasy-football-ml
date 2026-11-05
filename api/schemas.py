@@ -10,6 +10,8 @@ PlayerId = Annotated[
     str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,32}$")
 ]
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+#: Sleeper usernames: ASCII letters, digits and underscore only (path and body, QA-F06).
+USERNAME_PATTERN = r"^[A-Za-z0-9_]{1,40}$"
 
 #: League settings the app stores (copied from Sleeper, editable in the manual form). Free-form
 #: keys and unbounded values are refused (QA-F02).
@@ -53,6 +55,9 @@ SettingValue = (
 )
 LeagueSettings = dict[SettingKey, SettingValue]
 
+#: Points per scoring key: finite and within +-100 (QA-F05); NaN and Infinity are refused.
+Weight = Annotated[float, Field(allow_inf_nan=False, ge=-100, le=100)]
+
 
 class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -84,8 +89,7 @@ class TradeRequest(_Body):
 class SleeperImportRequest(_Body):
     league_id: Annotated[str, StringConstraints(pattern=r"^[0-9]{1,24}$")] | None = None
     username: (
-        Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9_]{1,40}$")]
-        | None
+        Annotated[str, StringConstraints(strip_whitespace=True, pattern=USERNAME_PATTERN)] | None
     ) = None
     season: int | None = Field(default=None, ge=2017, le=2100)
 
@@ -94,8 +98,8 @@ class ScoringInput(_Body):
     """Either a preset (optionally with overrides) or a full Sleeper-style key map."""
 
     preset: str | None = Field(default=None, pattern=r"^(ppr|half|std)$")
-    overrides: dict[str, float] = Field(default_factory=dict, max_length=200)
-    settings: dict[str, float] | None = Field(default=None, max_length=200)
+    overrides: dict[str, Weight] = Field(default_factory=dict, max_length=200)
+    settings: dict[str, Weight] | None = Field(default=None, max_length=200)
 
 
 class ManualTeamInput(_Body):
@@ -127,6 +131,7 @@ class MyTeamRequest(_Body):
 
 __all__ = [
     "SLEEPER_SETTINGS_KEYS",
+    "USERNAME_PATTERN",
     "LeagueSettings",
     "LeagueSettingsUpdate",
     "ManualLeagueRequest",

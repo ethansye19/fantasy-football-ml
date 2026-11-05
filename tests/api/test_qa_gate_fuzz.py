@@ -450,21 +450,12 @@ def test_garbage_bytes_never_serve(make_client, world):
     assert problems == []
 
 
-QA_F12 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F12: GET /meta/model-card raises (HTTP 500) when REGISTRY.json lists entries "
-    "that are not objects; registry_summary() calls .get() on them outside its try block "
-    "(api/routers/meta.py, registry_summary). Remove this marker with the fix.",
-)
-
-
 def _meta_cases() -> list[Any]:
     cases = []
     for slot, name, mutate in all_mutations("x"):
         if slot != "registry":
             continue
-        crashes = name in {f"models={v!r}" for v in ("live", [None], [1], [[]], ["live"])}
-        cases.append(pytest.param(name, mutate, marks=QA_F12 if crashes else (), id=name))
+        cases.append(pytest.param(name, mutate, id=name))
     return cases
 
 
@@ -498,19 +489,9 @@ def test_live_entry_needs_an_approval_verdict_on_disk(make_client, world, case):
     assert _gate_problems(make_client(), case) == []
 
 
-QA_F11 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F11: approval_status is matched after strip().lower() although the docstring says "
-    "'exact string' (api/approval.py:204-207), and an explicit environment null counts as a "
-    "missing key (api/approval.py:353-354). Remove this marker with the fix.",
-)
-
-
 @pytest.mark.parametrize(
     "field,value",
-    [pytest.param(f, v, marks=QA_F11)
-     for f, v in (("approval_status", "Approved"), ("approval_status", " approved "),
-                  ("environment", None))],
+    [("approval_status", "Approved"), ("approval_status", " approved "), ("environment", None)],
 )
 def test_labels_must_match_exactly(make_client, world, field, value):
     state = world.state()

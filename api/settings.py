@@ -24,8 +24,9 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ffml.config import PROJECT_ROOT, get_settings
@@ -83,6 +84,27 @@ class ApiSettings(BaseSettings):
                 log.warning("FFML_APP_ENV=%r is not recognised; using production", value)
             return PRODUCTION
         return text
+
+    @model_validator(mode="after")
+    def _cors_origins_are_explicit(self) -> ApiSettings:
+        """QA-F21: production refuses ``*`` and anything but ``http(s)://host[:port]`` origins."""
+        if self.app_env != PRODUCTION:
+            return self
+        for origin in self.cors_origins:
+            parts = urlsplit(origin.strip())
+            if (
+                origin.strip() == "*"
+                or parts.scheme not in ("http", "https")
+                or not parts.netloc
+                or parts.path not in ("", "/")
+                or parts.query
+                or parts.fragment
+            ):
+                raise ValueError(
+                    f"FFML_CORS_ORIGINS entry {origin!r} is not allowed in production: use "
+                    f"explicit http(s)://host[:port] origins, never '*'"
+                )
+        return self
 
     @property
     def is_private_test(self) -> bool:
