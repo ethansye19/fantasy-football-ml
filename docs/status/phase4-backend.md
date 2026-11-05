@@ -266,3 +266,38 @@ scipy and httpx are core. The only pyproject edit was the pytest
   - point private_test at it (private store `LATEST`) and re-check timings;
   - wire calibration (P-2) before any production serving;
   - run the end-to-end Gate 4 check.
+
+## BE-4.9 follow-ups (2026-11-05)
+
+Rulings from the orchestrator on the six frontend contract questions, plus
+the compose web service and the changelog. Contract is now v1.3.
+
+| Item | Change | Where |
+| --- | --- | --- |
+| CI fix (first, separate) | `test_serving_paths_do_not_import_the_ecr_reader` runs the serving path in a subprocess (production blocked, private_test serving a fixture); no longer order-dependent | `tests/api/test_meta.py`, commit 300253a |
+| 1 | Low-confidence boom/bust from the manifest key `low_confidence_positions`, default QB, K, DST (D-104); `boom_bust_low_confidence` in projections and start/sit bodies | `api/services/projection.py`, `recommend.py` |
+| 2 | Model-card registry words: `candidate`, `rejected`, `retired`, `awaiting_release`, `live`; `serving` flag; never the bare word "approved" | `api/routers/meta.py` |
+| 3 | `player_not_found` is 422 for body ids (manual league, start/sit) with `details.player_ids`; 404 reserved for path and query ids | `recommend.py`, `docs/API.md` |
+| 4 | Ungated `GET /players?search=&position=` (identity only, 2-60 chars, limit 50, `Cache-Control: public, max-age=300`); ranking by word start, recency, team; defense aliases | `api/routers/players.py`, `api/services/players.py` |
+| 5 | `/meta/season` gives `offseason: null` when mode is `unknown` | `api/services/season.py` |
+| 6 | Week default documented: the served run; the latest published run once runs cover several weeks | `docs/API.md` |
+| 7 | `web` service in compose (`Dockerfile.web`, `FFML_API_URL=http://api:8000`, `depends_on: api: service_healthy`) | `docker-compose.yml` |
+| 8 | Changelog v1.3 | `docs/API.md` |
+
+Evidence:
+- `ruff check api tests/api` -> All checks passed.
+- `pytest -q tests/api -k "not qa_"` -> 152 passed, 129 deselected (QA tests
+  belong to QA and were not run here), in 91 s. New tests: 6 player search,
+  2 model-card words, 1 season unknown, 2 manifest low confidence, 1
+  start/sit 422.
+- The ECR-reader test was verified passing after
+  `tests/eval/test_ecr_baseline.py` in the same pytest process.
+- Live check on the real directory (24,863 players): `jeff` -> Justin
+  Jefferson first, `smith`+WR -> current WRs, `lar` -> LA D/ST first,
+  10-14 ms warm, 479 ms cold (directory load).
+
+Still open from BE-4.9:
+- The compose `web` service and `Dockerfile.web` are unverified locally (no
+  Docker); the proposed CI job `api-image` should add `web` to the smoke.
+- `low_confidence_positions` is read defensively; the ML Engineer may start
+  writing it to manifests when chain_v2 calibration results are known.
