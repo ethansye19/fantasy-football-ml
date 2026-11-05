@@ -286,3 +286,25 @@ def test_state_refuses_mixed_models_and_missing_columns(history):
         chain_v2.calibrator_state(two, (2022, 5), None)
     with pytest.raises(ValueError, match="missing"):
         chain_v2.calibrator_state(history.drop("actual"), (2022, 5), None)
+
+
+def test_pin_sha256_gives_one_digest_for_crlf_and_lf(tmp_path):
+    """Tracked text pins: a CRLF working copy (core.autocrlf) and git's LF bytes hash alike."""
+    lf = tmp_path / "lf.json"
+    crlf = tmp_path / "crlf.json"
+    lf.write_bytes(b'{\n  "a": 1,\n  "b": "x"\n}\n')
+    crlf.write_bytes(b'{\r\n  "a": 1,\r\n  "b": "x"\r\n}\r\n')
+    assert chain_v2.pin_sha256(lf) == chain_v2.pin_sha256(crlf)
+    assert chain_v2.pin_sha256(lf) == hashlib.sha256(lf.read_bytes()).hexdigest()
+    # artifact and data files are hashed as they are
+    assert chain_v2.pin_sha256(crlf, text=False) == hashlib.sha256(crlf.read_bytes()).hexdigest()
+    assert chain_v2.pin_sha256(crlf, text=False) != chain_v2.pin_sha256(lf, text=False)
+    # the repository pins are the LF form; the CRLF form is only documented
+    from ffml.models.chain.model import SELECTION_PATH
+
+    raw = SELECTION_PATH.read_bytes()
+    assert chain_v2.pin_sha256(SELECTION_PATH) == chain_v2.SELECTION_SHA256
+    assert hashlib.sha256(raw.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")).hexdigest() == (
+        chain_v2.SELECTION_SHA256_CRLF_FORM
+    )
+    assert chain_v2.spec()["unchanged"]["stage_choices"]["sha256"] == chain_v2.SELECTION_SHA256

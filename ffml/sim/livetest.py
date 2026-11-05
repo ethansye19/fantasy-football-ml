@@ -21,6 +21,17 @@ Interface (the scheduler and the push step depend on it; keep it stable)
 
 Steps of :func:`build_week` (point-in-time as of the build, D-046)
 ------------------------------------------------------------------
+Runs start at least 24 hours before the deadline (D-106, D-107). The build
+is point in time as of its own start: live rows (depth charts, rosters,
+injuries, Sleeper statuses) are read as of ``rows_as_of = min(now, first
+kickoff)``, game-derived features use the week's cutoff (the first kickoff,
+``cutoff_ts``, never ``now``), the refit and the calibration history use
+only weeks before ``W`` whose games are final in the data. Running earlier
+therefore only means fewer late roster or injury updates, never a different
+cutoff. ``rows_as_of`` equals ``now`` for every real build (the deadline
+refuses ``now >= kickoff``); a rehearsal after kickoff is capped at the
+kickoff.
+
 1. **Deadline** (exit 3) and the chain_v2 pins
    (:func:`ffml.models.chain_v2.check_pins`).
 2. **Raw calibration history.** (raw prediction, outcome) pairs of every
@@ -656,6 +667,7 @@ def build_week(
     as_of = _utc(clock())
     kickoff = _utc(kickoff) if kickoff is not None else first_kickoff(season, week, store)
     check_deadline(as_of, kickoff, rehearsal, "start")
+    rows_as_of = min(as_of, kickoff)  # D-046: never after the week's cutoff (rehearsals)
     commit_file = commitment_path(season, week, rehearsal)
     if commit_file.exists() and not rehearsal:
         raise AlreadyCommitted(
@@ -746,7 +758,8 @@ def build_week(
         week=week,
         rest_of_season=False,
         n_sims=n_sims,
-        now=as_of,
+        now=rows_as_of,
+        run_id=f"{season}w{week:02d}-{as_of.strftime('%Y%m%dT%H%M%SZ')}-private",
         data=data,
         ctx=ctx,
         private_test=True,
@@ -787,6 +800,8 @@ def build_week(
         "label": "not approved",
         "decision": "D-098",
         "as_of": as_of.isoformat(),
+        "rows_as_of": rows_as_of.isoformat(),
+        "cutoff": kickoff.isoformat(),
         "created_at": created_at.isoformat(),
         "first_kickoff": kickoff.isoformat(),
         "seconds_before_kickoff": round((kickoff - created_at).total_seconds(), 1),

@@ -25,7 +25,10 @@ chain_v2 differs from chain_v1's primary configuration (registry version
     first kickoff.
 
 Unchanged and checked by :func:`check_pins`: the stage choices
-(``ffml/models/chain/selection.json``, SHA-256 :data:`SELECTION_SHA256`),
+(``ffml/models/chain/selection.json``, SHA-256 :data:`SELECTION_SHA256`;
+pins of tracked text files hash LF-normalized bytes, :func:`pin_sha256`, so
+a CRLF working copy under ``core.autocrlf`` and the LF bytes git and CI see
+give one digest),
 features 0.2.0 (manifest pin :data:`FEATURE_MANIFEST_SHA256`), every
 hyperparameter (code), the seed 20261101 (per week ``seed + 100*season +
 week``), 2,000 simulations, the live availability layer (``final_report``)
@@ -83,7 +86,11 @@ SEED = 20261101
 #: the live availability layer of ffml.sim.predict (D-065), unchanged
 AVAILABILITY_CONFIG = "final_report"
 FEATURE_VERSION = "0.2.0"
-SELECTION_SHA256 = "d6c1891828657b76de9cb5aab51a314cd5d85c014ad4a2ba4546b9ad2e82e0da"
+#: SHA-256 of the LF bytes of selection.json (the form git stores and CI checks out)
+SELECTION_SHA256 = "75477b2b97bc7d9bef935c2cfd470158d5b809b62f531fe898de2f7d2da84601"
+#: the same file's CRLF working-copy form, the digest the holdout pre-registration recorded
+SELECTION_SHA256_CRLF_FORM = "d6c1891828657b76de9cb5aab51a314cd5d85c014ad4a2ba4546b9ad2e82e0da"
+#: SHA-256 of tests/fixtures/features/feature_manifest_0.2.0.json (LF; identical normalized)
 FEATURE_MANIFEST_SHA256 = "b119f85cdfdc3546b3fb053ca480da6b5e543349940080a3bd19ae692f2c42f6"
 #: the calibrators exactly as data/backtests/default_20261102/_manifest.json recorded them
 QUANTILE_CALIBRATOR_REPR = (
@@ -122,8 +129,22 @@ def isotonic_calibrator() -> OnlineIsotonic:
     return OnlineIsotonic()
 
 
+def pin_sha256(path: Path | str, *, text: bool = True) -> str:
+    """SHA-256 of a pinned file; ``text`` files are hashed with CRLF normalized to LF.
+
+    Tracked text files differ byte for byte between a Windows working copy
+    (``core.autocrlf=true``) and git or CI, so their pins use the LF form.
+    Artifact and data files (JSON written by the code, parquet) are hashed
+    as they are (``text=False``).
+    """
+    data = Path(path).read_bytes()
+    if text:
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return pin_sha256(path, text=True)
 
 
 def spec() -> dict[str, Any]:
@@ -137,6 +158,7 @@ def spec() -> dict[str, Any]:
             "stage_choices": {
                 "path": "ffml/models/chain/selection.json",
                 "sha256": SELECTION_SHA256,
+                "sha256_crlf_working_copy": SELECTION_SHA256_CRLF_FORM,
             },
             "features": {
                 "version": FEATURE_VERSION,
@@ -163,6 +185,8 @@ def spec() -> dict[str, Any]:
             },
         },
         "tuned": "nothing",
+        "pin_hashing": "tracked text files: SHA-256 of LF-normalized bytes (CRLF -> LF); "
+        "artifact and data files as they are",
     }
 
 
@@ -564,6 +588,7 @@ __all__ = [
     "model_version",
     "new_model",
     "online_reference",
+    "pin_sha256",
     "quantile_calibrator",
     "save_artifact",
     "spec",

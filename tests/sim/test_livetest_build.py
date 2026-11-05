@@ -417,3 +417,40 @@ def test_gate_resolves_registry_paths_through_the_artifacts_dir(
     run = json.loads((res.path / "_manifest.json").read_text(encoding="utf-8"))
     assert Path(run["extra"]["model_source"]["path"]) == found
     assert run["model_version"] == version and run["label"] == "not approved"
+
+
+# --------------------------------------------------------------------------- #
+# D-106: runs start 24 h early; as-of = now, never after the week's cutoff
+# --------------------------------------------------------------------------- #
+
+
+def test_early_build_reads_rows_as_of_now_with_the_kickoff_as_cutoff(
+    registry_env, toy_chain, tmp_path, monkeypatch
+):
+    from ffml.sim import predict as predict_mod
+
+    seen = []
+    real = predict_mod.live_rows
+
+    def spy(model, ctx, season, week, now):
+        seen.append(now)
+        return real(model, ctx, season, week, now)
+
+    monkeypatch.setattr(predict_mod, "live_rows", spy)
+    early = KICKOFF - timedelta(hours=30)
+    res = _build(toy_chain, tmp_path, clock=lambda: early)
+    c = json.loads(res.commitment.read_text(encoding="utf-8"))
+    assert seen == [early]  # live rows as of the build, 30 h before kickoff
+    assert c["as_of"] == c["rows_as_of"] == early.isoformat()
+    assert c["cutoff"] == c["first_kickoff"] == KICKOFF.isoformat()
+    run = json.loads((res.run_dir / "_manifest.json").read_text(encoding="utf-8"))
+    assert run["extra"]["as_of"] == early.isoformat()
+    assert c["predictions"]["run_id"] == f"2023w05-{early:%Y%m%dT%H%M%SZ}-private"
+    # a rehearsal after kickoff is capped at the cutoff; its run id keeps the real build time
+    seen.clear()
+    late = KICKOFF + timedelta(hours=5)
+    res2 = _build(toy_chain, tmp_path, rehearsal=True, clock=lambda: late)
+    c2 = json.loads(res2.commitment.read_text(encoding="utf-8"))
+    assert seen == [KICKOFF]
+    assert c2["as_of"] == late.isoformat() and c2["rows_as_of"] == KICKOFF.isoformat()
+    assert c2["predictions"]["run_id"] == f"2023w05-{late:%Y%m%dT%H%M%SZ}-private"
