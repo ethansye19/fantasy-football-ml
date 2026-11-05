@@ -1,0 +1,105 @@
+{
+  "format": "ffml.livetest.schedule/1",
+  "generated_at": "2026-11-05T03:24:05Z",
+  "generated_by": "scripts/livetest_week.py plan --export",
+  "source": {
+    "dim_game_snapshot": "20261104T233034Z",
+    "live_schedule_checked": true
+  },
+  "season": 2026,
+  "test_weeks": [
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "note": "Official first kickoff per week (UTC). Re-export and commit when the daily check reports schedule drift (week 18 times are tentative until the NFL sets them).",
+  "weeks": [
+    {
+      "key": "2026w10",
+      "season": 2026,
+      "week": 10,
+      "first_kickoff_utc": "2026-11-13T01:15:00Z",
+      "effective_kickoff_utc": "2026-11-13T01:15:00Z",
+      "tentative": false,
+      "games": 14
+    },
+    {
+      "key": "2026w11",
+      "season": 2026,
+      "week": 11,
+      "first_kickoff_utc": "2026-11-20T01:15:00Z",
+      "effective_kickoff_utc": "2026-11-20T01:15:00Z",
+      "tentative": false,
+      "games": 13
+    },
+    {
+      "key": "2026w12",
+      "season": 2026,
+      "week": 12,
+      "first_kickoff_utc": "2026-11-26T01:00:00Z",
+      "effective_kickoff_utc": "2026-11-26T01:00:00Z",
+      "tentative": false,
+      "games": 16
+    },
+    {
+      "key": "2026w13",
+      "season": 2026,
+      "week": 13,
+      "first_kickoff_utc": "2026-12-04T01:15:00Z",
+      "effective_kickoff_utc": "2026-12-04T01:15:00Z",
+      "tentative": false,
+      "games": 14
+    },
+    {
+      "key": "2026w14",
+      "season": 2026,
+      "week": 14,
+      "first_kickoff_utc": "2026-12-11T01:15:00Z",
+      "effective_kickoff_utc": "2026-12-11T01:15:00Z",
+      "tentative": false,
+      "games": 15
+    },
+    {
+      "key": "2026w15",
+      "season": 2026,
+      "week": 15,
+      "first_kickoff_utc": "2026-12-18T01:15:00Z",
+      "effective_kickoff_utc": "2026-12-18T01:15:00Z",
+      "tentative": false,
+      "games": 16
+    },
+    {
+      "key": "2026w16",
+      "season": 2026,
+      "week": 16,
+      "first_kickoff_utc": "2026-12-25T01:15:00Z",
+      "effective_kickoff_utc": "2026-12-25T01:15:00Z",
+      "tentative": false,
+      "games": 16
+    },
+    {
+      "key": "2026w17",
+      "season": 2026,
+      "week": 17,
+      "first_kickoff_utc": "2027-01-01T01:15:00Z",
+      "effective_kickoff_utc": "2027-01-01T01:15:00Z",
+      "tentative": false,
+      "games": 16
+    },
+    {
+      "key": "2026w18",
+      "season": 2026,
+      "week": 18,
+      "first_kickoff_utc": "2027-01-10T18:00:00Z",
+      "effective_kickoff_utc": "2027-01-09T18:00:00Z",
+      "tentative": true,
+      "games": 16
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+# GitHub Actions watchdog for the chain_v2 live test (D-107).
+#
+# Runs hourly on the default branch and does not depend on the owner's laptop.
+# scripts/livetest_watchdog_gh.py reads the tracked schedule
+# scripts/livetest_schedule_2026.json, and inside the alert windows (6 h and
+# 1 h before the next test week's first kickoff) checks the livetest-2026
+# branch for <week>/commitment.json. Nothing there: the run fails (GitHub
+# mails the owner) and, when the FFML_ALERT_WEBHOOK secret is set, the alert
+# is also posted to the webhook. Outside the windows the run exits 0 in a few
+# seconds. Manual runs can override the branch and the clock (dry runs).
+#
+# Notes: a cron may start up to 15-60 minutes late at busy times, which the
+# windows allow for; GitHub disables scheduled workflows after 60 days without
+# a push to the repository.
+name: livetest watchdog
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: commitments branch to check
+        default: livetest-2026
+        required: false
+      now:
+        description: clock override, ISO UTC (e.g. 2026-11-12T19:00:00Z); empty = real time
+        default: ""
+        required: false
+      force_window:
+        description: check even outside the 6 h and 1 h windows
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livetest-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the commitments branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FFML_ALERT_WEBHOOK: ${{ secrets.FFML_ALERT_WEBHOOK }}
+          FFML_ALERT_TOAST: "0"
+          WD_BRANCH: ${{ github.event.inputs.branch || 'livetest-2026' }}
+          WD_NOW: ${{ github.event.inputs.now }}
+          WD_FORCE: ${{ github.event.inputs.force_window }}
+        run: |
+          args=(--schedule scripts/livetest_schedule_2026.json --branch "$WD_BRANCH" --json)
+          if [ -n "$WD_NOW" ]; then args+=(--now "$WD_NOW"); fi
+          if [ "$WD_FORCE" = "true" ]; then args+=(--force-window); fi
+          python3 scripts/livetest_watchdog_gh.py "${args[@]}"
