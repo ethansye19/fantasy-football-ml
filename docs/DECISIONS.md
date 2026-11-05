@@ -108,6 +108,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-106 | 2026-11-05 | accepted (owner) | One missed week excluded without extension, a second makes the test INVALID; deadline = official first kickoff; runs start 24 h early; misses logged with reason |
 | D-107 | 2026-11-05 | accepted (owner) | Logged-off scheduled tasks with least privilege plus a GitHub watchdog at 6 h and 1 h; AC power, wake, catch-up; logged-off dry run on a test branch before Week 10 |
 | D-108 | 2026-11-05 | accepted (conditional) | LightGBM `num_threads` 8 -> 4 for determinism on Linux CI, only if all four identity weeks stay byte-identical; otherwise threads stay 8 and the CI test pins 1 thread |
+| D-109 | 2026-11-05 | accepted | Live-test timing constants: window opens K-25h, first run K-24h15m, retries every 30 min, build cutoff K-30m, push deadline K-5m; GitHub watchdog windows [6.5h, 5.5h) and [1.5h, 0) before kickoff; MISSED.json format missed/2 |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -807,6 +808,18 @@ calibrator state for 2026 week 8 must also be unchanged. If any row
 differs, threads stay at 8 and the CI test pins 1 thread for itself only.
 This is a determinism fix with zero measured effect on predictions, not a
 model change; the evidence goes in the chain_v2 pre-registration.
+
+## D-109 Live-test timing constants (Data Engineer proposal, accepted, 2026-11-05)
+
+K is the official first kickoff of the week from the schedule. The runner's
+window opens at K-25h; the scheduled task first runs at K-24h15m so the
+first attempt is at least 24 hours before K even with Task Scheduler's
+start delay (D-106); it retries every 30 minutes until K-5m; no refresh
+starts after K-3h, no build after K-30m, no push after K-5m, nothing is
+pushed for the week after K. A commitment built before K but pushed late
+goes under `<week>/late/` with the MISSED marker and is never withheld. The
+GitHub watchdog runs hourly and alerts inside [6.5h, 5.5h) and [1.5h, 0)
+before K. Rehearsals and dry runs never write to `livetest-2026`.
 
 ## Owner answers received 2026-11-01
 
