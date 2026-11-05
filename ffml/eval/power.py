@@ -118,6 +118,7 @@ class Window:
     weeks: tuple[int, ...]
     games: tuple[int | None, ...]  # target game count per week; None keeps the full slate
     drop_one: bool = False  # D-106: one week of the window, drawn at random, is excluded from scoring
+    drop_n: int = 0  # D-106 revisited: this many weeks of the window, drawn at random, are excluded from scoring
 
 
 WINDOWS: dict[str, Window] = {
@@ -529,7 +530,8 @@ def draw_window(data: PowerData, window: Window, rng: np.random.Generator) -> li
             keep = np.zeros(slate.n_games, dtype=bool)
             keep[rng.choice(slate.n_games, size=target, replace=False)] = True
         picks.append(Pick(season, week, keep, target is not None and slate.n_games < target))
-    if window.drop_one:
+    n_drop = window.drop_n or (1 if window.drop_one else 0)
+    for _ in range(n_drop):
         picks.pop(int(rng.integers(len(picks))))
     return picks
 
@@ -1288,7 +1290,15 @@ CANDIDATE_WINDOWS: dict[str, Window] = {
                              (*(GAMES_2026[w] for w in range(10, 19)), *([None] * 9)), drop_one=True),
 }
 #: seed index per window; i, ii and iii keep the random streams of the first report
-WINDOW_SEED_INDEX: dict[str, int] = {"i": 0, "ii": 1, "iii": 2, "ext18": 3, "one_miss": 4, "ext18_one_miss": 5}
+EXT18_GAMES: tuple[int | None, ...] = (*(GAMES_2026[w] for w in range(10, 19)), *([None] * 9))
+MISS_WINDOWS: dict[str, Window] = {
+    "ext18": CANDIDATE_WINDOWS["ext18"],
+    "ext18_one_miss": CANDIDATE_WINDOWS["ext18_one_miss"],
+    "ext18_two_miss": Window("ext18_two_miss", "the 18-week window minus two weeks drawn at random (16 weeks scored)",
+                             (*range(10, 19), *range(1, 10)), EXT18_GAMES, drop_n=2),
+}
+WINDOW_SEED_INDEX: dict[str, int] = {"i": 0, "ii": 1, "iii": 2, "ext18": 3, "one_miss": 4, "ext18_one_miss": 5,
+                                     "ext18_two_miss": 6}
 
 
 @dataclass
