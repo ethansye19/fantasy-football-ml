@@ -478,18 +478,8 @@ def test_meta_routes_survive_malformed_registries(make_client, world, name, muta
 
 # --------------------------------------------------------------------------- known gaps (xfail)
 
-QA_F01 = pytest.mark.xfail(
-    strict=True,
-    reason="QA-F01: the gate trusts any truthy evaluator_report on the live registry entry; it "
-    "does not check that the report exists under reports/ and carries 'Verdict: APPROVED' "
-    "(api/approval.py:329). Remove this marker with the fix.",
-)
-
-
 @pytest.mark.parametrize(
-    "case",
-    [pytest.param(c, marks=QA_F01)
-     for c in ("report_missing", "report_not_approved", "report_outside_reports")],
+    "case", ["report_missing", "report_not_approved", "report_outside_reports"]
 )
 def test_live_entry_needs_an_approval_verdict_on_disk(make_client, world, case):
     state = world.state()

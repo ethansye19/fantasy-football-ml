@@ -222,12 +222,34 @@ def write_snapshot(
     )
 
 
-def write_registry(artifacts: Path, entries: list[dict[str, Any]]) -> Path:
+APPROVED_REPORT = "# Evaluator release note (test fixture)\n\nVerdict: APPROVED\n"
+REJECTED_REPORT = "# Evaluator release note (test fixture)\n\nVerdict: NOT APPROVED\n"
+
+
+def write_registry(
+    artifacts: Path, entries: list[dict[str, Any]], reports: Path | None = None
+) -> Path:
+    """Write REGISTRY.json and a real evaluator report for every entry that names one.
+
+    The gate verifies the live entry's report with ``registry.check_report`` (QA-F01),
+    so the report must exist under the reports directory (``FFML_REPORTS_DIR`` in tests)
+    and carry the exact verdict line. Rejected entries get a NOT APPROVED report.
+    """
+    from ffml.config import get_settings
+
     path = artifacts / "models" / "REGISTRY.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"format": "ffml.registry/1", "models": entries}, indent=2), encoding="utf-8"
     )
+    reports = reports or get_settings().reports_dir
+    for entry in entries:
+        report = entry.get("evaluator_report") if isinstance(entry, dict) else None
+        if isinstance(report, str) and report:
+            target = reports / Path(report).name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            text = REJECTED_REPORT if entry.get("status") == "rejected" else APPROVED_REPORT
+            target.write_text(text, encoding="utf-8")
     return path
 
 
@@ -240,7 +262,7 @@ def live_entry(version: str = "chain_v2-test", status: str = "live") -> dict[str
         "created_at": "2026-11-10T00:00:00+00:00",
         "git": "abc1234",
         "backtest_run_id": None,
-        "evaluator_report": "reports/evaluator_release_test.md" if status != "candidate" else None,
+        "evaluator_report": "evaluator_release_test.md" if status != "candidate" else None,
         "history": [],
     }
 

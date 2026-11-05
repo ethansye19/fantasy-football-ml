@@ -65,7 +65,9 @@ blocked response below even for an unknown league or an invalid body.
 A gated route serves data only when **all** of these hold:
 
 1. the model registry (`artifacts/models/REGISTRY.json`) has a live version
-   (`ffml.models.registry.get_live()`) with an evaluator report;
+   (`ffml.models.registry.get_live()`) whose evaluator report exists under the
+   reports directory and carries the exact line `Verdict: APPROVED`
+   (`ffml.models.registry.check_report`); a path alone is not an approval;
 2. `data/predictions/LATEST` points at a readable run whose `_manifest.json`
    has `approval_status == "approved"` (top level, or under `extra` for older
    manifests) and `environment == "live"`. The manifest `environment` key is

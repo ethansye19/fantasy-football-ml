@@ -8,7 +8,8 @@ production
     Serve only when **all** hold:
 
     1. the model registry has a live version (``ffml.models.registry.get_live``)
-       with an evaluator report;
+       whose evaluator report exists under the reports directory and carries the
+       exact line ``Verdict: APPROVED`` (``ffml.models.registry.check_report``);
     2. ``data/predictions/LATEST`` points at a readable run whose manifest has
        ``approval_status == "approved"`` (top level or under ``extra``) and
        ``environment == "live"`` (the prediction mode; a missing key is accepted
@@ -327,6 +328,16 @@ def _production(settings: ApiSettings) -> ApprovalState:
     if not isinstance(version, str) or not version:
         return blocked("registry_malformed")
     if live.get("status") != "live" or not live.get("evaluator_report"):
+        return blocked("live_model_without_approval", version)
+    # QA-F01: the report named by the live entry must exist under the reports directory and
+    # carry the exact line "Verdict: APPROVED" (ffml.models.registry.check_report); a truthy
+    # path in a hand-edited REGISTRY.json is not an approval.
+    try:
+        from ffml.models.registry import check_report
+
+        check_report(live["evaluator_report"])
+    except Exception as exc:  # noqa: BLE001 - RegistryError or an unreadable file: no serving
+        log.warning("live entry %s has no valid approval report: %r", version, exc)
         return blocked("live_model_without_approval", version)
     root = settings.predictions_dir
     try:
