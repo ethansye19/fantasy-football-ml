@@ -10,6 +10,8 @@ PlayerId = Annotated[
     str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._-]{1,32}$")
 ]
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+#: Roster slot names are short tokens (QA-F07: a long unknown slot is never echoed back).
+SlotName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=16)]
 #: Sleeper usernames: ASCII letters, digits and underscore only (path and body, QA-F06).
 USERNAME_PATTERN = r"^[A-Za-z0-9_]{1,40}$"
 
@@ -113,7 +115,7 @@ class ManualLeagueRequest(_Body):
     season: int = Field(ge=2017, le=2100)
     num_teams: int = Field(ge=2, le=32)
     scoring: ScoringInput
-    roster_positions: list[str] = Field(min_length=1, max_length=40)
+    roster_positions: list[SlotName] = Field(min_length=1, max_length=40)
     settings: LeagueSettings = Field(default_factory=dict, max_length=50)
     teams: list[ManualTeamInput] = Field(default_factory=list, max_length=32)
 
@@ -121,7 +123,7 @@ class ManualLeagueRequest(_Body):
 class LeagueSettingsUpdate(_Body):
     name: ShortText | None = None
     scoring: ScoringInput | None = None
-    roster_positions: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    roster_positions: list[SlotName] | None = Field(default=None, min_length=1, max_length=40)
     settings: LeagueSettings | None = Field(default=None, max_length=50)
 
 

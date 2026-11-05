@@ -25,6 +25,7 @@ from api.errors import ApiError
 from api.schemas import SLEEPER_SETTINGS_KEYS, ManualLeagueRequest, ScoringInput
 from api.services.players import PlayerDirectory, PlayerInfo
 from ffml.data.sleeper import (
+    SLEEPER_ROSTER_SLOTS,
     SleeperClient,
     SleeperError,
     SleeperLeague,
@@ -36,6 +37,7 @@ from ffml.scoring.rules import PRESETS, ScoringRules
 log = logging.getLogger(__name__)
 
 NON_STARTING = frozenset({"BN", "IR", "TAXI"})
+SLOT_NAMES = frozenset(SLEEPER_ROSTER_SLOTS)
 IDP_SLOTS = frozenset({"DL", "LB", "DB", "IDP_FLEX"})
 SLOT_KINDS = ("starter", "bench", "ir", "taxi")
 
@@ -68,11 +70,29 @@ def scoring_from_input(scoring: ScoringInput) -> ScoringRules:
         raise ApiError(422, "invalid_scoring", str(exc)) from exc
 
 
+MAX_SLOT_NAME = 16
+
+
 def roster_positions_from_input(positions: Iterable[str]) -> list[str]:
+    given = list(positions)
+    too_long = sum(1 for p in given if not isinstance(p, str) or len(p) > MAX_SLOT_NAME)
+    if too_long:
+        raise ApiError(
+            422,
+            "invalid_roster_positions",
+            f"{too_long} roster slot name(s) are not strings of at most {MAX_SLOT_NAME} "
+            f"characters.",
+        )
     try:
-        cleaned = normalize_roster_positions(list(positions))
+        cleaned = normalize_roster_positions(given)
     except (TypeError, ValueError) as exc:
-        raise ApiError(422, "invalid_roster_positions", str(exc)) from exc
+        unknown = sorted({p.strip().upper() for p in given if p.strip().upper() not in SLOT_NAMES})
+        raise ApiError(
+            422,
+            "invalid_roster_positions",
+            "Unknown roster slots.",
+            {"unknown": unknown[:20], "known": sorted(SLOT_NAMES)},
+        ) from exc
     if not any(p not in NON_STARTING and p not in IDP_SLOTS for p in cleaned):
         raise ApiError(422, "invalid_roster_positions", "The roster has no starting slot.")
     return cleaned
@@ -377,7 +397,10 @@ def resolve_players(directory: PlayerDirectory, ids: Iterable[str]) -> list[Play
             out.append(info)
     if unknown:
         raise ApiError(
-            422, "player_not_found", "Unknown player ids.", {"player_ids": unknown}
+            422,
+            "player_not_found",
+            f"{len(unknown)} unknown player id(s).",
+            {"player_ids": [str(p)[:40] for p in unknown[:20]]},
         )
     return out
 

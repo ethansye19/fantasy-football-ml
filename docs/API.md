@@ -1,7 +1,7 @@
 # API contract (Phase 4)
 
 Owner: Backend Engineer. Consumers: the web app (`web/`), Playwright tests, QA.
-Status: contract v1.3, 2026-11-04. Every endpoint below is implemented and
+Status: contract v1.4, 2026-11-05. Every endpoint below is implemented and
 tested (tests/api). Changes are recorded in the changelog at the end.
 
 Code: `api/` (FastAPI, Pydantic v2, SQLAlchemy 2). Run locally:
@@ -12,6 +12,11 @@ FFML_APP_ENV=private_test .venv/Scripts/uvicorn api.main:app    # private test r
 ```
 
 All responses are JSON (UTF-8). Times are ISO 8601 UTC. Ids are strings.
+
+Single user, localhost only: until the D-011 session cookie exists the API has
+no authentication or per-league ownership, so it is bound to the loopback
+interface (or reached only through the web app) and is not for shared or
+public deployment (QA-F14, Gate 6).
 
 ## 1. Why projections are switched off (D-097, D-098, D-099)
 
@@ -588,6 +593,19 @@ whenever a new run is published (weekly).
 ## Changelog
 
 - v1 (2026-11-04): first contract; gate, meta health and approval implemented.
+- v1.4 (2026-11-05), BE-4.10 hardening (docs/SECURITY.md findings):
+  - production also verifies the live entry's evaluator report (`Verdict: APPROVED`
+    under the reports directory) before serving (QA-F01);
+  - 413 `payload_too_large` over `FFML_BODY_MAX_BYTES`; league `settings` limited to known
+    keys with scalar values (QA-F02); scoring weights finite and within +-100 (QA-F05);
+  - 429 `rate_limited` with `Retry-After` per client and route family, section 4.1 (QA-F03);
+    one Sleeper client per process (QA-F04);
+  - labels compared exactly, explicit `environment: null` refused (QA-F11); model card
+    tolerates malformed registry entries (QA-F12); ASCII-only usernames on the lookup
+    path (QA-F06); `*` and non-http(s) CORS origins refused in production (QA-F21);
+  - `Referrer-Policy`, `X-Frame-Options` and `Content-Security-Policy` headers; docs pages
+    off in production unless `FFML_DOCS_ENABLED` (QA-F08);
+  - error bodies truncate echoed input (QA-F07); single-user note above (QA-F14).
 - v1.3 (2026-11-04), BE-4.9 rulings:
   - `boom_bust_confidence` is `low` for the manifest's `low_confidence_positions`,
     default QB, K, DST (D-104); responses carry `boom_bust_low_confidence`.

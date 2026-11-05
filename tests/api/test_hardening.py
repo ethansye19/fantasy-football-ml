@@ -314,3 +314,40 @@ def test_json_responses_carry_frame_referrer_and_csp_headers(make_client):
         assert r.headers["X-Frame-Options"] == "DENY", r.url
         assert r.headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# --------------------------------------------------------------------------- QA-F07 echo amplification
+
+
+def test_validation_errors_do_not_echo_large_inputs(make_client):
+    client = make_client()
+    huge = "Q" * 100_000  # under the body limit, so it reaches validation
+    r = client.post("/leagues", json={**BASE_LEAGUE, "roster_positions": [huge]})
+    assert r.status_code == 422 and len(r.content) < 4096, len(r.content)
+    r = client.post("/leagues", json={**BASE_LEAGUE, "roster_positions": ["QB", "ZZ", "YY"]})
+    assert r.status_code == 422
+    assert r.json()["error"]["details"]["unknown"] == ["YY", "ZZ"]
+    lg = client.post("/leagues", json=BASE_LEAGUE).json()
+    r = client.put(f"/leagues/{lg['id']}/settings", json={"roster_positions": [huge]})
+    assert r.status_code == 422 and len(r.content) < 4096
+
+
+def test_unknown_player_id_lists_are_capped(make_client):
+    client = make_client()
+    ids = [f"99999{i:03d}" for i in range(60)]  # unknown Sleeper ids (gsis-shaped ids are kept)
+    body = {**BASE_LEAGUE, "teams": [{"name": "A", "players": ids}]}
+    r = client.post("/leagues", json=body)
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "player_not_found" and len(err["details"]["player_ids"]) == 20
+    assert "60 unknown" in err["message"]
+
+
+def test_error_envelope_trims_long_messages_and_details():
+    from api.errors import error_body
+
+    body = error_body("x", "m" * 2000, {"list": ["a" * 500] * 80, "nested": {"k": "v"}})
+    assert len(body["error"]["message"]) == 500
+    assert len(body["error"]["details"]["list"]) == 51  # 50 items plus the "more" marker
+    assert len(body["error"]["details"]["list"][0]) == 200
+    assert body["error"]["details"]["nested"] == {"k": "v"}

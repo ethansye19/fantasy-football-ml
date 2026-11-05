@@ -37,8 +37,27 @@ class ApiError(Exception):
         self.details = details
 
 
+MAX_MESSAGE = 500
+MAX_DETAIL_TEXT = 200
+MAX_DETAIL_ITEMS = 50
+
+
+def trim(value: Any, text: int = MAX_DETAIL_TEXT, items: int = MAX_DETAIL_ITEMS) -> Any:
+    """Shorten strings and lists inside an error payload (QA-F07: no echo amplification)."""
+    if isinstance(value, str):
+        return value if len(value) <= text else value[: text - 3] + "..."
+    if isinstance(value, dict):
+        return {str(k)[:64]: trim(v, text, items) for k, v in list(value.items())[:items]}
+    if isinstance(value, list | tuple):
+        out = [trim(v, text, items) for v in value[:items]]
+        if len(value) > items:
+            out.append(f"... {len(value) - items} more")
+        return out
+    return value
+
+
 def error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
-    return {"error": {"code": code, "message": message, "details": details}}
+    return {"error": {"code": code, "message": trim(message, MAX_MESSAGE), "details": trim(details)}}
 
 
 _HTTP_CODES = {
