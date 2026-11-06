@@ -688,3 +688,49 @@ miss is still marked by the first run after the re-init. Without a `window`
 the runner falls back to the configured season's weeks. Tests: QA's world D3
 (2026w12, 2026w16, 2027w03 missed: miss 3, INVALID, footer and STATUS.md),
 and a 2026w18 miss marked after the 2027 re-init.
+
+## DE-5.8: the runner side of D-116 (A1, A3, A4, A7) (2026-11-06)
+
+1. **Pre-build check (A1).** Before every `build-week` (real runs, rehearsals
+   and dry-run branches; not `--dry-run`, which builds nothing), the runner
+   runs `<pinned python> -m ffml.eval.livetest_score --prebuild-check --from
+   <code commit of the latest commitment on the branch, by created_at, among
+   <week>/commitment.json and <week>/late/commitment.json; "" before the
+   first build> --to <pinned HEAD>` with cwd the pinned worktree. When the
+   remote cannot be read, the local commitments stand in (logged). Exit 0
+   builds. Exit 5 blocks: the check's JSON is logged, a `prebuild_blocked`
+   alert (critical) carries the uncovered and frozen commits, the run exits 2
+   and the normal 30-minute repetition retries. Any other exit (the check
+   cannot run, for example before the Evaluator's flag exists in the pinned
+   code) also blocks, with "could not run" in the alert. A block fixed before
+   the deadline is not a miss; at the deadline the existing rule applies and
+   `MISSED.json` carries `technical_failure` with detail exactly "pre-build
+   check blocked" (plus `reason.check`). `--force-fail prebuild` (dry-run
+   branches only; `-ForceFail prebuild` in the scheduler) blocks without
+   calling the scorer.
+2. **Friday scoring (A3).** `score-week` asks `--data-cutoff <week>` for the
+   cutoff (JSON with `data_cutoff_utc`, also accepted: `data_cutoff`,
+   `cutoff_utc`, `cutoff`, or a bare ISO line), does nothing before it (exit
+   0), and at or after it refreshes the data unless a `dim_game` snapshot
+   taken at or after the cutoff exists. Scorer exit 4 (`--data-cutoff` or
+   `--week`) is "not yet": exit 1, retried, no alert. `seal_record.json`
+   gains `data_cutoff_utc` and `scorer` (the snapshot ids and any
+   `outcome_rows_sha256` from `data/livetest/scoring/weeks/<week>.json`, with
+   that file's SHA-256). The task `\ffml\livetest-weekly-score` runs Fridays
+   from 13:00 UTC (a UTC trigger, so daylight saving does not move it),
+   every 2 h for 12 h; `-ScoreTimeUtc` replaces `-ScoreTime`.
+3. **Priority and timeout (A7).** The weekly scorer is launched with
+   `creationflags=ABOVE_NORMAL_PRIORITY_CLASS` (0x00008000) on Windows,
+   nothing elsewhere, and a 360-minute timeout.
+4. **Final fetch (A4).** RUNBOOK section 15 now states that `--final` exit 75
+   means a failed GitHub fetch, no verdict recorded, retry the final.
+
+Interface the runner expects from the Evaluator's CLI (honoured by
+`scripts/livetest_stub_score.py`, used with `--stub-score` in tests and dry
+runs): `--prebuild-check --from A --to B` prints a JSON object with
+`uncovered` and `frozen` lists and exits 0 or 5; `--data-cutoff <week>`
+prints a JSON object with `data_cutoff_utc` (ISO, UTC) and exits 0 (4 = not
+yet); `--week <week> --weekly-sensitivity` exits 0 (4 = not yet), writes
+`data/livetest/scoring/sealed/<week>.sha256` and
+`data/livetest/scoring/weeks/<week>.json` with `dim_game_snapshot` and
+`processed_snapshots`.

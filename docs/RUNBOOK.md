@@ -5,7 +5,8 @@ D-105). Each week's projections are saved and hashed before that week's
 official first kickoff. They are scored only after the games finish. The
 runbook also covers the alerts that support the test (QA-5.1), the operating
 rules for missed weeks (D-106, revisited in D-111: up to two misses), the
-operations set-up (D-107) and the Tuesday scoring and sealing job (section 15).
+operations set-up (D-107), the pre-build change-log check (D-116) and the
+Friday scoring and sealing job (section 15).
 
 Sections 11 to 14 are the ones the owner acts on: the GitHub watchdog, the
 power settings, the logged-off dry run and the registration command.
@@ -36,7 +37,8 @@ power settings, the logged-off dry run and the registration command.
 | --- | --- | --- |
 | Weekly runner | `scripts/livetest_week.py` | `run`, `watchdog`, `check`, `plan`, `status`, `verify`, `init`, `score-week`, `seal`, `seal-check` |
 | Pre-registration | `docs/status/livetest-preregistration-2026.md` (fenced JSON block) | the runner reads `missed_weeks.allowed` (2) from it; a real run refuses without it |
-| Scorer | `python -m ffml.eval.livetest_score --week 2026wNN` | Evaluator: weekly scoring after the games, sealed metric parts; the runner only publishes their hashes |
+| Scorer | `python -m ffml.eval.livetest_score --week 2026wNN`, `--data-cutoff 2026wNN`, `--prebuild-check --from A --to B` | Evaluator: weekly scoring after the data cutoff, sealed metric parts, the pre-build check; the runner calls it from the pinned worktree and only publishes the sealed hashes |
+| Scorer stub | `scripts/livetest_stub_score.py` (`--stub-score`) | the same three calls with no metric (tests and machinery dry runs) |
 | Shared machinery | `scripts/livetest_core.py` | week plan, commitment re-hash, pin check, commitments repo, GitHub record, fingerprints |
 | Refresh driver | `python -m ffml.data.refresh` (also `ffml refresh --step`, `scripts/refresh_data.py`) | `ingest`, `sleeper`, `process`, `validate`, `features`, one step per process; the runner uses the pinned interpreter |
 | Build | `ffml livetest build-week --season S --week W [--rehearsal]` | ML Engineer: refit, calibrate, predict privately, write `commitment.json` |
@@ -169,10 +171,11 @@ real times appear.
 | K - 25 h | the runner's window opens (earlier runs exit 0 "too early") |
 | K - 24 h 15 min | scheduled run starts, then repeats every 30 min until a valid commitment is pushed (the task repeats until K - 5 min) |
 | run | 1. refresh with the pinned interpreter (`python -m ffml.data.refresh`, one step per process): ingest of all seasons 2016 through the current one, Sleeper map (once per day), process, validate, features |
-| run | 2. `ffml livetest build-week` from the pinned worktree |
-| run | 3. verify the commitment (hashes, digest, season/week, `created_at` < K, pinned commit, clean tree) |
-| run | 4. commit to `livetest-2026` (with a regenerated `STATUS.md`) and push that branch only |
-| run | 5. record `git ls-remote` and GitHub's view, then re-hash against the manifest and the pushed blobs |
+| run | 2. pre-build check (D-116, A1): `<pinned python> -m ffml.eval.livetest_score --prebuild-check --from <code commit of the latest commitment on the branch, "" before the first> --to <pinned HEAD>` in the pinned worktree; exit 0 builds, exit 5 (or a check that cannot run) blocks with a `prebuild_blocked` alert and the next 30-minute repetition retries |
+| run | 3. `ffml livetest build-week` from the pinned worktree |
+| run | 4. verify the commitment (hashes, digest, season/week, `created_at` < K, pinned commit, clean tree) |
+| run | 5. commit to `livetest-2026` (with a regenerated `STATUS.md`) and push that branch only |
+| run | 6. record `git ls-remote` and GitHub's view, then re-hash against the manifest and the pushed blobs |
 | K - 6 h | GitHub watchdog: workflow failure plus webhook if the commitment is not on the branch |
 | K - 3 h | no new refresh starts; if no refresh succeeded, the build uses the newest snapshots, with an alert |
 | K - 1 h | local watchdog and GitHub watchdog: alert if the commitment is not on the remote branch |
@@ -327,7 +330,8 @@ the stderr tails of the refresh and the build.
 | `missed_commitment` at K - 6 h or K - 1 h (GitHub workflow red, webhook) | the GitHub watchdog found nothing on the branch | Check the laptop: is it on, on AC, online? Run the runner by hand now (`run --season S --week W`). If it cannot push before K - 5 min, the week is missed. |
 | `missed_commitment` at K - 1 h (local) | the local watchdog found nothing on the remote | Same as above. |
 | `missed_commitment` after K, exit 3 | the week kicked off without a pushed commitment | No action on the branch: the MISSED marker (with reason and log excerpt) is pushed automatically, and a late commitment with it. Tell the owner. First and second miss: excluded, test goes on. Third miss: the test is INVALID (D-106, D-111). |
-| `scoring_failure` (Tuesday) | the refresh before scoring failed, the Evaluator's scorer exited non-zero, it wrote no sealed file, or the sealed hashes could not be pushed | The task repeats every 2 h for 12 h. Read the run log's scorer stderr. A week that is not final yet is retried without an alert. Tell the Evaluator if the scorer itself fails. |
+| `prebuild_blocked`, exit 2 | the pre-build check found commits between the last build's code commit and the pinned HEAD without a change-log entry, or touching a frozen path, or the check could not run | The alert lists the uncovered and the frozen commits. Add the missing change-log entries (on the pinned code, through the normal review); a frozen-path change needs the owner's ruling (D-111). The runner retries every 30 minutes; a block fixed before the deadline is not a miss. If it is still blocked at K, the week is missed with reason `technical_failure`, detail "pre-build check blocked". |
+| `scoring_failure` (Friday) | the refresh before scoring failed, the scorer's `--data-cutoff` or `--week` exited non-zero (other than 4), it wrote no sealed file, or the sealed hashes could not be pushed | The task repeats every 2 h for 12 h. Read the run log's scorer stderr. Scorer exit 4 ("not yet") and a week that is not final yet are retried without an alert. Tell the Evaluator if the scorer itself fails. |
 | `integrity` (seal) | the branch already holds different sealed hashes for the week, or a local sealed part no longer matches its hash | Stop. Sealed hashes are immutable. Tell the Evaluator and the orchestrator; never re-seal by hand. |
 | `integrity`, exit 6 | the branch holds a different commitment, a file no longer matches its hash, or post-push verification failed | Stop. Do not rebuild, delete or re-push. Keep the logs and tell the orchestrator. |
 | `integrity`, exit 7 | an existing snapshot changed during a refresh | Stop. Do not build. Tell the orchestrator. |
@@ -357,7 +361,7 @@ pushes `<week>/MISSED.json`:
 | Field | Content |
 | --- | --- |
 | `reason.category` | `technical_failure`: a runner log in the window ending at K shows a failure, or a commitment was built and not pushed; `machine_offline`: no runner log exists between K - 25 h and K (off, asleep, logged off, or the task did not start) |
-| `reason.detail` | the last failed step and its message, or the built-but-not-pushed statement |
+| `reason.detail` | the last failed step and its message, or the built-but-not-pushed statement; exactly "pre-build check blocked" when the pre-build check was still blocking at K (with `reason.check`: its last message and time) |
 | `run_logs` | the window, the log file names in it, and the last 12 events of the latest log |
 | `local_commitment` | whether a local commitment exists, its hash, `created_at`, `built_before_kickoff` |
 | `late_commitment` | the `late/` path and hash when one was pushed, with its verification result |
@@ -396,14 +400,14 @@ A missed week shows up in five places, and the signals agree:
 4. the GitHub watchdog runs inside the windows are red;
 5. the absence of a commitment with a GitHub push timestamp before K.
 
-## 9. Daily check, the Tuesday job and one-off commands
+## 9. Daily check, the Friday job and one-off commands
 
 `livetest_week.py check` runs daily at 15:00 local. It does three things:
 - the stale-prediction check;
 - schedule drift against `schedule_plan.json`;
 - MISSED markers (with reasons) for weeks that kicked off.
 
-`livetest_week.py score-week` runs on Tuesdays (section 15).
+`livetest_week.py score-week` runs on Fridays from 13:00 UTC (section 15).
 
 Useful one-off commands:
 
@@ -424,7 +428,7 @@ powershell -ExecutionPolicy Bypass -File scripts\livetest_power_check.ps1
 | --- | --- |
 | 0 | done, already pushed, or nothing to do (outside the window, too early, another run holds the lock) |
 | 1 | failed; the next repetition retries (refresh, build, push, watchdog finding, scorer, week not final yet, not sealed on the branch yet) |
-| 2 | build blocked: pin refused, or approval gate refused |
+| 2 | build blocked: pin refused, approval gate refused, or the pre-build check blocked (retried every 30 min) |
 | 3 | missed: too late for this week |
 | 4 | refused: unsafe environment or bad arguments (`FFML_HOLDOUT_UNLOCK`, `--now` on a real run, stub outside a rehearsal, no `init`, `--dry-run-branch livetest-2026`, `--force-fail` outside a dry run) |
 | 6 | integrity problem; needs a human |
@@ -544,7 +548,9 @@ live commitment.
 Everything goes to the branch `livetest-dryrun`, its own worktree
 `..\ffml-livetest-dryrun-commitments`, and `data\livetest\runner\dryrun\`.
 The build is `build-week --rehearsal` (the sandbox) or the stub with
-`-DryRunStub`; the refresh runs unless `-DryRunSkipRefresh`.
+`-DryRunStub`; the refresh runs unless `-DryRunSkipRefresh`. Every build runs
+the pre-build check first (section 4); `-DryRunStubScore` uses the scorer stub
+for it, for a dry run before the Evaluator's `--prebuild-check` is on `main`.
 
 Step by step (about two hours):
 
@@ -573,6 +579,10 @@ Step by step (about two hours):
    Get-ChildItem data\livetest\logs | Sort-Object LastWriteTime | Select-Object -Last 3
    .venv\Scripts\python scripts\livetest_week.py status --dry-run-branch livetest-dryrun
    ```
+
+   (Optional, before step 3: `-ForceFail prebuild` proves the pre-build block
+   the same way: a `prebuild_blocked` alert, no build, and the next run without
+   the flag builds.)
 
    Expected: a run log written while logged off, ending in `push: failed`
    with the forced message, a `push_failure` alert (log, webhook, no toast
@@ -664,37 +674,54 @@ Get-ScheduledTaskInfo -TaskPath "\ffml\" -TaskName "livetest-2026w10-run"       
 
 To remove everything: `scripts\livetest_schedule.ps1 -Unregister`.
 
-The weekly set also contains `\ffml\livetest-weekly-score` (Tuesdays at
-`-ScoreTime`, default 15:30 local, repeating every 2 hours for 12 hours), the
-Tuesday scoring and sealing job of section 15.
+The weekly set also contains `\ffml\livetest-weekly-score` (Fridays at
+`-ScoreTimeUtc`, default 13:00 UTC, repeating every 2 hours for 12 hours; the
+trigger is in UTC, so a daylight-saving change does not move it), the Friday
+scoring and sealing job of section 15.
 
-## 15. Tuesday scoring and sealed hashes (pre-registration `sealed_interim`)
+## 15. Friday scoring and sealed hashes (pre-registration `sealed_interim`, D-116)
 
-Interim results are sealed until the verdict. After a week's games are
-final, the Evaluator's scorer (`python -m ffml.eval.livetest_score --week
+Interim results are sealed until the verdict. After a week's data cutoff, the
+Evaluator's scorer (`python -m ffml.eval.livetest_score --week
 2026wNN`) writes the verification status and the sealed metric parts, and the
 file `data/livetest/scoring/sealed/2026wNN.sha256` with the SHA-256 of those
 parts. The runner publishes only those hashes to the branch, so the parts
 cannot be altered later; no metric, line result or ranking is rendered,
 printed or committed before the final evaluation.
 
-The Tuesday job `livetest_week.py score-week` (task `\ffml\livetest-weekly-score`,
-Tuesdays 15:30 local, repeating every 2 h for 12 h):
+The data cutoff (D-116, A3) is 12:00 UTC on the first Friday at least 72
+hours after the week's last kickoff. The scorer scores against the first
+processed snapshot taken at or after it; stat corrections after the cutoff are
+ignored, and the sealed week records the snapshot ids and a hash of the
+outcome rows used.
+
+The Friday job `livetest_week.py score-week` (task `\ffml\livetest-weekly-score`,
+Fridays from 13:00 UTC, repeating every 2 h for 12 h):
 1. picks the oldest test week that has kicked off, has a commitment on the
    branch, is not missed and has no `sealed_hashes.json` yet (nothing to do:
    exit 0);
-2. refreshes the data with the pinned interpreter (skip with `--skip-refresh`)
-   and checks that every game of the week is final in `dim_game`; if not,
-   exit 1 without an alert, and the next repetition retries;
-3. runs the scorer from the pinned worktree when no sealed file exists yet;
-   a non-zero exit or a missing sealed file raises `scoring_failure` (exit 1,
-   retried);
-4. `seal`: reads `2026wNN.sha256` (sha256sum lines, a JSON object or bare
+2. asks the scorer for the week's cutoff
+   (`<pinned python> -m ffml.eval.livetest_score --data-cutoff 2026wNN`); before
+   the cutoff it does nothing (exit 0); exit 4 means "not yet" (exit 1, retried,
+   no alert);
+3. at or after the cutoff, refreshes the data with the pinned interpreter
+   unless a `dim_game` snapshot taken at or after the cutoff already exists
+   (skip with `--skip-refresh`), and checks that every game of the week is
+   final in `dim_game`; if not, exit 1 without an alert, and the next
+   repetition retries;
+4. runs the scorer (`--week 2026wNN --weekly-sensitivity`) from the pinned
+   worktree when no sealed file exists yet, at above-normal priority on
+   Windows with a 360-minute timeout (A7); exit 4 is "not yet" (retried, no
+   alert); any other non-zero exit or a missing sealed file raises
+   `scoring_failure` (exit 1, retried);
+5. `seal`: reads `2026wNN.sha256` (sha256sum lines, a JSON object or bare
    hashes), re-hashes any sealed part present locally, and commits
    `2026wNN/sealed_hashes.json` (the file's own SHA-256, its entries and its
    raw text) plus a regenerated `STATUS.md` with the `sealed` column, then
-   pushes `livetest-2026` only and records the push and GitHub's view in
-   `data/livetest/runner/2026wNN/seal_record.json`.
+   pushes `livetest-2026` only and records in
+   `data/livetest/runner/2026wNN/seal_record.json` the push, GitHub's view,
+   the data cutoff (`data_cutoff_utc`) and the scorer's snapshot ids (from
+   `data/livetest/scoring/weeks/2026wNN.json`).
 
 `seal` is idempotent: the same sealed file is never committed twice. It is
 also immutable: a local sealed file that differs from the published hashes is
@@ -704,7 +731,7 @@ overwritten, and never by hand.
 By hand:
 
 ```powershell
-.venv\Scripts\python scripts\livetest_week.py score-week                          # the Tuesday job, oldest unsealed week
+.venv\Scripts\python scripts\livetest_week.py score-week                          # the Friday job, oldest unsealed week
 .venv\Scripts\python scripts\livetest_week.py seal --season 2026 --week 10        # publish the hashes of an already scored week
 .venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 10  # branch copy vs local sealed file and parts
 git fetch origin livetest-2026; git show origin/livetest-2026:2026w10/sealed_hashes.json
@@ -715,3 +742,9 @@ every locally present part hashes to its sealed value, 1 when the week is not
 sealed yet (locally or on the branch), and 6 on any difference. The scoring
 itself, the weekly reports and the final verdict are the Evaluator's; the
 runner never reads a sealed part.
+
+The final (Evaluator, once, after 2027 week 9): `python -m
+ffml.eval.livetest_score --final`. **Exit 75 means the GitHub fetch of
+`livetest-2026` failed** (D-116, A4): no verdict was recorded, no `Verdict:`
+line and no final report were written, and the sealed files are untouched.
+Check the network and `gh auth status`, then simply run the final again.

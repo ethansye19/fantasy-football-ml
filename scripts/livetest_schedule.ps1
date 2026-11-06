@@ -11,9 +11,10 @@
                                        kickoff - 30 min and pushing at kickoff - 5 min)
     \ffml\livetest-<S>w<WW>-watchdog  first kickoff - 1 h: alert if nothing is pushed
     \ffml\livetest-daily-check        daily: stale predictions, schedule drift, MISSED markers
-    \ffml\livetest-weekly-score       Tuesdays: refresh, the Evaluator's scorer for the oldest unsealed
-                                       committed week, then the sealed hashes pushed to the branch;
-                                       repeats every 2 h for 12 h until there is nothing left to do
+    \ffml\livetest-weekly-score       Fridays from 13:00 UTC (D-116, A3): the week's data cutoff, a
+                                       refresh at or after it, the Evaluator's scorer for the oldest
+                                       unsealed committed week, then the sealed hashes pushed to the
+                                       branch; repeats every 2 h for 12 h
 
   Weeks whose kickoff times are still tentative (every game at one time, as week 18 is until
   the NFL sets it) are scheduled 24 hours earlier again. The daily check alerts when kickoff
@@ -50,6 +51,9 @@
 .PARAMETER ForceFail
   Dry run only: refresh, build or push. The runner fails that step on purpose and alerts.
 
+.PARAMETER DryRunStubScore
+  Dry run only: use scripts/livetest_stub_score.py for the pre-build check (until the scorer CLI is on main).
+
 .PARAMETER DryRunAt
   Dry run only: when the first attempt starts (default: 10 minutes from now).
 
@@ -67,7 +71,7 @@ param(
     [string]$LogonMode = "Password",
     [string]$TaskFolder = "\ffml\",
     [string]$DailyCheckTime = "15:00",
-    [string]$ScoreTime = "15:30",
+    [string]$ScoreTimeUtc = "13:00",
     [string]$PlanJson = "",
     [string]$Weeks = "",
     [int]$Season = 0,
@@ -75,11 +79,12 @@ param(
     [switch]$Unregister,
     [switch]$NoWake,
     [string]$DryRunBranch = "",
-    [ValidateSet("", "refresh", "build", "push")]
+    [ValidateSet("", "refresh", "prebuild", "build", "push")]
     [string]$ForceFail = "",
     [datetime]$DryRunAt = [datetime]::MinValue,
     [int]$DryRunWeek = 0,
     [switch]$DryRunStub,
+    [switch]$DryRunStubScore,
     [switch]$DryRunSkipRefresh
 )
 
@@ -132,6 +137,7 @@ if ($DryRun) {
     if ($DryRunAt -eq [datetime]::MinValue) { $DryRunAt = $now.AddMinutes(10) }
     $dryArgs = "`"$Runner`" run --dry-run-branch $DryRunBranch --season $($wk.season) --week $($wk.week)"
     if ($DryRunStub) { $dryArgs += " --stub-build" }
+    if ($DryRunStubScore) { $dryArgs += " --stub-score" }
     if ($DryRunSkipRefresh) { $dryArgs += " --skip-refresh" }
     if ($ForceFail) { $dryArgs += " --force-fail $ForceFail" }
     $forced = "none"
@@ -169,10 +175,18 @@ if ($DryRun) {
     }
     $daily = New-ScheduledTaskTrigger -Daily -At $DailyCheckTime
     $specs += New-TaskSpec "livetest-daily-check" "`"$Runner`" check" $daily "daily at $DailyCheckTime local"
-    $score = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Tuesday -At $ScoreTime
-    $score.Repetition = (New-ScheduledTaskTrigger -Once -At $ScoreTime -RepetitionInterval (New-TimeSpan -Hours 2) `
+    # Fridays at a fixed UTC time: the StartBoundary carries "Z" (synchronize across time zones), so the
+    # task stays at 13:00 UTC when daylight saving time changes the local clock.
+    $hm = $ScoreTimeUtc.Split(":")
+    $utcNow = (Get-Date).ToUniversalTime()
+    $firstUtc = [DateTime]::SpecifyKind($utcNow.Date.AddHours([int]$hm[0]).AddMinutes([int]$hm[1]), [DateTimeKind]::Utc)
+    while ($firstUtc.DayOfWeek -ne [DayOfWeek]::Friday -or $firstUtc -le $utcNow) { $firstUtc = $firstUtc.AddDays(1) }
+    $score = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At $firstUtc.ToLocalTime()
+    $score.Repetition = (New-ScheduledTaskTrigger -Once -At $firstUtc.ToLocalTime() -RepetitionInterval (New-TimeSpan -Hours 2) `
         -RepetitionDuration (New-TimeSpan -Hours 12)).Repetition
-    $specs += New-TaskSpec "livetest-weekly-score" "`"$Runner`" score-week" $score "Tuesdays at $ScoreTime local, every 2 h for 12 h"
+    $score.StartBoundary = $firstUtc.ToString("yyyy-MM-ddTHH:mm:ss") + "Z"
+    $specs += New-TaskSpec "livetest-weekly-score" "`"$Runner`" score-week" $score `
+        ("Fridays at {0} UTC ({1:HH:mm} local now), every 2 h for 12 h; first {2:yyyy-MM-dd}" -f $ScoreTimeUtc, $firstUtc.ToLocalTime(), $firstUtc)
 }
 
 # AC power only to start (no -AllowStartIfOnBatteries); a run that is already going is not killed on unplugging.
