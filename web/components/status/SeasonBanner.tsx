@@ -17,9 +17,10 @@ const TITLES: Record<string, string> = {
 };
 
 /**
- * Season notice from /meta/season, keyed on `mode` (the API's `offseason`
- * flag is true for every non-regular mode, including "unknown"). When the
- * endpoint is missing or fails, nothing is shown.
+ * Season notice from /meta/season, keyed on `mode`. The API's `offseason`
+ * flag is true in the postseason and offseason and null when the mode is
+ * unknown (v1.3), so it is not used here. When the endpoint is missing or
+ * fails, nothing is shown.
  */
 export function SeasonBanner() {
   const { season } = useStatus();

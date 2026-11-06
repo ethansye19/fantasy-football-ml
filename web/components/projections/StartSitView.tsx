@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { ApiStateView } from "@/components/states/ApiStateView";
+import { EmptyState } from "@/components/states/States";
 import { api } from "@/lib/api/client";
 import { useApi, useMutation } from "@/lib/api/hooks";
+import { playerNotFoundIds } from "@/lib/api/result";
 import type { League, LeagueTeam, ProjectionsResponse, StartSitResponse } from "@/lib/api/types";
 import { niceMax, pct } from "@/lib/format";
-import { BoomBust } from "./BoomBust";
+import { BoomBust, LowConfidenceNote } from "./BoomBust";
 import { ChanceBars } from "./ChanceBars";
 import { Disclaimer } from "./Disclaimer";
 import { DistributionStrip } from "./DistributionStrip";
@@ -169,7 +171,25 @@ function StartSitBody({ league, myTeam }: { league: League; myTeam: LeagueTeam |
           <h2 id="ss-result" className="sr-only">
             Comparison
           </h2>
-          <ApiStateView result={compare.result} feature="Start/sit" onRetry={() => void compare.mutate(picks.map((p) => p.id))}>
+          <ApiStateView
+            result={compare.result}
+            feature="Start/sit"
+            onRetry={() => void compare.mutate(picks.map((p) => p.id))}
+            renderError={(r) => {
+              // 422 player_not_found with details.player_ids (contract v1.3)
+              const ids = playerNotFoundIds(r);
+              if (!ids.length) return undefined;
+              const names = ids.map((id) => picks.find((p) => p.id === id)?.name ?? id);
+              return (
+                <EmptyState title="No projection for some of these players">
+                  <p>
+                    {names.join(", ")}: not in this run (no game this week, or unknown to the model). Remove them and compare
+                    again.
+                  </p>
+                </EmptyState>
+              );
+            }}
+          >
             {(data, ok) => <StartSitResult data={data} approval={ok.approval} />}
           </ApiStateView>
         </section>
@@ -187,6 +207,7 @@ function StartSitResult({ data, approval }: { data: StartSitResponse; approval: 
   return (
     <div className="space-y-6" data-testid="start-sit-result">
       <ProjectionNotice approval={approval} />
+      <LowConfidenceNote positions={data.boom_bust_low_confidence} />
 
       <div className="card space-y-2 p-4 sm:p-5" data-testid="recommendation">
         <p className="flex flex-wrap items-center gap-2">
@@ -237,7 +258,13 @@ function StartSitResult({ data, approval }: { data: StartSitResponse; approval: 
               <PlayerMeta p={p} />
             </div>
             <DistributionStrip floor={p.floor} median={p.median} ceiling={p.ceiling} max={max} />
-            <BoomBust boom={p.boom_prob} bust={p.bust_prob} confidence={p.boom_bust_confidence} position={p.position} />
+            <BoomBust
+              boom={p.boom_prob}
+              bust={p.bust_prob}
+              confidence={p.boom_bust_confidence}
+              position={p.position}
+              lowConfidencePositions={data.boom_bust_low_confidence}
+            />
             <Drivers drivers={p.drivers} />
           </li>
         ))}

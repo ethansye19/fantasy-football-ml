@@ -20,6 +20,8 @@ import type {
   LeagueSettingsBody,
   ManualLeagueBody,
   ModelCardResponse,
+  PlayerSearchResponse,
+  Position,
   ProjectionsQuery,
   ProjectionsResponse,
   RosQuery,
@@ -174,6 +176,11 @@ export const api = {
   sleeper: {
     userLeagues: (username: string, season?: number, o: Opt = {}) =>
       request<SleeperUserLeagues>(`/sleeper/users/${enc(username)}/leagues`, { ...o, query: { season } }),
+  },
+  players: {
+    /** Identity-only lookup for league setup (never gated). `search` needs 2 to 60 characters. */
+    search: (search: string, position?: Position, limit = 50, o: Opt = {}) =>
+      request<PlayerSearchResponse>("/players", { ...o, query: { search, position, limit } }),
   },
   leagues: {
     list: (o: Opt = {}) => request<{ leagues: League[] }>("/leagues", o),

@@ -229,6 +229,13 @@ export function unreachable(message?: string): ApiResult<never> {
   };
 }
 
+/** `details.player_ids` of a player_not_found error (422 for body ids, v1.3), or an empty list. */
+export function playerNotFoundIds(result: ApiResult<unknown>): string[] {
+  if (result.kind !== "error" || result.code !== "player_not_found" || !isRecord(result.details)) return [];
+  const ids = result.details.player_ids;
+  return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
+}
+
 /** `details` of a 422 validation_error as a list, or an empty list. */
 export function validationDetails(result: ApiResult<unknown>): ValidationDetail[] {
   if (result.kind !== "error" || !Array.isArray(result.details)) return [];

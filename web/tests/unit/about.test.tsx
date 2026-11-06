@@ -13,8 +13,8 @@ const PROD_CARD = {
   label: "not approved",
   serving: false,
   models: [
-    { name: "chain_v1", version: "v1", registry_status: "rejected", created_at: "2026-11-02T00:00:00Z" },
-    { name: "chain_v2", version: "v2", registry_status: "approved", created_at: "2026-11-05T00:00:00Z" },
+    { name: "chain_v1", version: "v1", registry_status: "rejected", serving: false, created_at: "2026-11-02T00:00:00Z" },
+    { name: "chain_v2", version: "v2", registry_status: "awaiting_release", serving: false, created_at: "2026-11-05T00:00:00Z" },
   ],
 };
 
@@ -26,7 +26,6 @@ describe("ModelCardView", () => {
     expect(screen.getByTestId("not-approved-label")).toHaveTextContent(/not approved/i);
     expect(status).toHaveTextContent(MODEL_CARD.status_summary);
     expect(screen.getByText("Rejected: did not pass its test")).toBeInTheDocument();
-    // a registry "approved" entry is not shown as approved while the API is not approved
     expect(screen.getByText("Awaiting release")).toBeInTheDocument();
     expect(claimsApproval(visibleText())).toBe(false);
     expect(screen.queryByTestId("fallback-note")).toBeNull();
@@ -62,10 +61,15 @@ describe("ModelCardView", () => {
 });
 
 describe("registryStatusLabel", () => {
-  it("only says approved when the API approves", () => {
-    expect(claimsApproval(registryStatusLabel("approved", false))).toBe(false);
-    expect(registryStatusLabel("live", false)).toMatch(/not serving/);
-    expect(registryStatusLabel("approved", true)).toBe("approved");
+  it("maps the v1.3 words and never claims approval on its own", () => {
+    expect(registryStatusLabel("candidate")).toMatch(/under test/);
+    expect(registryStatusLabel("awaiting_release")).toBe("Awaiting release");
+    expect(registryStatusLabel("live", true)).toBe("Live, serving projections");
+    expect(registryStatusLabel("live", false)).toBe("Live");
+    for (const word of ["candidate", "rejected", "retired", "awaiting_release", "live", "approved", "odd_word", null]) {
+      expect(claimsApproval(registryStatusLabel(word, false))).toBe(false);
+      expect(claimsApproval(registryStatusLabel(word, true))).toBe(false);
+    }
   });
 });
 

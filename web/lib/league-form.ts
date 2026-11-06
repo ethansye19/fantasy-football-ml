@@ -1,7 +1,7 @@
 /** League settings form: values, validation, request bodies, server-error mapping. */
 import type { ApiResult } from "./api/result";
-import { validationDetails } from "./api/result";
-import type { League, LeagueSettingsBody, ManualLeagueBody, PresetName } from "./api/types";
+import { playerNotFoundIds, validationDetails } from "./api/result";
+import type { League, LeagueSettingsBody, ManualLeagueBody, PlayerIdentity, PresetName } from "./api/types";
 import {
   DEFAULT_ROSTER,
   IDP_SLOTS,
@@ -27,14 +27,15 @@ export interface LeagueFormValues {
   slots: Record<string, number>;
   playoffWeekStart: string;
   teamName: string;
-  players: string;
+  /** Players picked through GET /players (identity only); sent as ids. */
+  players: PlayerIdentity[];
 }
 
 export type FieldErrors = Record<string, string>;
 
 export const SCORING_MIN = -100;
 export const SCORING_MAX = 100;
-const PLAYER_ID = /^[A-Za-z0-9._-]{1,32}$/;
+export const MAX_TEAM_PLAYERS = 60;
 
 function scoringStrings(values: Record<string, number>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -57,7 +58,7 @@ export function initialCreateValues(season: number): LeagueFormValues {
     slots: countSlots(DEFAULT_ROSTER),
     playoffWeekStart: "15",
     teamName: "My team",
-    players: "",
+    players: [],
   };
 }
 
@@ -73,7 +74,7 @@ export function initialEditValues(league: League): LeagueFormValues {
     slots: countSlots(league.roster_positions),
     playoffWeekStart: typeof pws === "number" ? String(pws) : "",
     teamName: "",
-    players: "",
+    players: [],
   };
 }
 
@@ -81,13 +82,6 @@ function intIn(value: string, lo: number, hi: number): boolean {
   if (!/^-?\d+$/.test(value.trim())) return false;
   const n = Number(value);
   return n >= lo && n <= hi;
-}
-
-export function parsePlayers(text: string): string[] {
-  return text
-    .split(/[\s,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
 }
 
 export function validateLeagueForm(v: LeagueFormValues, mode: FormMode): FieldErrors {
@@ -121,11 +115,8 @@ export function validateLeagueForm(v: LeagueFormValues, mode: FormMode): FieldEr
 
   if (mode === "create") {
     if (v.teamName.trim().length > 100) e.team_name = "Use 100 characters or fewer.";
-    const players = parsePlayers(v.players);
-    const bad = players.filter((p) => !PLAYER_ID.test(p));
-    if (bad.length) e.players = `These do not look like player ids: ${bad.slice(0, 5).join(", ")}.`;
-    else if (players.length > 60) e.players = "List at most 60 players.";
-    else if (new Set(players).size !== players.length) e.players = "Each player can be listed once.";
+    if (v.players.length > MAX_TEAM_PLAYERS) e.players = `List at most ${MAX_TEAM_PLAYERS} players.`;
+    else if (new Set(v.players.map((p) => p.player_id)).size !== v.players.length) e.players = "Each player can be listed once.";
   }
   return e;
 }
@@ -150,7 +141,7 @@ export function toManualBody(v: LeagueFormValues): ManualLeagueBody {
     scoring: { preset, overrides: overridesFor(preset, values) },
     roster_positions: slotsToPositions(v.slots),
     settings: settingsPart(v),
-    teams: [{ name: v.teamName.trim() || "My team", is_me: true, players: parsePlayers(v.players) }],
+    teams: [{ name: v.teamName.trim() || "My team", is_me: true, players: v.players.map((p) => p.player_id) }],
   };
 }
 
@@ -189,8 +180,8 @@ export function serverErrors(result: ApiResult<unknown>): { fields: FieldErrors;
   if (result.code === "invalid_scoring") fields.scoring = result.message;
   else if (result.code === "invalid_roster_positions") fields.roster = result.message;
   else if (result.code === "player_not_found") {
-    const ids = (result.details as { player_ids?: string[] } | null)?.player_ids;
-    fields.players = ids?.length ? `Unknown player ids: ${ids.join(", ")}.` : result.message;
+    const ids = playerNotFoundIds(result);
+    fields.players = ids.length ? `The API does not know these player ids: ${ids.join(", ")}. Remove them and try again.` : result.message;
   } else {
     for (const d of validationDetails(result)) {
       const [first, second, third] = d.loc;

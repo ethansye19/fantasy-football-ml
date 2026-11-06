@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, type FormEvent } from "react";
-import { ErrorSummary, TextAreaField, TextField, fieldId } from "@/components/forms/Field";
+import { ErrorSummary, TextField, fieldId } from "@/components/forms/Field";
 import { api } from "@/lib/api/client";
 import type { League, PresetName } from "@/lib/api/types";
 import {
@@ -17,6 +17,7 @@ import {
   validateLeagueForm,
 } from "@/lib/league-form";
 import { IDP_SLOTS, MAX_PER_SLOT, PRESET_LABELS, SCORING_FIELDS, SLOT_INFO } from "@/lib/scoring";
+import { PlayerPicker } from "./PlayerPicker";
 
 const GROUPS = ["Passing", "Rushing", "Receiving", "Other", "Kicking", "Defense"] as const;
 
@@ -269,14 +270,7 @@ export function LeagueSettingsForm({
             error={errors.team_name}
             onChange={(e) => set("teamName", e.target.value)}
           />
-          <TextAreaField
-            id={id("players")}
-            label="Players on your team (optional)"
-            hint="Sleeper player ids, nflverse player ids (like 00-0036322) or team codes for defenses (like KC), separated by commas or spaces."
-            value={values.players}
-            error={errors.players}
-            onChange={(e) => set("players", e.target.value)}
-          />
+          <PlayerPicker id={id("players")} value={values.players} error={errors.players} onChange={(players) => set("players", players)} />
         </fieldset>
       ) : null}
 

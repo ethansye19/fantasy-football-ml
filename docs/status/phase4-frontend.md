@@ -1,7 +1,7 @@
-# Phase 4 / Frontend Engineer / UI-4.1 to UI-4.9
-Date: 2026-11-04
+# Phase 4 / Frontend Engineer / UI-4.1 to UI-4.10
+Date: 2026-11-05 (first version 2026-11-04)
 Scope: the web app in `web/` (Next.js 16 App Router, TypeScript, Tailwind 4)
-built against docs/API.md (v1, then v1.2), plus `Dockerfile.web`. Phase 4
+built against docs/API.md (v1 to v1.3), plus `Dockerfile.web`. Phase 4
 runs as an owner exception (D-099). No model is approved, so in production
 every projection view shows a calm "No approved model" state. Private test
 environments show labeled "not approved" data.
@@ -19,6 +19,8 @@ environments show labeled "not approved" data.
    rest-of-season views, built against contract fixtures.
 5. UI-4.9: Playwright smoke tests in both modes, first against a mock and
    then against the real API.
+6. UI-4.10: adopt contract v1.3 (the Backend's answers to the six
+   questions below) and fix QA-F15 and QA-F16.
 
 ## Done
 
@@ -29,9 +31,10 @@ environments show labeled "not approved" data.
 | d243032 | UI-4.2 `/setup`. Sleeper import (username, then league, then my team; or import by league id), manual form, league list with use/sync/delete, and a settings editor for the current league. |
 | 687d891 | UI-4.3 `/projections`. Distribution strip, boom/bust badges with low-confidence marking, drivers, filters, preset scoring when no league is set, and `GatedView`. |
 | 0df2fb5 | UI-4.4 to UI-4.7: `/start-sit`, `/waivers`, `/trade`, `/rankings`. |
-| 1519ab5 | UI-4.9 Playwright harness. Start/sit quick picks now come from my roster's projections. |
+| 1519ab5 | UI-4.9 Playwright harness. Start/sit quick picks come from my roster's projections. |
 | c4f2456 | `Dockerfile.web` (standalone Next server, non-root, health check). |
-| this commit | Status note; the projections lead now says ranges are for when the player plays (D-102). |
+| 1088eb8 | Status note; the projections lead says ranges are for when the player plays (D-102). |
+| this commit | UI-4.10: contract v1.3 adopted, QA-F15 and QA-F16 fixed (section below). |
 
 ### How the approval rules are enforced in the UI
 
@@ -70,8 +73,9 @@ environments show labeled "not approved" data.
   prominent block with the API's `label`, every `notices[]` entry, and the
   run (source, season and week, model version, sims, written at).
 - **Wording.** "approved" is never displayed unless the API returns it.
-  - The model card maps a registry status of `approved` to "Awaiting
-    release" while the gate is not approved.
+  - The model card maps the registry words of contract v1.3 (`candidate`,
+    `rejected`, `retired`, `awaiting_release`, `live`) to plain language;
+    an older registry value of `approved` is shown as "Awaiting release".
   - `tests/unit/wording.test.ts` scans all UI source for "lock",
     "guaranteed", "can't miss", FantasyPros/ECR/consensus and sportsbook
     words, and for approval claims.
@@ -79,7 +83,10 @@ environments show labeled "not approved" data.
   - Start/sit, waivers and trade show the API's "No guarantees"
     disclaimer, or a built-in one if it is missing.
 - **Low confidence.** Boom/bust badges are dashed and say "Low confidence"
-  whenever `boom_bust_confidence == "low"`.
+  when the row says `boom_bust_confidence: "low"` or when the response's
+  `boom_bust_low_confidence` list names the position (v1.3, D-104). A note
+  above each table names those positions. Nothing in the UI hardcodes the
+  set.
 - **Restricted data.** No FantasyPros or consensus data. The only
   related text is the API's attribution sentence saying such data is never
   shown. The built-in copy avoids even the word.
@@ -88,8 +95,7 @@ environments show labeled "not approved" data.
 
 - **Visual identity.** Original: a "Gridiron Projections" mark (yard lines
   with a distribution curve), warm neutral surfaces, a turf-green accent,
-  and system fonts with tabular numbers. All pages are static except the
-  API proxy.
+  and system fonts with tabular numbers.
 - **Colors.** Tokens are defined on `:root`, with dark values for both
   `prefers-color-scheme` and `data-theme`.
   - `tests/unit/contrast.test.ts` checks text pairs at 4.5:1 and UI parts
@@ -113,54 +119,97 @@ environments show labeled "not approved" data.
     on Escape.
   - Focus rings are visible, and reduced motion is respected.
 
+## UI-4.10: contract v1.3 and the QA findings (2026-11-05)
+
+The Backend answered the six questions of 2026-11-04 in contract v1.3
+(docs/API.md changelog). What changed in `web/`:
+
+1. **422 `player_not_found` with `details.player_ids`.**
+   `lib/api/result.ts` gained `playerNotFoundIds()`. Start/sit names the
+   players the run does not cover and asks to remove them (a calm state,
+   not an error panel); the manual-league form maps the ids onto its
+   players field. 404 stays reserved for path and query resources.
+2. **`GET /players?search=&position=`.** `components/setup/PlayerPicker.tsx`
+   replaces the raw-id textarea: a typeahead that starts at two
+   characters, debounces 300 ms, asks for at most 50 rows, filters by
+   position, and keeps picks as chips with remove buttons (at most 60,
+   the form's limit). Only ids are sent. The proxy now allows the
+   `players` root; the API's `Cache-Control: public, max-age=300` is
+   passed through.
+3. **`boom_bust_low_confidence`.** `BoomBust` takes the response's list
+   and `LowConfidenceNote` names the positions ("Boom and bust chances for
+   defenses, kickers and quarterbacks (DST, K, QB) are low confidence in
+   this run"). The per-row `boom_bust_confidence` still counts; the UI no
+   longer decides which positions are low confidence.
+4. **Registry words.** `registryStatusLabel` maps `candidate` ("Candidate,
+   under test"), `rejected` ("Rejected: did not pass its test"),
+   `retired`, `awaiting_release` ("Awaiting release") and `live` ("Live,
+   serving projections" when `serving` is true). The word "approved" never
+   comes from the UI.
+5. **`/meta/season` `offseason: null`.** The type allows null; the banner
+   and the home status key on `mode`, as before.
+6. **QA-F15 (proxy body size).** `app/api/[...path]/route.ts` refuses a
+   `Content-Length` above 256 KiB before reading, then counts bytes while
+   the body streams and stops at the limit (413 `payload_too_large`). The
+   body is forwarded as bytes, so multi-byte text is measured correctly.
+   It also passes `X-Forwarded-For` on, for the API's per-client rate
+   limiter behind a reverse proxy (`FFML_TRUSTED_PROXIES`).
+7. **QA-F16 (CSP `'unsafe-inline'`).** Removed for scripts. `web/proxy.ts`
+   sets a per-request nonce:
+   `script-src 'self' 'nonce-…' 'strict-dynamic'`, with the other
+   directives as before. Next.js puts the nonce on its own inline scripts
+   when it finds it in the request's CSP header, and `app/layout.tsx`
+   reads it through `headers()` for the theme bootstrap. The cost, as the
+   Next.js CSP guide documents, is that every page renders per request
+   instead of being prerendered (the build now lists all 13 routes as
+   dynamic). `style-src` keeps `'unsafe-inline'` for React style
+   attributes (the distribution strip positions its marks that way); no
+   external style sources are allowed. The CSP is only set in production,
+   as before.
+8. **QA-F18 (minimatch, lint-time).** No patched 10.x exists: the advisory
+   covers 7.0.0 to 11.0.0 and 10.2.6 is the newest 10.x. Accepted as
+   lint-time only; revisit when a patch lands.
+
 ## Evidence
 
-Run in `web/` with Node 26.13.0 and npm 11.20.0.
+Run in `web/` with Node 26.13.0 and npm 11.20.0 on 2026-11-05.
 
 - `npm run lint` (`eslint . --max-warnings=0`): exit 0, no problems.
 - `npm run typecheck` (`tsc --noEmit`): exit 0.
-- `npm test` (vitest 5.1.0): `Test Files 11 passed (11)`,
-  `Tests 97 passed (97)`. By file:
-  - result 21 (state mapping: 503 no_approved_model, 503
+- `npm test` (vitest 5.1.0): `Test Files 12 passed (12)`,
+  `Tests 106 passed (106)`. By file:
+  - result 22 (state mapping: 503 no_approved_model, 503
     no_private_test_snapshot, the not-approved envelope, header/body
-    disagreement, missing envelope, errors, 422 details, unreachable, 204);
+    disagreement, missing envelope, errors, 422 details, 422
+    player_not_found ids, unreachable, 204);
+  - proxy 6 (allowed roots, dot segments, Content-Length pre-check, a
+    600 KB body of 200k three-byte characters refused, a body within the
+    limit forwarded byte for byte, 502 api_unreachable);
   - client 7;
   - approval-mode 7;
   - banner 8;
   - about 9;
-  - league-form 12;
-  - setup 6 (import and create flows run against the contract mock);
+  - league-form 13;
+  - setup 7 (import, create and the /players typeahead run against the
+    contract mock);
   - projections 5;
   - views 9;
   - contrast 3;
   - wording 10.
-- `npx next build`: compiled successfully, TypeScript passed, and 13 routes
-  were generated (12 static, 1 dynamic: `/api/[...path]`). The build takes
-  about 20 s.
+- `npx next build`: compiled successfully, TypeScript passed, 13 routes
+  plus the proxy, all rendered per request (nonce CSP).
 - `npm run e2e` (Playwright 1.64.1, Chromium, contract mock):
-  `26 passed (1.3m)`. That is 11 production and 15 private_test tests.
-- `npm run e2e:real` (real API, uvicorn per mode, fresh SQLite, read-only
-  Sleeper import of `ethanye19`): `26 passed (2.5m)`.
-  - In production, every projection view shows "No approved model", and
-    `GET /api/projections` returns 503 with `x-ffml-approval: none`.
-  - In private_test, the API served the 2024 week 11 replay. The views
-    showed the replay notice, model `chain_v1`, and "Not approved".
-  - The first real run found a UX issue. Quick picks offered roster
-    players who are not in the replay (a DST and a 2025 rookie K), and the
-    API answered `player_not_found`; the UI showed that error state
-    correctly. Fixed in 1519ab5: quick picks now use `availability=mine`.
-- **Screenshots** (scratchpad, not committed). Every page was checked at
-  360 px and 1280 px, in light and dark, with no horizontal page overflow
-  and no console errors. Two layout bugs were fixed along the way:
-  - unlayered `.btn` padding beat Tailwind's utility classes;
-  - the boom/bust column overflowed at 360 px.
-- **Standalone check** (the steps of `Dockerfile.web`, run natively). It
-  used `NEXT_OUTPUT=standalone next build` and then `node server.js`.
-  - Pages and CSS returned 200.
-  - The CSP header was present.
-  - `/api/projections` returned 503 with `x-ffml-approval: none`.
-- **Processes.** All dev, mock, uvicorn and standalone servers were
-  stopped; no node or uvicorn processes remain.
+  `28 passed (35.5s)`: 12 production and 16 private_test tests. New in
+  this round: the CSP test (header has a script nonce and no
+  `'unsafe-inline'`, the nonce changes between requests, client
+  navigation and the theme toggle work, no CSP violations on the console)
+  and the player picker step in the manual-form test.
+- `npm run e2e:real` was not repeated in this round (other agents are
+  active; one heavy process at a time). The previous run on 2026-11-04
+  passed 26/26 in both modes against the real API with a read-only
+  Sleeper import of `ethanye19`; the command is unchanged.
+- **Processes.** All mock, `next start` and uvicorn processes were
+  stopped; none remain.
 
 ## How to run
 
@@ -192,44 +241,27 @@ works everywhere and CORS is not needed.
   and port 3000.
 - **CI.** No web job yet (`.github/` is QA's path). Suggested steps:
   `npm ci && npm run check && npm run build && npx playwright install --with-deps chromium && npm run e2e`.
-- **Manual-league rosters.** These accept ids only (Sleeper ids, gsis ids,
-  team codes). A player search needs an ungated endpoint; see question 4.
 
-## Contract questions for the Backend Engineer
+## Contract questions (2026-11-04) and their answers (v1.3)
 
-1. **QB low confidence.** `/leagues/{id}/projections` returns
-   `boom_bust_confidence: "normal"` for QBs on the real replay. gate-3.md
-   and D-097 say QB boom/bust "is now low confidence" (slopes 0.56 and
-   0.77), and the API's own model card lists QB miscalibration. Should QB
-   rows be `low` too? The UI already renders whatever the API sends.
-2. **Registry status wording.** `/meta/model-card` `models[].registry_status`
-   can be `approved` (a registry state) while the gate says not approved.
-   The UI shows "Awaiting release" in that case. Could the API expose this
-   as something other than the bare word "approved"? Alternatively, add
-   `serving` per model.
-3. **Manual-league error status.** A manual league with unknown player ids
-   returns 422 `player_not_found`; section 4 lists `player_not_found` under
-   404. Please note the 422 case in the contract. The UI handles both.
-4. **Player search.** There is no ungated way to search players, so manual
-   leagues need raw ids for "my team". Could `GET /players?search=` return
-   names, positions, teams and ids only, with no projections and no gate?
-5. **`/meta/season` for unknown mode.** It returns `offseason: true` when
-   `mode == "unknown"`. The UI keys on `mode` and shows "Season status
-   unknown", not an offseason banner. Is `offseason: true` intended for
-   unknown?
-6. **Default week.** Projections and start/sit take an optional `week`.
-   The UI sends none, so the API uses the run's week; on a
-   `week_not_available` 404 it offers the weeks in `details`. Confirm this
-   is the intended default once runs carry several weeks.
+All six were answered in contract v1.3 and adopted above: QB is in the
+default low-confidence set and the set is returned per response; the
+registry words never include "approved"; body ids give 422
+`player_not_found` with `details.player_ids`; `GET /players` exists;
+`/meta/season` returns `offseason: null` for an unknown mode; the default
+week is the served run's week (the UI sends none and offers
+`details.available_weeks` on a 404). No open contract questions.
 
 ## Decisions proposed
 
 - **D-UI-1.** The web app calls the API only through its own `/api/*` route
   handler, which forwards to `FFML_API_URL` at request time.
   - It allows only the contract's route families (`meta`, `leagues`,
-    `sleeper`, `projections`, `ros`).
-  - It rejects dot segments, limits bodies to 256 KB, and passes through
-    `X-FFML-Approval`, `Content-Type`, `Cache-Control` and `Retry-After`.
+    `sleeper`, `players`, `projections`, `ros`).
+  - It rejects dot segments, counts request bodies in bytes and refuses
+    them above 256 KiB, and passes through `X-FFML-Approval`,
+    `Content-Type`, `Cache-Control` and `Retry-After` (and `X-Forwarded-For`
+    towards the API).
 - **D-UI-2.** The browser remembers the chosen league id in `localStorage`
   (a per-browser convenience). League data and "my team" stay in the API.
   This is an interim choice in place of the signed session cookie
@@ -241,6 +273,10 @@ works everywhere and CORS is not needed.
   Playwright and `npm run mock`. The app never imports it. Its data is
   fictional and always labeled "Fixture data for testing; not real
   projections."
+- **D-UI-5.** The production CSP uses a per-request nonce for scripts
+  (`web/proxy.ts`); pages are therefore rendered per request rather than
+  prerendered. `style-src` keeps `'unsafe-inline'` for React style
+  attributes.
 
 ## Next
 

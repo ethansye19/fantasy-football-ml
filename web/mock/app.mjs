@@ -11,6 +11,7 @@ import {
   ATTRIBUTION,
   FIXTURE_NOTICE,
   FIXTURE_RUN,
+  LOW_CONFIDENCE_POSITIONS,
   MODEL_CARD,
   NO_APPROVED_MODEL_MESSAGE,
   NO_GUARANTEES,
@@ -270,7 +271,7 @@ export function createMockApi(options = {}) {
     const scoring = scoringRef(league, scoringName);
     return {
       status: 200,
-      body: envelope({ ...(league ? { league_id: league.id } : {}), season: FIXTURE_RUN.season, week: FIXTURE_RUN.week, scoring, ...page(filtered, q) }),
+      body: envelope({ ...(league ? { league_id: league.id } : {}), season: FIXTURE_RUN.season, week: FIXTURE_RUN.week, boom_bust_low_confidence: LOW_CONFIDENCE_POSITIONS, scoring, ...page(filtered, q) }),
     };
   }
 
@@ -308,7 +309,7 @@ export function createMockApi(options = {}) {
     const rows = scoredRows(league).filter((r) => r.mean != null);
     const chosen = ids.map((id) => rows.find((r) => r.player_id === id));
     const missing = ids.filter((_, i) => !chosen[i]);
-    if (missing.length) return err(404, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
+    if (missing.length) return err(422, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
 
     const pairwise = [];
     for (let i = 0; i < chosen.length; i++) {
@@ -354,7 +355,7 @@ export function createMockApi(options = {}) {
     ];
     return {
       status: 200,
-      body: envelope({ week: FIXTURE_RUN.week, players: chosen, pairwise, p_highest, recommendation: { player_id: top.player_id, strength, text }, explanation, disclaimer: NO_GUARANTEES }),
+      body: envelope({ week: FIXTURE_RUN.week, boom_bust_low_confidence: LOW_CONFIDENCE_POSITIONS, players: chosen, pairwise, p_highest, recommendation: { player_id: top.player_id, strength, text }, explanation, disclaimer: NO_GUARANTEES }),
     };
   }
 
@@ -414,7 +415,7 @@ export function createMockApi(options = {}) {
     const g = side(give);
     const rcv = side(receive);
     const missing = [...give, ...receive].filter((id) => !rows.some((r) => r.player_id === id));
-    if (missing.length) return err(404, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
+    if (missing.length) return err(422, "player_not_found", `No projection for ${missing.join(", ")}.`, { player_ids: missing });
     const val = (r) => {
       const ros = Math.round(r.mean * 8.4 * 10) / 10;
       const vor = Math.round((ros - (REPLACEMENT[r.position] ?? 70)) * 10) / 10;
@@ -509,7 +510,7 @@ export function createMockApi(options = {}) {
       week_in_progress: false,
       last_completed_week: m === "regular" ? 9 : null,
       next_kickoff_utc: m === "regular" ? "2026-11-13T01:15:00Z" : null,
-      offseason: m !== "regular",
+      offseason: m === "unknown" ? null : m !== "regular",
       banner: m === "regular" ? null : m === "offseason" ? "Offseason: weekly features are paused; rankings are season-level." : "Postseason: weekly features are paused; rankings are season-level.",
       as_of: new Date().toISOString(),
     };
@@ -550,7 +551,7 @@ export function createMockApi(options = {}) {
       if (b === "model-card" && opts.planned) {
         const card = { ...MODEL_CARD, environment: mode, approval_status: "not approved", label: "not approved", serving };
         if (privateTest) Object.assign(card, { models: [], notice: "Private test environment: numbers shown here are labeled not approved, whatever the model registry says." });
-        else card.models = [{ name: "chain_v1", version: "chain_v1-fixture", registry_status: "rejected", created_at: "2026-11-02T22:26:34Z" }, { name: "chain_v2", version: "chain_v2-fixture", registry_status: "candidate", created_at: "2026-11-05T00:00:00Z" }];
+        else card.models = [{ name: "chain_v1", version: "chain_v1-fixture", registry_status: "rejected", serving: false, created_at: "2026-11-02T22:26:34Z" }, { name: "chain_v2", version: "chain_v2-fixture", registry_status: "candidate", serving: false, created_at: "2026-11-05T00:00:00Z" }];
         return { status: 200, body: card };
       }
       if (b === "run-info" && opts.planned) {
@@ -558,6 +559,31 @@ export function createMockApi(options = {}) {
         return { status: 200, body: { environment: mode, serving, approval_status: "not approved", label: "not approved", run: serving ? { ...FIXTURE_RUN, seeds: [1, 2], as_of: FIXTURE_RUN.written_at, rest_of_season_weeks: REMAINING_WEEKS } : null, message: ap.message } };
       }
       return err(404, "not_found", "Not Found");
+    }
+
+    if (a === "players" && method === "GET") {
+      const search = (q.get("search") ?? "").trim();
+      if (search.length < 2 || search.length > 60) {
+        return err(422, "validation_error", "The request is not valid.", [{ loc: ["query", "search"], msg: "String should have at least 2 characters", type: "string_too_short" }]);
+      }
+      const position = q.get("position");
+      if (position && !["QB", "RB", "WR", "TE", "K", "DST"].includes(position)) {
+        return err(422, "validation_error", "The request is not valid.", [{ loc: ["query", "position"], msg: "Input should be QB, RB, WR, TE, K or DST", type: "literal_error" }]);
+      }
+      const limit = Math.max(1, Math.min(50, Number(q.get("limit") ?? 50) || 50));
+      const needle = search.toLowerCase();
+      const starts = (p) => p.name.toLowerCase().split(" ").some((w) => w.startsWith(needle));
+      const hits = PLAYERS.filter(
+        (p) =>
+          (!position || p.position === position) &&
+          (p.name.toLowerCase().includes(needle) || p.player_id.toLowerCase() === needle || (p.position === "DST" && p.team.toLowerCase() === needle)),
+      );
+      hits.sort((x, y) => Number(starts(y)) - Number(starts(x)) || x.name.localeCompare(y.name));
+      return {
+        status: 200,
+        headers: { "Cache-Control": "public, max-age=300" },
+        body: { query: search, position: position ?? null, players: hits.slice(0, limit).map((p) => ({ player_id: p.player_id, name: p.name, position: p.position, team: p.team })) },
+      };
     }
 
     if (a === "sleeper" && b === "users" && d === "leagues" && method === "GET") {
@@ -596,6 +622,8 @@ export function createMockApi(options = {}) {
           if (!scoring) return err(422, "invalid_scoring", "Scoring must be a preset (ppr, half, std) with numeric overrides, or a map of numeric settings.");
           const bad = checkSlots(body.roster_positions);
           if (bad) return bad;
+          const unknownIds = (body.teams ?? []).flatMap((t) => (t.players ?? []).filter((pid) => !findPlayer(pid)));
+          if (unknownIds.length) return err(422, "player_not_found", "Unknown player ids.", { player_ids: unknownIds });
           const id = uuid(rand);
           const now = new Date().toISOString();
           const teams = (body.teams?.length ? body.teams : [{ name: "My team", is_me: true, players: [] }]).map((t) => ({

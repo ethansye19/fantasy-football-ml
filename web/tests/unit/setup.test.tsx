@@ -84,6 +84,30 @@ describe("LeagueSettingsForm (create)", () => {
     expect(onSaved.mock.calls[0]?.[0]).toMatchObject({ name: "Office league", source: "manual", scoring: { preset_like: "half" } });
   });
 
+  it("finds players by name through /players and sends their ids", async () => {
+    const { fetchMock } = stubWithMock();
+    const onSaved = vi.fn();
+    const user = userEvent.setup();
+    render(<LeagueSettingsForm mode="create" defaultSeason={2026} onSaved={onSaved} />);
+    await user.type(screen.getByLabelText("League name"), "Picker league");
+    await user.type(screen.getByLabelText("Add players to your team"), "ash");
+
+    const matches = await screen.findByRole("list", { name: "Matching players" });
+    const first = within(matches).getAllByRole("button")[0] as HTMLElement;
+    expect(first).toHaveTextContent(/^Add /);
+    await user.click(first);
+    expect(within(screen.getByRole("list", { name: "Chosen players" })).getAllByRole("listitem")).toHaveLength(1);
+    expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain("/api/players?search=ash&limit=50");
+
+    await user.click(screen.getByRole("button", { name: "Create league" }));
+    expect(await screen.findByText("League created.")).toBeInTheDocument();
+    const created = fetchMock.mock.calls.find(([u, init]) => String(u) === "/api/leagues" && (init as RequestInit | undefined)?.method === "POST");
+    const sent = JSON.parse(String((created?.[1] as RequestInit).body)) as { teams: { players: string[] }[] };
+    expect(sent.teams[0]?.players).toHaveLength(1);
+    expect(sent.teams[0]?.players[0]).toMatch(/^00-|^[A-Z]{2,3}$/);
+    expect(onSaved.mock.calls[0]?.[0].teams[0].players).toHaveLength(1);
+  });
+
   it("blocks a roster without starting slots", async () => {
     stubWithMock();
     const user = userEvent.setup();

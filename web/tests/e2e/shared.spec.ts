@@ -37,6 +37,25 @@ test.describe("shell", () => {
     await expect(page.getByRole("button", { name: "Open menu" })).toHaveAttribute("aria-expanded", "false");
   });
 
+  test("CSP uses a per-request nonce for scripts, with no violations (QA-F16)", async ({ page }) => {
+    const violations: string[] = [];
+    page.on("console", (m) => {
+      if (/Content Security Policy|Refused to/i.test(m.text())) violations.push(m.text());
+    });
+    const first = await page.goto("/about/model-card");
+    const csp = first?.headers()["content-security-policy"] ?? "";
+    expect(csp).toMatch(/script-src [^;]*'nonce-[A-Za-z0-9+/=]+'/);
+    expect(csp).not.toMatch(/script-src [^;]*'unsafe-inline'/);
+    // the page hydrates and navigates on the client under the policy
+    await page.getByRole("navigation", { name: "About pages" }).getByRole("link", { name: "Limitations" }).click();
+    await expect(page).toHaveURL(/\/about\/limitations$/);
+    await page.getByRole("button", { name: /Switch to (dark|light) theme/ }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", /dark|light/);
+    const second = await page.goto("/");
+    expect(second?.headers()["content-security-policy"]).not.toBe(csp);
+    expect(violations).toEqual([]);
+  });
+
   test("unknown pages show the not-found state", async ({ page }) => {
     const res = await page.goto("/no-such-page");
     expect(res?.status()).toBe(404);
@@ -93,6 +112,14 @@ test.describe("league setup", () => {
     await expect(page.getByTestId("error-summary")).toContainText("Passing TD: Enter a number.");
 
     await page.getByLabel("Passing TD").fill("6");
+
+    // players come from the ungated /players lookup, never typed as raw ids
+    await page.getByLabel("Add players to your team").fill("ja");
+    const matches = page.getByRole("list", { name: "Matching players" });
+    await expect(matches).toBeVisible();
+    await matches.getByRole("button").first().click();
+    await expect(page.getByRole("list", { name: "Chosen players" }).getByRole("listitem")).toHaveCount(1);
+
     await page.getByRole("button", { name: "Create league" }).click();
     await expect(page.getByText("League created.")).toBeVisible();
     await expect(page.getByTestId("league-row").filter({ hasText: "Smoke test league" })).toBeVisible();

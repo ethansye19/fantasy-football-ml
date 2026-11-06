@@ -87,7 +87,7 @@ describe("SeasonBanner", () => {
           mode: "unknown",
           projection_week: null,
           week_in_progress: false,
-          offseason: true,
+          offseason: null,
           banner: "The schedule is not available yet, so the current week cannot be determined.",
           as_of: "x",
         },

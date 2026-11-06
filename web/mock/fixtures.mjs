@@ -60,6 +60,9 @@ const round2 = (x) => Math.round(x * 100) / 100;
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 // position -> [count, top mean, slope, sd fraction, boom top-N, bust cut]
+/** Positions whose boom/bust calibration is not trusted (D-104 default). */
+export const LOW_CONFIDENCE_POSITIONS = ["DST", "K", "QB"];
+
 const SPEC = {
   QB: [14, 24, 0.75, 0.33, 6, 18],
   RB: [28, 19, 0.42, 0.45, 12, 36],
@@ -115,7 +118,7 @@ function buildPlayers() {
       if (opponent === team) opponent = TEAMS[(n * 11 + 6) % TEAMS.length];
       let name;
       if (pos === "DST") {
-        name = `${team} Defense`;
+        name = `${team} D/ST`;
       } else {
         do {
           name = `${FIRST[Math.floor(rand() * FIRST.length)]} ${LAST[Math.floor(rand() * LAST.length)]}`;
@@ -170,8 +173,8 @@ function buildPlayers() {
         boom_prob: round2(boom),
         bust_prob: round2(bust),
         active_prob: questionable ? 0.78 : 0.99,
-        // K and DST are low confidence (D-089); the fixture flags QB too (D-097).
-        boom_bust_confidence: pos === "K" || pos === "DST" || pos === "QB" ? "low" : "normal",
+        // D-104 default set: K and DST (D-089) and QB (D-097).
+        boom_bust_confidence: LOW_CONFIDENCE_POSITIONS.includes(pos) ? "low" : "normal",
         position_rank: i + 1,
         expected: round1(mean * (questionable ? 0.78 : 0.99)),
         low_sample: false,

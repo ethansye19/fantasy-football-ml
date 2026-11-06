@@ -6,6 +6,7 @@ export const NO_APPROVED_MODEL_MESSAGE: string;
 export const NO_PRIVATE_SNAPSHOT_MESSAGE: string;
 export const FIXTURE_RUN: import("../lib/api/types").RunInfo;
 export const REMAINING_WEEKS: number[];
+export const LOW_CONFIDENCE_POSITIONS: string[];
 export function rng(seed: number): () => number;
 export const PLAYERS: (import("../lib/api/types").PlayerRow & { injury_status: string | null; bye_week: number })[];
 export function playerRow(p: unknown, roster?: unknown): import("../lib/api/types").PlayerRow;

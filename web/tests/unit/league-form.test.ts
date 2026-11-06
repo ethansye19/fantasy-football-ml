@@ -3,13 +3,14 @@ import type { League } from "@/lib/api/types";
 import {
   initialCreateValues,
   initialEditValues,
-  parsePlayers,
   serverErrors,
   toManualBody,
   toSettingsBody,
   validateLeagueForm,
 } from "@/lib/league-form";
 import { slotsToPositions } from "@/lib/scoring";
+
+const pick = (i: number) => ({ player_id: `00-${String(i).padStart(7, "0")}`, name: `Player ${i}`, position: "WR", team: "MIN" });
 
 const LEAGUE: League = {
   id: "L1",
@@ -56,15 +57,16 @@ describe("validateLeagueForm", () => {
     expect(validateLeagueForm(big, "create").roster).toMatch(/at most 40/);
   });
 
-  it("checks the playoff week and player ids", () => {
-    const v = { ...initialCreateValues(2026), name: "x", playoffWeekStart: "19", players: "00-0036322, KC, bad id!" };
+  it("checks the playoff week and the player list", () => {
+    const v = { ...initialCreateValues(2026), name: "x", playoffWeekStart: "19", players: Array.from({ length: 61 }, (_, i) => pick(i)) };
     const e = validateLeagueForm(v, "create");
     expect(e.playoff_week_start).toBeDefined();
-    expect(e.players).toMatch(/id!/);
+    expect(e.players).toMatch(/at most 60/);
+    expect(validateLeagueForm({ ...v, playoffWeekStart: "", players: [pick(1), pick(1)] }, "create").players).toMatch(/once/);
   });
 
   it("does not validate create-only fields in edit mode", () => {
-    const v = { ...initialEditValues(LEAGUE), season: "nope", numTeams: "nope", players: "!!" };
+    const v = { ...initialEditValues(LEAGUE), season: "nope", numTeams: "nope", players: [pick(1), pick(1)] };
     expect(validateLeagueForm(v, "edit")).toEqual({});
   });
 });
@@ -81,6 +83,11 @@ describe("request bodies", () => {
     expect(body.settings).toEqual({ playoff_week_start: 15 });
   });
 
+  it("sends picked players as ids only", () => {
+    const v = { ...initialCreateValues(2026), name: "x", teamName: " Mine ", players: [pick(1), { ...pick(2), player_id: "KC", position: "DST", team: "KC" }] };
+    expect(toManualBody(v).teams?.[0]).toEqual({ name: "Mine", is_me: true, players: ["00-0000001", "KC"] });
+  });
+
   it("sends only what changed when editing, keeping unknown keys", () => {
     const v = initialEditValues(LEAGUE);
     expect(toSettingsBody(v, LEAGUE)).toEqual({});
@@ -94,9 +101,8 @@ describe("request bodies", () => {
     expect(body.name).toBeUndefined();
   });
 
-  it("orders roster slots and splits player lists", () => {
+  it("orders roster slots", () => {
     expect(slotsToPositions({ BN: 1, QB: 1, FLEX: 1 })).toEqual(["QB", "FLEX", "BN"]);
-    expect(parsePlayers(" a, b;c\n d ")).toEqual(["a", "b", "c", "d"]);
   });
 });
 

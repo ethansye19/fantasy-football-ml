@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_NO_APPROVED_MODEL_MESSAGE,
   describeError,
+  playerNotFoundIds,
   readApproval,
   toResult,
   validationDetails,
@@ -162,6 +163,13 @@ describe("toResult: errors", () => {
     const details = { leagues: [{ league_id: "1", name: "A" }] };
     const r = toResult(409, null, JSON.stringify({ error: { code: "multiple_leagues", message: "pick one", details } }));
     expect(r.kind === "error" && r.details).toEqual(details);
+  });
+
+  it("lists the unknown ids of a 422 player_not_found (v1.3)", () => {
+    const r = toResult(422, null, JSON.stringify({ error: { code: "player_not_found", message: "Unknown player ids.", details: { player_ids: ["x1", "00-1"] } } }));
+    expect(r).toMatchObject({ kind: "error", status: 422, code: "player_not_found" });
+    expect(playerNotFoundIds(r)).toEqual(["x1", "00-1"]);
+    expect(playerNotFoundIds(toResult(404, null, JSON.stringify({ error: { code: "league_not_found", message: "no", details: null } })))).toEqual([]);
   });
 
   it("gives a generic error for a 500 without a body", () => {

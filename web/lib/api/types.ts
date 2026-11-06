@@ -107,10 +107,15 @@ export interface AttributionResponse {
   independence?: string;
 }
 
+/** Registry status words of contract v1.3. The API never sends the bare word "approved". */
+export type RegistryStatusWord = "candidate" | "rejected" | "retired" | "awaiting_release" | "live";
+
 export interface RegistryModel {
   name: string | null;
   version: string | null;
-  registry_status: string | null;
+  registry_status: RegistryStatusWord | string | null;
+  /** True only for the live entry the gate is serving. */
+  serving?: boolean;
   created_at: string | null;
 }
 
@@ -151,8 +156,8 @@ export interface SeasonResponse {
   week_in_progress: boolean;
   last_completed_week?: number | null;
   next_kickoff_utc?: string | null;
-  /** True for every mode other than "regular" (including "unknown"). */
-  offseason: boolean;
+  /** True in the postseason and offseason, false in the regular season, null when the mode is unknown (v1.3). */
+  offseason: boolean | null;
   banner: string | null;
   as_of: string;
 }
@@ -257,6 +262,20 @@ export interface LeagueSettingsBody {
 /* ------------------------------------------------------------------ */
 
 export type Position = "QB" | "RB" | "WR" | "TE" | "K" | "DST";
+
+/** GET /players?search= (v1.3, never gated): identity only, no projections. */
+export interface PlayerIdentity {
+  player_id: string;
+  name: string;
+  position: Position | string;
+  team: string | null;
+}
+
+export interface PlayerSearchResponse {
+  query: string;
+  position: Position | null;
+  players: PlayerIdentity[];
+}
 export const POSITIONS: readonly Position[] = ["QB", "RB", "WR", "TE", "K", "DST"];
 
 export type DriverGroup = "opportunity" | "efficiency" | "matchup" | "environment" | "availability";
@@ -331,6 +350,8 @@ export interface ProjectionsResponse extends Envelope {
   league_id?: string;
   season: number;
   week: number;
+  /** Positions whose boom/bust calibration is not trusted in this run (v1.3, D-104). */
+  boom_bust_low_confidence?: string[];
   scoring: ScoringRef;
   total: number;
   players: PlayerRow[];
@@ -345,6 +366,8 @@ export type RecommendationStrength = "toss-up" | "lean" | "clear";
 
 export interface StartSitResponse extends Envelope {
   week: number;
+  /** Positions whose boom/bust calibration is not trusted in this run (v1.3, D-104). */
+  boom_bust_low_confidence?: string[];
   players: PlayerRow[];
   pairwise: { a: string; b: string; p_a_beats_b: number }[];
   p_highest: Record<string, number>;

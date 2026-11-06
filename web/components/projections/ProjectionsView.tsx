@@ -7,7 +7,7 @@ import { api } from "@/lib/api/client";
 import { useApi } from "@/lib/api/hooks";
 import type { Availability, League, Position, ProjectionSort, ProjectionsResponse } from "@/lib/api/types";
 import { niceMax, pts } from "@/lib/format";
-import { BoomBust } from "./BoomBust";
+import { BoomBust, LowConfidenceNote } from "./BoomBust";
 import { DistributionStrip, StripScale } from "./DistributionStrip";
 import { Drivers } from "./Drivers";
 import { FilterBar, PositionFilter, SearchFilter, SelectFilter, useDebounced } from "./Filters";
@@ -140,6 +140,7 @@ function ProjectionsBody({ league }: { league: League | null }) {
                 </p>
               </div>
               <ScoringNote scoring={data.scoring} />
+              <LowConfidenceNote positions={data.boom_bust_low_confidence} />
               {data.players.length ? (
                 <ProjectionTable data={data} showRoster={Boolean(league)} />
               ) : (
@@ -215,11 +216,11 @@ function ProjectionTable({ data, showRoster }: { data: ProjectionsResponse; show
                       <p className="num mt-1 text-[0.6875rem] text-muted">Expected {pts(p.expected)} counting missed games</p>
                     ) : null}
                     <div className="mt-2 sm:hidden">
-                      <BoomBust boom={p.boom_prob} bust={p.bust_prob} confidence={p.boom_bust_confidence} position={p.position} />
+                      <BoomBust boom={p.boom_prob} bust={p.bust_prob} confidence={p.boom_bust_confidence} position={p.position} lowConfidencePositions={data.boom_bust_low_confidence} />
                     </div>
                   </td>
                   <td className="hidden sm:table-cell">
-                    <BoomBust boom={p.boom_prob} bust={p.bust_prob} confidence={p.boom_bust_confidence} position={p.position} stacked />
+                    <BoomBust boom={p.boom_prob} bust={p.bust_prob} confidence={p.boom_bust_confidence} position={p.position} lowConfidencePositions={data.boom_bust_low_confidence} stacked />
                   </td>
                 </tr>
                 <tr id={detailId} hidden={!isOpen}>

@@ -10,11 +10,11 @@ import { Section, SourceNote } from "./AboutShell";
 import { useMetaContent } from "./useMetaContent";
 
 /**
- * Registry statuses in plain words. A registry entry can say "approved"
- * before the API serves it; the page only repeats that word when the API
- * itself reports approval_status "approved".
+ * Registry status words (contract v1.3) in plain language. The API never
+ * sends the bare word "approved"; an older registry value of "approved" is
+ * shown as awaiting release, so this page never claims approval on its own.
  */
-export function registryStatusLabel(status: string | null | undefined, apiApproved: boolean): string {
+export function registryStatusLabel(status: string | null | undefined, serving = false): string {
   switch (status) {
     case "candidate":
       return "Candidate, under test";
@@ -22,12 +22,13 @@ export function registryStatusLabel(status: string | null | undefined, apiApprov
       return "Rejected: did not pass its test";
     case "retired":
       return "Retired";
-    case "live":
-      return apiApproved ? "Live" : "Marked live in the registry; not serving";
+    case "awaiting_release":
     case "approved":
-      return apiApproved ? "approved" : "Awaiting release";
+      return "Awaiting release";
+    case "live":
+      return serving ? "Live, serving projections" : "Live";
     default:
-      return status ?? "Unknown";
+      return status ? status.replace(/_/g, " ") : "Unknown";
   }
 }
 
@@ -129,7 +130,7 @@ export function ModelCardView() {
                   <tr key={`${m.name}-${m.version}`}>
                     <td>{m.name ?? "Unnamed"}</td>
                     <td className="break-all font-mono text-xs">{m.version ?? "n/a"}</td>
-                    <td>{registryStatusLabel(m.registry_status, apiApproved)}</td>
+                    <td>{registryStatusLabel(m.registry_status, m.serving === true)}</td>
                     <td className="num whitespace-nowrap">{m.created_at ? m.created_at.slice(0, 10) : "n/a"}</td>
                   </tr>
                 ))}

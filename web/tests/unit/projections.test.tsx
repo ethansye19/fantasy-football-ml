@@ -42,6 +42,8 @@ describe("ProjectionsView", () => {
     const rows = screen.getAllByTestId("player-row");
     expect(rows.length).toBeGreaterThan(10);
     expect(screen.getAllByTestId("distribution-strip").length).toBeGreaterThan(10);
+    // the low-confidence set comes from the response, not from the UI
+    expect(screen.getByTestId("low-confidence-note")).toHaveTextContent("(DST, K, QB)");
     expect(claimsApproval(visibleText())).toBe(false);
   });
 
