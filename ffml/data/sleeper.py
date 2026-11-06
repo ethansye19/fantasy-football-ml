@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -457,8 +458,10 @@ def normalize_scoring_settings(settings: Mapping[str, Any] | None) -> dict[str, 
 
     Keys are kept exactly as Sleeper names them (``pass_yd``, ``rec``,
     ``bonus_rec_yd_100`` and so on) and sorted for deterministic hashing. ``None``
-    values are dropped; non-numeric values raise ``ValueError``. Mapping these
-    keys onto stat lines is the Phase 3 scoring engine's job.
+    values are dropped; non-numeric and non-finite values (NaN, infinities,
+    including strings such as ``"inf"`` or ``"1e999"``) raise ``ValueError``, as
+    the API refuses them at its boundary. Mapping these keys onto stat lines is
+    the Phase 3 scoring engine's job.
     """
     if settings is None:
         return {}
@@ -472,10 +475,14 @@ def normalize_scoring_settings(settings: Mapping[str, Any] | None) -> dict[str, 
             raise ValueError(f"scoring setting {key!r} has a boolean value {value!r}")
         try:
             points = float(value)
+        except OverflowError as exc:  # an int beyond the float range
+            raise ValueError(f"scoring setting {key!r} is infinite: out of the float range") from exc
         except (TypeError, ValueError) as exc:
             raise ValueError(f"scoring setting {key!r} is not numeric: {value!r}") from exc
-        if points != points:  # NaN
+        if math.isnan(points):
             raise ValueError(f"scoring setting {key!r} is NaN")
+        if math.isinf(points):
+            raise ValueError(f"scoring setting {key!r} is infinite: {value!r}")
         if points == 0.0:
             continue
         out[str(key)] = points

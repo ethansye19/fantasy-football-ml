@@ -507,8 +507,20 @@ def test_normalize_scoring_settings_errors():
         s.normalize_scoring_settings({"rec": True})
     with pytest.raises(ValueError, match="NaN"):
         s.normalize_scoring_settings({"rec": float("nan")})
+    with pytest.raises(ValueError, match="NaN"):
+        s.normalize_scoring_settings({"rec": "nan"})
     with pytest.raises(TypeError):
         s.normalize_scoring_settings(["rec", 1])
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), "inf", "-Infinity", "1e999", 10**400])
+def test_normalize_scoring_settings_refuses_infinite_values(value):
+    with pytest.raises(ValueError, match=r"'pass_td'"):
+        s.normalize_scoring_settings({"rec": 1, "pass_td": value})
+
+
+def test_normalize_scoring_settings_keeps_large_finite_values():
+    assert s.normalize_scoring_settings({"bonus": "1e300", "rec": -1e308}) == {"bonus": 1e300, "rec": -1e308}
 
 
 def test_normalize_scoring_settings_on_fixture(client):
