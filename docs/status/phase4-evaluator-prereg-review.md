@@ -1,5 +1,5 @@
 # Phase 4 / Independent Evaluator / review of the chain_v2 live-test pre-registration (EV-4.3 task 2, EV-4.4 task 2)
-Date: 2026-11-05 (re-review after ML-4.4)
+Date: 2026-11-05 (re-review after ML-4.4; again after D-111 at 86c43b1)
 Scope: evaluator review of `docs/status/livetest-preregistration-2026.md`,
 first at 7899bb5 and again at e94a555 (file SHA-256 `9c6209b5c7800ace...`),
 before the freeze. Checked: that the JSON block is machine-checkable, the
@@ -9,7 +9,39 @@ the comparators, the deadline rule, the PIT bounds, and that nothing in the
 document depends on 2026 week 10 or later outcomes. I did not edit the
 pre-registration.
 
-## Ready to freeze: yes, conditional on two mechanical items at the freeze
+## Re-review at 86c43b1 (D-111 version; EV-4.5 task 3)
+
+File SHA-256 `44f0c30d29d68c00...`. New since e94a555: `expected_verdict`,
+`sealed_interim`, `v3_policy`, `outside_changes`, `missed_weeks.allowed = 2`
+with `miss_rule`, `estimate.reconciliation_2026-11-05`,
+`scoring.sensitivity_check`, `path_policy`, and the matching markdown
+sections. The scorer at 1d0d2b6 implements the sealed weekly mode, the
+miss rule read from the file, the binding deadline, the pushed-blob
+immutability and stored-parts digest checks, and the report-only
+5,000-draw sensitivity check; its tests cover each.
+
+### Ready to freeze: yes, conditional on R1 (the commit field and `frozen_commit_must_include`); R3 to R5 are wording and coordination items to fix in the same edit
+
+| id | weight | finding | suggested fix |
+| --- | --- | --- | --- |
+| R1 | at the freeze | `commit` is still `<frozen commit>` and `frozen_commit_must_include` lists a2f2af0, 6e29122, b22973f, d24a43a only. `frozen_paths` names `ffml/eval/livetest_score.py` and `ffml/eval/backtest_configs.py`, so the frozen commit must contain `1d0d2b6` (which contains 1013534, 7c5b6e2, eebb0d8, 94e4545). | Fill `commit` with a descendant of `1d0d2b6`; add `1d0d2b6` to `frozen_commit_must_include`. |
+| R2 | wording (open from the last review) | `rules.comparators.reference_ranking` still cites `report_backtest.ref_rank`. | Name `report_backtest.reference_models` and `metrics.with_reference_rank`; list the set: `chain_v2` raw rows, the five baselines, `direct_lgbm`, plus `consensus_ecr` in the matched population. |
+| R3 | coordination, before the first week is scored (2026 week 10 final, about 2026-11-17) | `sealed_interim.mechanism` says the sealed files' SHA-256 is pushed to `livetest-2026` but names no path. The scorer writes `data/livetest/scoring/sealed/{season}w{WW}.sha256` (one `<sha256>  <name>` line per sealed file) and the final reads `scoring/{season}w{WW}.sha256` from the branch; without that file the final is refused. | State the branch path (`scoring/{season}w{WW}.sha256`) in the JSON and the runbook; the Data Engineer's push step must exist before 2026 week 10 is scored. |
+| R4 | wording or default | `scoring.sensitivity_check.disclosure` says "the weekly sealed parts store both". Weekly intervals are cumulative over the sealed weeks; at 5,000 draws the weekly job grows to about an hour late in the window. The scorer stores the 500-draw cumulative lines every week and both in the final's `sealed/final_lines.json`; `--weekly-sensitivity` stores both weekly. The verdict is unaffected either way. | Either amend to "the final's sealed parts store both; the weekly sealed parts store the 500-draw cumulative lines" or require `--weekly-sensitivity` in the runbook. |
+| R5 | wording | The "Evaluator-side scoring (stub specification)" section predates sealing: its "Computes" paragraph sends weekly line results to `reports/evaluator_livetest_2026_{season}w{WW}.md` and a running report, which `sealed_interim` forbids, and it says any failed check makes the week INVALID. The scorer refuses to score (nothing sealed) on the refusal-class failures (week not final, digest, file hashes, push record, deadline, rehearsal) and records every other failure in the sealed JSON and the verification report; a recorded failure makes the final INVALID. | Replace the paragraph: weekly `reports/livetest/{season}w{WW}_verification.md` (verification only) plus the sealed parts; final `reports/livetest/final.md` with the single `Verdict:` line and `data/livetest/scoring/sealed/final_lines.json` holding the binding and the 5,000-draw results. |
+
+Verified in this pass:
+
+- `missed_weeks.allowed = 2`, `third_miss` INVALID and `miss_rule` are read by the scorer (`missed weeks (miss rule)` check); the 17- and 16-week pass rates quoted (0.518, 0.500) come from `MISS_WINDOWS` runs; 0.518 matches the candidates report, 0.500 is the orchestrator's `ext18_two_miss` run.
+- `estimate.reconciliation_2026-11-05`: confirmed by an independent run (docs/status/livetest-power-reconciliation.md, "Evaluator verification"): with the frozen 500-draw matrix the two orders differ by 0.037 (z = 3.0) on the same replicates; with a fresh seed per replicate or 5,000 draws they agree (gaps -0.015 and -0.003, within noise), at 0.59-0.61. Two run labels in the isolation table were wrong; corrected in the note, conclusion unchanged.
+- `expected_verdict.when` matches the scorer's refusal rule (every window week final in `dim_game`, 2027 week 9 included even as the excluded miss).
+- `path_policy`: the scorer's `path_allowed` is the rule described; `frozen_paths` contains no prefix of an allowed entry.
+- `outside_changes` and `v3_policy` need nothing from the scorer; the change-log coverage check enforces that every descendant commit used is logged; the replay proof itself is recorded in the log's Verification column, not machine-checked.
+- `lines_sha256` equals `lines_spec_sha256()`; `rules_sha256` recomputes under its stated rule; `n_boot`, `seed`, `metric_seed` equal the pinned spec; pins unchanged; no dependence on 2026 week 10+ outcomes (the new text adds decision records, estimate figures and schedule data only).
+
+## Earlier re-review at e94a555 (superseded by the section above)
+
+Ready to freeze then: yes, conditional on two mechanical items at the freeze
 
 1. Fill `commit` with a commit that contains the evaluator's scorer and
    comparators work (`7c5b6e2` contains `eebb0d8`, `94e4545`, `1013534`),
