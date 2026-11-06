@@ -24,8 +24,9 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "candidate_scheme": "chain_v2-primary-c{season}w{week:02d}-{UTC stamp YYYYMMDDTHHMMSSZ}",
   "commit": "<frozen commit>",
   "frozen_commit_must_include": [
-    "a2f2af0",
+    "1d0d2b6",
     "6e29122",
+    "a2f2af0",
     "b22973f",
     "d24a43a"
   ],
@@ -61,7 +62,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     },
     "weeks_total": 18,
     "verdict_after": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
-    "weekly_scoring": "after the week's games are final, information only; a weekly report never prints a Verdict line"
+    "weekly_scoring": "after the week's games are final: a verification-only report plus sealed metric parts; no weekly output shows a metric or a Verdict line"
   },
   "rules": {
     "design": "fallback (D-105 item 3, D-110): no candidate qualified (best good-model pass 0.614 < 0.70)",
@@ -72,12 +73,12 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "applied": "once, over every scored week of the window (18 weeks, or 17 with one excluded miss)",
     "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a third miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 9's games are final in dim_game",
     "provisional_tier": "none (D-110); the app shows no approved model for the rest of 2026",
-    "rules_sha256": "1c3627d619df1c8faed592c171f4e17528eb51f82c275369f03580cbf388f745",
+    "rules_sha256": "08fcf2116a7ab297d79a65501390cef474b3db3cfc5e1467e7a6ec31cbbc0bfe",
     "rules_sha256_definition": "SHA-256 of the canonical JSON of this rules object without the rules_sha256 key: json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8",
     "comparators": {
       "run": "ffml.eval.harness run of the config livetest_comparators (ffml/eval/backtest_configs.py): the five transparent baselines plus the direct challenger (information only), no chain; online v3 calibration warmed from 2021 exactly as the default config; seasons through 2027; purpose livetest_score; resumable parts; run incrementally at scoring time at the frozen commit",
       "rows_used": "each comparator's calibrated rows (rolling_avg_4+cal, prior_season+cal, rolling_median_8+cal; rolling_avg_3 and rolling_ew_035 reported) for the scored week",
-      "reference_ranking": "D-077 reference set computed from the same frame by ffml.eval.report_backtest.ref_rank, as in the holdout",
+      "reference_ranking": "D-077 reference set from the same frame by ffml.eval.report_backtest.reference_models and ffml.eval.metrics.with_reference_rank, as in the holdout: chain_v2 raw, the five baselines and direct_lgbm, plus consensus_ecr in the matched population",
       "consensus": "FantasyPros weekly consensus for 2026-2027 from the DynastyProcess archive via nflreadpy, matched with the holdout's rules (valid_for_game, same player-weeks); weeks without a consensus scrape are excluded from L13-L16 only, as week 18 was in validation, and the final report lists them"
     }
   },
@@ -288,13 +289,14 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
       "the change log covers every descendant commit used"
     ],
     "pit_bounds": "player_summary.parquet carries no pos_min/pos_max; outcomes and PIT bounds are attached with the ffml.eval.harness functions (outcome_table, position_bounds, week_cutoffs) on the processed snapshot current at scoring time, as in the holdout (position extremes of earlier seasons; for 2027 weeks those include 2026); the weekly scoring JSON records that snapshot id",
-    "comparators": "rules.comparators: the livetest_comparators run at the frozen commit, ref_rank for the D-077 set, the consensus archive with the holdout's matching rules",
+    "comparators": "rules.comparators: the livetest_comparators run at the frozen commit, reference_models and with_reference_rank for the D-077 set, the consensus archive with the holdout's matching rules",
     "sensitivity_check": {
       "what": "report-only: every bootstrap interval behind the 22 lines is recomputed with 5,000 week-clustered paired draws (seed 0) alongside the binding 500-draw interval",
       "binding": "the 500-draw, seed-0 bootstrap of D-078 is the only verdict rule; the 5,000-draw check can never change a line's PASS/FAIL or the verdict",
-      "disclosure": "any line whose 5,000-draw interval would give a different PASS/FAIL than the binding interval is listed in the final report with both intervals; the weekly sealed parts store both",
+      "disclosure": "any line whose 5,000-draw interval would give a different PASS/FAIL than the binding interval is listed in the final report with both intervals; the weekly sealed parts store both (the runner's Tuesday job calls the scorer with --weekly-sensitivity)",
       "decision": "owner, 2026-11-05 (D-111)"
-    }
+    },
+    "sealed_branch_path": "scoring/{season}w{WW}.sha256 on livetest-2026: the scorer's sealed file pushed verbatim by scripts/livetest_week.py seal (with {season}w{WW}/sealed_hashes.json as the runner's record); the final refuses unless every sealed file matches it"
   },
   "path_policy": "any path not listed in allowed_paths is frozen (the scorer's path_allowed returns false for it); entries are prefixes (a directory entry ends with /); a frozen prefix takes precedence over an allowed one, so frozen_paths names the frozen set explicitly and never contains a prefix of an allowed entry (everything under ffml/ is frozen except ffml/data/, ffml/eval/power.py and ffml/eval/audits/)",
   "miss_rule": "D-106 as revisited by the owner on 2026-11-05: up to two missed weeks are excluded from scoring and the window is not extended; a third miss makes the test INVALID (not failed); a miss is a week with no valid commitment on livetest-2026 at its deadline, for a real technical failure or an offline machine, logged in {season}w{WW}/MISSED.json with the reason",
@@ -500,7 +502,9 @@ direct challenger for information, no chain, online v3 calibration warmed
 from 2021 exactly as `default`, seasons through 2027, purpose
 `livetest_score`, resumable parts, run incrementally at scoring time. The
 D-077 reference ranking for L13-L16 is computed from the same frame by
-`report_backtest.ref_rank`, as in the holdout. The consensus for 2026-2027
+`report_backtest.reference_models` and `metrics.with_reference_rank`, as in
+the holdout (chain_v2 raw, the five baselines and `direct_lgbm`, plus
+`consensus_ecr` in the matched population). The consensus for 2026-2027
 comes from the DynastyProcess archive via nflreadpy with the holdout's
 matching rules (`valid_for_game`, identical player-weeks); weeks without a
 consensus scrape are excluded from L13-L16 only, as week 18 was in
@@ -575,7 +579,8 @@ paired draws (seed 0). The 500-draw, seed-0 bootstrap of D-078 remains the
 only binding verdict rule; the 5,000-draw check can never change a line's
 PASS/FAIL or the verdict. Any line whose 5,000-draw interval would give a
 different PASS/FAIL is listed in the final report with both intervals, and
-the weekly sealed parts store both.
+the weekly sealed parts store both (the runner's Tuesday job calls the
+scorer with `--weekly-sensitivity`).
 
 ### How the estimate is made, and the reconciliation with the first report
 
@@ -678,12 +683,18 @@ fixes what it reads and checks.
   `not approved`; the file is immutable (same blob at scoring time as at
   push time).
 - **Computes.** The 22 lines on the calibrated rows (`model == chain_v2`),
-  with `metric_seed 0`, `n_boot 500`, `seed 0`, cumulatively over the scored
-  weeks after each week (information), and once over the whole window for
-  the final. Weekly results go to
-  `reports/evaluator_livetest_2026_{season}w{WW}.md` and a running
-  `reports/evaluator_livetest_2026.md`; the final report carries the single
-  `Verdict:` line. An approval is recorded through
+  with `metric_seed 0`, `n_boot 500`, `seed 0`, plus the report-only
+  5,000-draw intervals, cumulatively over the scored weeks after each week,
+  and once over the whole window for the final. Weekly output is sealed:
+  `reports/livetest/{season}w{WW}_verification.md` holds only the
+  verification status (digest, hashes, binding deadline, push timestamp,
+  games final, snapshot ids, sealed-file hashes); the metric parts go to
+  `data/livetest/scoring/sealed/{season}w{WW}.parquet` and `.json`, whose
+  hashes (`{season}w{WW}.sha256`) the runner pushes verbatim to
+  `scoring/{season}w{WW}.sha256` on `livetest-2026`. No weekly output shows
+  a metric or a `Verdict:` line. The final verifies every sealed file
+  against the branch record before reading it, and only the final report
+  carries the single `Verdict:` line. An approval is recorded through
   `ffml.models.registry.approve` only by the Evaluator and only with the
   `Verdict: APPROVED` line.
 
