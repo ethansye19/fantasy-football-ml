@@ -15,6 +15,8 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXT_OUTPUT=standalone
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/package.json web/next.config.ts web/tsconfig.json web/postcss.config.mjs ./
+# proxy.ts sets the per-request nonce CSP (QA-F16); without it the image serves no CSP (QA-F26)
+COPY web/proxy.ts ./
 COPY web/app ./app
 COPY web/components ./components
 COPY web/lib ./lib
