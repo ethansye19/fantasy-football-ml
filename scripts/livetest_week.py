@@ -1514,7 +1514,9 @@ def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> i
     if cfg.no_push or cfg.dry_run:
         run.log.event("seal", "skipped", message="--no-push or --dry-run", path=rel)
         return EXIT_OK
-    files = {rel: (json.dumps(payload, indent=2) + "\n").encode("utf-8")}
+    files = {rel: (json.dumps(payload, indent=2) + "\n").encode("utf-8"),
+             # the scorer's --final reads the sealed file verbatim at scoring/<week>.sha256
+             f"{core.SEALED_BRANCH_DIR}/{key}.sha256": raw}
     readme = None
     if not cfg.dry_run_branch:
         allowed = require_allowed(run)
@@ -1681,7 +1683,7 @@ def score_week(run: Run) -> int:
         return EXIT_RETRY
     sealed_path = cfg.sealed_dir / f"{key}.sha256"
     if not sealed_path.exists():
-        cmd = [str(cfg.python), "-m", "ffml.eval.livetest_score", "--week", key]
+        cmd = [str(cfg.python), "-m", "ffml.eval.livetest_score", "--week", key, "--weekly-sensitivity"]
         run.log.event("score", "scorer started", cmd=cmd, cwd=str(cfg.code_cwd))
         t0 = time.perf_counter()
         try:

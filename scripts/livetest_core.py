@@ -45,6 +45,7 @@ SUMMARY_NAME = "player_summary.parquet"
 MISSED_NAME = "MISSED.json"
 LATE_DIR = "late"  # <week>/late/commitment.json: built before kickoff, pushed after it
 STATUS_NAME = "STATUS.md"
+SEALED_BRANCH_DIR = "scoring"  # scoring/<week>.sha256: the sealed file verbatim, read by the scorer's --final
 SEALED_NAME = "sealed_hashes.json"  # <week>/sealed_hashes.json: SHA-256 of the week's sealed metric parts
 SEALED_SUBDIR = ("livetest", "scoring", "sealed")  # <data_dir>/livetest/scoring/sealed/<week>.sha256
 PREREGISTRATION_DOC = Path("docs") / "status" / "livetest-preregistration-2026.md"

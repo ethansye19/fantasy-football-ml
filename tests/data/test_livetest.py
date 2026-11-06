@@ -435,6 +435,7 @@ def test_seal_publishes_sealed_hashes_idempotently_and_refuses_changes(env, caps
     assert published["sealed_file_sha256"] == core.sha256_file(sealed)
     assert published["entries"] == core.parse_sha256_file(sealed.read_text(encoding="utf-8"))
     assert published["sealed_file"] == "data/livetest/scoring/sealed/2026w10.sha256"
+    assert env.remote_blob("scoring/2026w10.sha256") == sealed.read_bytes()  # verbatim, where the scorer reads it
     head = git("rev-parse", "livetest-2026", cwd=env.remote)
     assert "| yes |" in env.remote_blob("STATUS.md").decode()  # sealed column
     record = json.loads((env.data / "livetest" / "runner" / "2026w10" / "seal_record.json").read_text())
@@ -471,7 +472,7 @@ def test_score_week_runs_the_scorer_for_the_oldest_unsealed_week_then_seals(env)
     assert not scorer_calls and '"status": "week not final yet"' in env.logs()  # games still scheduled
     env.mark_final(10)
     assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None), deps) == runner.EXIT_OK
-    assert scorer_calls and scorer_calls[0][-2:] == ["--week", "2026w10"]
+    assert scorer_calls and scorer_calls[0][-3:] == ["--week", "2026w10", "--weekly-sensitivity"]
     assert env.remote_blob("2026w10/sealed_hashes.json") is not None
     assert env.main_(env.argv("score-week", after + timedelta(hours=2), "--skip-refresh", week=None), deps) == runner.EXIT_OK
     assert len(scorer_calls) == 1  # nothing left to do: week 10 is sealed, week 11 has not kicked off
