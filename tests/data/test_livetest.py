@@ -124,6 +124,7 @@ class Env:
         self.main = root / "main"
         self.worktree = root / "commitments"
         self.calls = root / "stub_calls.txt"
+        self.score_calls = root / "stub_score_calls.jsonl"
         self.alert_log = root / "alerts" / "alerts.jsonl"
 
     def argv(self, command: str, now: datetime, *extra: str, week: int | None = 10,
@@ -134,10 +135,18 @@ class Env:
             out += ["--season", "2026", "--week", str(week)]
         if command == "run":
             out += ["--stub-build", "--allow-stub-push", "--skip-refresh"]
+        if command in ("run", "score-week", "seal"):
+            out += ["--stub-score"]
         return out + list(extra)
 
     def main_(self, argv: list[str], deps: runner.Deps | None = None) -> int:
         return runner.main(argv, deps=deps or runner.Deps(live_schedule=None))
+
+    def scorer_calls(self, flag: str) -> list[list[str]]:
+        if not self.score_calls.exists():
+            return []
+        rows = [json.loads(line)["argv"] for line in self.score_calls.read_text(encoding="utf-8").splitlines()]
+        return [r for r in rows if flag in r]
 
     def stub_calls(self) -> int:
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
@@ -194,10 +203,12 @@ def env(tmp_path, monkeypatch, tmp_settings):
         "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.com",
         "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.com",
         "FFML_REPORTS_DIR": str(tmp_path / "reports"), "FFML_ALERT_LOG": str(e.alert_log),
-        "FFML_ALERT_TOAST": "0", "FFML_STUB_CALLS": str(e.calls),
+        "FFML_ALERT_TOAST": "0", "FFML_STUB_CALLS": str(e.calls), "FFML_STUB_SCORE_CALLS": str(e.score_calls),
     }.items():
         monkeypatch.setenv(name, value)
-    for name in ("FFML_ALERT_WEBHOOK", "ALERT_WEBHOOK_URL", "FFML_HOLDOUT_UNLOCK", "FFML_STUB_EXIT"):
+    for name in ("FFML_ALERT_WEBHOOK", "ALERT_WEBHOOK_URL", "FFML_HOLDOUT_UNLOCK", "FFML_STUB_EXIT",
+                 "FFML_STUB_PREBUILD_EXIT", "FFML_STUB_PREBUILD_UNCOVERED", "FFML_STUB_PREBUILD_FROZEN",
+                 "FFML_STUB_CUTOFF", "FFML_STUB_SCORE_EXIT"):
         monkeypatch.delenv(name, raising=False)
     SnapshotStore(e.data / "processed").write_snapshot("dim_game", {2026: load_fixture()})
     git("init", "--quiet", "--bare", str(e.remote), cwd=tmp_path)
@@ -524,41 +535,131 @@ def test_seal_publishes_sealed_hashes_idempotently_and_refuses_changes(env, caps
     assert any("different sealed file" in p for p in json.loads(capsys.readouterr().out)["problems"])
 
 
-def test_score_week_runs_the_scorer_for_the_oldest_unsealed_week_then_seals(env):
+CUTOFF10 = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)  # week 10's last kickoff 2026-11-17 01:15 + 72 h -> Friday 12:00
+
+
+def test_stub_data_cutoff_is_the_first_friday_noon_72_hours_after_the_last_kickoff():
+    import livetest_stub_score as stub_score
+
+    assert stub_score.data_cutoff(datetime(2026, 11, 17, 1, 15, tzinfo=UTC)) == CUTOFF10
+    assert stub_score.data_cutoff(datetime(2026, 11, 17, 13, 0, tzinfo=UTC)) == datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+    assert stub_score.data_cutoff(datetime(2026, 11, 30, 1, 15, tzinfo=UTC)) == datetime(2026, 12, 4, 12, 0, tzinfo=UTC)
+
+
+def test_score_week_waits_for_the_friday_cutoff_then_scores_and_seals(env):
     assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
-    scorer_calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        if "ffml.eval.livetest_score" in cmd:
-            scorer_calls.append(list(cmd))
-            env.write_sealed(10)
-            return subprocess.CompletedProcess(cmd, 0, "scored 2026w10\n", "")
-        return subprocess.run(cmd, **kwargs)
-
-    deps = runner.Deps(live_schedule=None, run=fake_run)
-    after = K10 + timedelta(days=4)
-    assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None), deps) == runner.EXIT_RETRY
-    assert not scorer_calls and '"status": "week not final yet"' in env.logs()  # games still scheduled
     env.mark_final(10)
-    assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None), deps) == runner.EXIT_OK
-    assert scorer_calls and scorer_calls[0][-3:] == ["--week", "2026w10", "--weekly-sensitivity"]
+    # before the cutoff (the old Tuesday slot): nothing happens, no scorer run
+    assert env.main_(env.argv("score-week", K10 + timedelta(days=4), "--skip-refresh", week=None)) == runner.EXIT_OK
+    assert env.scorer_calls("--week") == [] and '"status": "before the data cutoff"' in env.logs()
+    # at the cutoff: scored, sealed, cutoff and snapshot ids recorded
+    assert env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=1), "--skip-refresh", week=None)) == runner.EXIT_OK
+    assert env.scorer_calls("--data-cutoff")[-1][-1] == "2026w10"
+    assert env.scorer_calls("--week") == [["--week", "2026w10", "--weekly-sensitivity"]]
     assert env.remote_blob("2026w10/sealed_hashes.json") is not None
-    assert env.main_(env.argv("score-week", after + timedelta(hours=2), "--skip-refresh", week=None), deps) == runner.EXIT_OK
-    assert len(scorer_calls) == 1  # nothing left to do: week 10 is sealed, week 11 has not kicked off
-    assert '"status": "nothing to do"' in env.logs()
+    record = json.loads((env.data / "livetest" / "runner" / "2026w10" / "seal_record.json").read_text())
+    assert record["data_cutoff_utc"] == "2026-11-20T12:00:00Z"
+    assert record["scorer"]["dim_game_snapshot"] and "dim_game" in record["scorer"]["processed_snapshots"]
+    assert env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=3), "--skip-refresh", week=None)) == runner.EXIT_OK
+    assert len(env.scorer_calls("--week")) == 1 and '"status": "nothing to do"' in env.logs()
 
-    def failing_run(cmd, **kwargs):
-        if "ffml.eval.livetest_score" in cmd:
-            return subprocess.CompletedProcess(cmd, 1, "", "not final")
+
+def test_score_week_exit_4_retries_quietly_and_other_failures_alert(env, monkeypatch):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    env.mark_final(10)
+    monkeypatch.setenv("FFML_STUB_SCORE_EXIT", "4")
+    assert env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=1), "--skip-refresh", week=None)) == runner.EXIT_RETRY
+    assert env.alerts() == [] and '"status": "not yet"' in env.logs()
+    monkeypatch.setenv("FFML_STUB_SCORE_EXIT", "1")
+    assert env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=3), "--skip-refresh", week=None)) == runner.EXIT_RETRY
+    assert env.alerts()[-1]["kind"] == "scoring_failure"
+    assert env.remote_blob("2026w10/sealed_hashes.json") is None
+
+
+def test_score_week_refreshes_only_without_a_snapshot_at_or_after_the_cutoff(env, monkeypatch):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    env.mark_final(10)
+    refreshes: list[list[str]] = []
+
+    def run_with_fake_refresh(cmd, **kwargs):
+        if "ffml.data.refresh" in cmd:
+            refreshes.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, 'REFRESH_RESULT {"ok": true}\n', "")
         return subprocess.run(cmd, **kwargs)
 
+    deps = runner.Deps(live_schedule=None, run=run_with_fake_refresh)
+    monkeypatch.setenv("FFML_STUB_SCORE_EXIT", "4")  # stop after the refresh decision
+    late = datetime(2027, 3, 1, tzinfo=UTC)  # snapshot ids are real-time stamps, earlier than this
+    monkeypatch.setenv("FFML_STUB_CUTOFF", "2027-02-26T12:00:00Z")
+    assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
+    assert len(refreshes) == len(runner.REFRESH_STEPS)  # the newest snapshot predates the cutoff: refresh
+    refreshes.clear()
+    monkeypatch.setenv("FFML_STUB_CUTOFF", "2026-11-01T12:00:00Z")  # a snapshot at or after it exists
+    assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
+    assert refreshes == [] and '"status": "refresh not needed"' in env.logs()
+
+
+def test_the_scorer_runs_above_normal_priority_with_a_360_minute_timeout(env):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    env.mark_final(10)
+    seen: list[dict] = []
+
+    def capture(cmd, **kwargs):
+        if "--week" in cmd:
+            seen.append({k: kwargs.get(k) for k in ("creationflags", "timeout", "cwd")})
+        return subprocess.run(cmd, **kwargs)
+
+    deps = runner.Deps(live_schedule=None, run=capture)
+    assert env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=1), "--skip-refresh", week=None), deps) == 0
+    assert seen and seen[0]["timeout"] == 360 * 60
+    expected = 0x00008000 if sys.platform == "win32" else None
+    assert seen[0]["creationflags"] == expected
+    assert runner.scorer_creationflags() == (0x00008000 if sys.platform == "win32" else 0)
+
+
+def test_prebuild_check_runs_before_every_build_with_the_last_build_commit(env):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    head = git("rev-parse", "HEAD", cwd=env.main)
+    first = env.scorer_calls("--prebuild-check")
+    assert first == [["--prebuild-check", "--from", "", "--to", head]]  # the first build: no earlier commit
+    built = core.load_commitment(env.commitment_path()).code_commit
     K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
     assert env.main_(env.argv("run", K11 - timedelta(hours=9), week=11)) == runner.EXIT_OK
-    env.mark_final(11)
-    code = env.main_(env.argv("score-week", K11 + timedelta(days=4), "--skip-refresh", week=None),
-                     runner.Deps(live_schedule=None, run=failing_run))
-    assert code == runner.EXIT_RETRY and env.alerts()[-1]["kind"] == "scoring_failure"
-    assert env.remote_blob("2026w11/sealed_hashes.json") is None
+    assert env.scorer_calls("--prebuild-check")[-1] == ["--prebuild-check", "--from", built, "--to", head]
+    assert '"status": "passed"' in env.logs()
+
+
+def test_prebuild_block_alerts_retries_and_is_not_a_miss_when_fixed(env, monkeypatch):
+    monkeypatch.setenv("FFML_STUB_PREBUILD_EXIT", "5")
+    monkeypatch.setenv("FFML_STUB_PREBUILD_UNCOVERED", "abc1234,def5678")
+    monkeypatch.setenv("FFML_STUB_PREBUILD_FROZEN", "abc1234")
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_BLOCKED
+    assert env.stub_calls() == 0 and env.remote_refs() == []
+    alert = env.alerts()[-1]
+    assert alert["kind"] == "prebuild_blocked" and alert["severity"] == "critical"
+    assert alert["details"]["uncovered"] == ["abc1234", "def5678"] and alert["details"]["frozen"] == ["abc1234"]
+    assert '"uncovered": ["abc1234", "def5678"]' in env.logs()  # the check's JSON is logged
+    monkeypatch.setenv("FFML_STUB_PREBUILD_EXIT", "0")  # the change log is fixed; the next repetition builds
+    assert env.main_(env.argv("run", K10 - timedelta(hours=8, minutes=30))) == runner.EXIT_OK
+    assert env.stub_calls() == 1 and env.remote_blob("2026w10/commitment.json") is not None
+    assert env.main_(env.argv("check", K10 + timedelta(hours=1), week=None)) in (0, 1)
+    assert env.remote_blob("2026w10/MISSED.json") is None
+
+
+def test_prebuild_block_until_the_deadline_is_a_technical_failure_miss(env, monkeypatch):
+    monkeypatch.setenv("FFML_STUB_PREBUILD_EXIT", "5")
+    assert env.main_(env.argv("run", K10 - timedelta(hours=2))) == runner.EXIT_BLOCKED
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    marker = json.loads(env.remote_blob("2026w10/MISSED.json"))
+    assert marker["reason"]["category"] == "technical_failure"
+    assert marker["reason"]["detail"] == "pre-build check blocked"
+
+
+def test_prebuild_check_that_cannot_run_blocks(env, monkeypatch):
+    monkeypatch.setenv("FFML_STUB_PREBUILD_EXIT", "2")
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_BLOCKED
+    assert env.alerts()[-1]["kind"] == "prebuild_blocked" and "could not run" in env.alerts()[-1]["message"]
+    assert env.stub_calls() == 0
 
 
 def test_dry_run_branch_pushes_elsewhere_and_force_fail_proves_alert_and_retry(env):
@@ -581,6 +682,11 @@ def test_dry_run_branch_pushes_elsewhere_and_force_fail_proves_alert_and_retry(e
     assert git("log", "-1", "--format=%s", "livetest-dryrun", cwd=env.remote).startswith(
         "DRY RUN livetest 2026w10 on livetest-dryrun: stub commitment")
     assert env.main_(env.argv("watchdog", early, *dry, worktree=wt)) == runner.EXIT_OK
+    # forced pre-build block on another week: prebuild_blocked alert, nothing built, no scorer call for it
+    calls_before = len(env.scorer_calls("--prebuild-check"))
+    assert env.main_(env.argv("run", early, *dry, "--force-fail", "prebuild", week=12, worktree=wt)) == runner.EXIT_BLOCKED
+    assert env.alerts()[-1]["kind"] == "prebuild_blocked" and env.stub_calls() == 1
+    assert len(env.scorer_calls("--prebuild-check")) == calls_before
     # forced build failure on another week: alert, nothing built, the watchdog on that branch complains
     assert env.main_(env.argv("run", early, *dry, "--force-fail", "build", week=11, worktree=wt)) == runner.EXIT_RETRY
     assert env.alerts()[-1]["kind"] == "build_failure" and env.stub_calls() == 1

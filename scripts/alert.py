@@ -52,6 +52,7 @@ KINDS: dict[str, str] = {
     "stale_predictions": "predictions are stale",
     "integrity": "integrity check failed",
     "scoring_failure": "weekly scoring or sealed-hash publication failed",
+    "prebuild_blocked": "the pre-build change-log check blocked the weekly build",
     "schedule_drift": "schedule changed since the tasks were registered",
     "test": "test alert",
     "info": "information",

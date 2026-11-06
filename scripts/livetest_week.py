@@ -28,7 +28,7 @@ Commands::
     python scripts/livetest_week.py status [--json]
     python scripts/livetest_week.py verify --season S --week W [--rehearsal]
     python scripts/livetest_week.py run --dry-run-branch livetest-dryrun [--force-fail refresh|build|push] ...
-    python scripts/livetest_week.py score-week [--season S --week W] [--skip-refresh]
+    python scripts/livetest_week.py score-week [--season S --week W] [--skip-refresh]   # Fridays
     python scripts/livetest_week.py seal --season S --week W
     python scripts/livetest_week.py seal-check --season S --week W
 
@@ -59,8 +59,18 @@ Sealed hashes (pre-registration ``sealed_interim``): after the Evaluator's
 scorer seals a week (``data/livetest/scoring/sealed/<week>.sha256``),
 ``seal`` publishes those hashes as ``<week>/sealed_hashes.json`` on the branch,
 idempotently; ``seal-check`` compares the branch copy with the local sealed
-files; ``score-week`` is the Tuesday job: refresh, the Evaluator's scorer for
-the oldest unsealed committed week, then ``seal``.
+files; ``score-week`` is the Friday job (D-116, A3): the week's data cutoff
+from the scorer, nothing before it, a refresh at or after it, the Evaluator's
+scorer for the oldest unsealed committed week (above-normal priority,
+360-minute timeout, A7), then ``seal``.
+
+Pre-build check (D-116, A1): before every ``build-week`` the runner runs
+``<python> -m ffml.eval.livetest_score --prebuild-check --from <last build's code
+commit> --to <pinned HEAD>`` in the pinned worktree. Exit 0 builds; exit 5 (or
+any failure to run the check) blocks the build with a ``prebuild_blocked``
+alert, and the normal 30-minute loop retries. A block fixed before the
+deadline is not a miss; otherwise the MISSED marker says "pre-build check
+blocked".
 
 Dry runs (D-107): ``--dry-run-branch <name>`` pushes to that branch only
 (never ``livetest-2026``), builds in the rehearsal sandbox without deadlines,
@@ -102,7 +112,11 @@ BUILD_OK, BUILD_FAILED, BUILD_BLOCKED, BUILD_REFUSED_KICKOFF, BUILD_ALREADY_COMM
 REFRESH_STEPS = ("ingest", "sleeper", "process", "validate", "features")
 ALERT_COOLDOWN_MINUTES = 120.0
 RESULT_PREFIX = "REFRESH_RESULT "
-FORCE_FAIL_STEPS = ("refresh", "build", "push")
+FORCE_FAIL_STEPS = ("refresh", "prebuild", "build", "push")
+SCORER_MODULE = "ffml.eval.livetest_score"
+ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000  # Windows; the scorer runs above normal priority (A7)
+PREBUILD_BLOCKED = 5  # scorer --prebuild-check exit code for "blocked"
+SCORER_NOT_YET = 4  # scorer exit code for "not yet, retry" (no alert)
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +143,7 @@ class Config:
     week: int | None = None
     rehearsal: bool = False
     stub_build: bool = False
+    stub_score: bool = False  # scripts/livetest_stub_score.py instead of the scorer module (testing)
     allow_stub_push: bool = False
     skip_refresh: bool = False
     refresh_steps: tuple[str, ...] = REFRESH_STEPS
@@ -151,7 +166,7 @@ class Config:
     misses_allowed: int | None = None  # missed_weeks.allowed from the pre-registration (D-111: 2)
     misses_allowed_error: str | None = None
     window: list[tuple[int, int]] | None = None  # the pre-registered window, both seasons (QA-F30)
-    scorer_timeout_minutes: float = 180.0
+    scorer_timeout_minutes: float = 360.0  # A7
 
     def window_keys(self) -> list[str]:
         """The test window's week keys in order: the pre-registration's window, else the configured season."""
@@ -459,6 +474,135 @@ def roots(cfg: Config, wk: core.WeekKickoff) -> list[Path]:
 # --------------------------------------------------------------------------- #
 
 
+def scorer_cmd(cfg: Config, *args: str) -> list[str]:
+    """``<python> -m ffml.eval.livetest_score <args>``, or the stub with ``--stub-score``."""
+    if cfg.stub_score:
+        return [str(cfg.python), str(SCRIPTS_DIR / "livetest_stub_score.py"), *args]
+    return [str(cfg.python), "-m", SCORER_MODULE, *args]
+
+
+def scorer_creationflags() -> int:
+    """Above-normal priority for the weekly scorer on Windows; nothing elsewhere (A7)."""
+    if sys.platform == "win32":
+        return int(getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS", ABOVE_NORMAL_PRIORITY_CLASS))
+    return 0
+
+
+def parse_json_output(text: str | None) -> dict[str, Any] | None:
+    """The JSON object a scorer command printed: the whole output, else its last JSON line."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {"value": data}
+    except ValueError:
+        pass
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+                return data if isinstance(data, dict) else None
+            except ValueError:
+                continue
+    return None
+
+
+def run_scorer(run: Run, args: list[str], *, timeout_minutes: float, priority: bool = False) -> tuple[int, str, str]:
+    cfg = run.cfg
+    cmd = scorer_cmd(cfg, *args)
+    kwargs: dict[str, Any] = {"cwd": str(cfg.code_cwd), "env": cfg.child_env(), "capture_output": True, "text": True,
+                              "encoding": "utf-8", "errors": "replace", "timeout": timeout_minutes * 60}
+    if priority and scorer_creationflags():
+        kwargs["creationflags"] = scorer_creationflags()
+    try:
+        proc = run.deps.run(cmd, **kwargs)
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        return -9, _tail(exc.stdout), f"timed out after {timeout_minutes} min"
+    except OSError as exc:
+        return -1, "", f"{type(exc).__name__}: {exc}"
+
+
+def last_build_commit(run: Run, repo: core.CommitmentsRepo, remote: bool | None) -> tuple[str, str]:
+    """The code commit of the latest commitment on the branch (``""`` before the first build).
+
+    The latest is the one with the newest ``created_at`` among ``<week>/commitment.json``
+    and ``<week>/late/commitment.json``; rehearsal commitments are not builds of the
+    test. If the remote cannot be read, the local commitments stand in (logged).
+    """
+    pattern = re.compile(r"^\d{4}w\d{2}/(late/)?commitment\.json$")
+    found: list[tuple[datetime, str, str]] = []
+    if remote is not None:
+        for rel in repo.remote_paths():
+            if not pattern.match(rel):
+                continue
+            blob = repo.remote_blob(rel)
+            try:
+                c = core.Commitment(path=Path(rel), raw=blob or b"", data=json.loads(blob or b"{}"), files=[])
+            except ValueError:
+                continue
+            if c.code_commit and c.created_at:
+                found.append((c.created_at, c.code_commit, f"{repo.branch}:{rel}"))
+        source = "branch"
+    else:
+        for path in sorted(run.cfg.livetest_dir.glob("[0-9][0-9][0-9][0-9]w[0-9][0-9]/commitment.json")):
+            try:
+                c = core.load_commitment(path)
+            except (ValueError, OSError):
+                continue
+            if c.code_commit and c.created_at:
+                found.append((c.created_at, c.code_commit, str(path)))
+        source = "local commitments (remote unreachable)"
+    if not found:
+        return "", f"no earlier build ({source})"
+    created, commit, where = max(found)
+    return commit, f"{where} (created {core.iso(created)})"
+
+
+def code_head(run: Run) -> str:
+    """The commit the build will run: the pinned worktree's HEAD (or the main checkout's)."""
+    if run.pin is not None:
+        return run.pin.commit
+    proc = run.deps.run(["git", "-C", str(run.cfg.code_cwd), "rev-parse", "HEAD"], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=60)
+    return (proc.stdout or "").strip()
+
+
+def prebuild_check(run: Run, wk: core.WeekKickoff, repo: core.CommitmentsRepo, remote: bool | None) -> None:
+    """D-116 B.1 with A1: block the build unless every commit since the last build is in the change log."""
+    cfg = run.cfg
+    key = wk.key
+    from_commit, from_source = last_build_commit(run, repo, remote)
+    to_commit = code_head(run)
+    args = ["--prebuild-check", "--from", from_commit, "--to", to_commit]
+    if cfg.force_fail == "prebuild":
+        code, result = PREBUILD_BLOCKED, {"forced": True, "uncovered": [], "frozen": [],
+                                          "message": "forced pre-build block (--force-fail prebuild)"}
+        out = err = ""
+    else:
+        code, out, err = run_scorer(run, args, timeout_minutes=30)
+        result = parse_json_output(out)
+    uncovered = list((result or {}).get("uncovered") or (result or {}).get("uncovered_commits") or [])
+    frozen = list((result or {}).get("frozen") or (result or {}).get("frozen_commits") or [])
+    run.log.event("prebuild", "passed" if code == 0 else "checked", from_commit=from_commit, from_source=from_source,
+                  to_commit=to_commit, returncode=code, result=result, stdout_tail=_tail(out, 800),
+                  stderr_tail=_tail(err, 800))
+    if code == 0:
+        return
+    if code == PREBUILD_BLOCKED:
+        message = (f"{key}: pre-build check blocked the build: {len(uncovered)} commit(s) without a change-log "
+                   f"entry {uncovered[:10]}, {len(frozen)} touching a frozen path {frozen[:10]}; fix the change log "
+                   "(frozen paths need the owner's ruling, D-111); the runner retries every 30 min")
+    else:
+        message = (f"{key}: pre-build check could not run (exit {code}); the build is blocked until it passes; "
+                   f"{_tail(err, 200)}")
+    raise run.abort(EXIT_BLOCKED, "prebuild", message, alert_kind="prebuild_blocked", key=f"{key}:prebuild",
+                    severity="critical", uncovered=uncovered, frozen=frozen, from_commit=from_commit,
+                    to_commit=to_commit, check=result)
+
+
 def verify_pin(run: Run) -> None:
     cfg = run.cfg
     if not cfg.pinned:
@@ -649,6 +793,9 @@ def miss_reason(cfg: Config, wk: core.WeekKickoff, t: dict[str, datetime],
             "detail": f"no runner log between {window['from']} and the kickoff {window['to']}: the machine was "
             "off, asleep or logged off, or the task did not start",
         }, record
+    if last and last.get("step") == "prebuild":
+        return {"category": "technical_failure", "detail": "pre-build check blocked",
+                "check": {k: last.get(k) for k in ("ts", "message", "exit_code")}}, record
     if last:
         detail = f"{last.get('step')}: {last.get('message')}"
     else:
@@ -1017,6 +1164,8 @@ def attempt(run: Run) -> int:
         run.log.event("dry-run", "plan", local_commitment=c is not None,
                       would_refresh=c is None and not cfg.skip_refresh and now < t["refresh_deadline"],
                       would_build=build_cmd(cfg, wk) if c is None else None,
+                      would_prebuild_check=scorer_cmd(cfg, "--prebuild-check", "--from", "<last build commit>",
+                                                      "--to", "<pinned HEAD>") if c is None else None,
                       would_push_to=f"{cfg.remote} refs/heads/{cfg.branch}", worktree=str(cfg.commitments_worktree))
         return EXIT_OK
 
@@ -1064,6 +1213,7 @@ def attempt(run: Run) -> int:
         if not cfg.rehearsal and run.now() >= t["cutoff"]:
             raise run.abort(EXIT_MISSED, "deadline", f"{key}: cutoff {core.iso(t['cutoff'])} passed before the build",
                             alert_kind="missed_commitment", key=key, severity="critical")
+        prebuild_check(run, wk, repo, remote)
         if cfg.force_fail == "build":
             raise run.abort(EXIT_RETRY, "build", f"{key}: forced build failure (--force-fail build); the next "
                             "run retries", alert_kind="build_failure", key=key)
@@ -1502,7 +1652,28 @@ def _same_seal(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return a.get("sealed_file_sha256") == b.get("sealed_file_sha256") and a.get("entries") == b.get("entries")
 
 
-def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> int:
+def scorer_week_record(cfg: Config, wk: core.WeekKickoff) -> dict[str, Any]:
+    """The snapshot ids the scorer recorded for the week (``data/livetest/scoring/weeks/<week>.json``)."""
+    path = cfg.data_dir / "livetest" / "scoring" / "weeks" / f"{wk.key}.json"
+    data = core.read_json(path)
+    if data is None:
+        return {"weeks_json": None}
+    found: dict[str, Any] = {}
+    wanted = ("dim_game_snapshot", "processed_snapshots", "outcome_rows_sha256", "data_cutoff_utc")
+    stack: list[Any] = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in wanted and k not in found:
+                    found[k] = v
+                elif isinstance(v, dict):
+                    stack.append(v)
+    return {"weeks_json": str(path), "weeks_json_sha256": core.sha256_file(path), **found}
+
+
+def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff],
+              data_cutoff: datetime | None = None) -> int:
     """Publish ``<week>/sealed_hashes.json`` from the local sealed file; idempotent; immutable."""
     cfg = run.cfg
     key = wk.key
@@ -1564,7 +1735,9 @@ def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> i
         raise run.abort(EXIT_RETRY, "seal", f"{key}: {exc}", alert_kind="scoring_failure", key=f"{key}:seal") from None
     record: dict[str, Any] = {"season": wk.season, "week": wk.week, "branch": cfg.branch, "path": rel,
                               "commit_sha": sha, "sealed_file_sha256": payload["sealed_file_sha256"],
-                              "entries": entries, "push": push, "ok": push.get("ok"), "recorded_at": core.iso(run.now())}
+                              "entries": entries, "push": push, "ok": push.get("ok"), "recorded_at": core.iso(run.now()),
+                              "data_cutoff_utc": core.iso(data_cutoff) if data_cutoff else None,
+                              "scorer": scorer_week_record(cfg, wk)}
     try:
         record["ls_remote_sha"] = repo.ls_remote()
     except core.GitError as exc:
@@ -1680,8 +1853,49 @@ def pick_week_to_score(run: Run, plan: list[core.WeekKickoff], repo: core.Commit
     return None
 
 
+def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> datetime | None:
+    """The week's data cutoff from ``--data-cutoff`` (A3); ``None`` when the scorer says "not yet" (exit 4)."""
+    code, out, err = run_scorer(run, ["--data-cutoff", wk.key], timeout_minutes=10)
+    result = parse_json_output(out)
+    run.log.event("score", "data cutoff", week=wk.key, returncode=code, result=result, stderr_tail=_tail(err, 400))
+    if code == SCORER_NOT_YET:
+        return None
+    if code != 0:
+        raise run.abort(EXIT_RETRY, "score", f"{wk.key}: the scorer's --data-cutoff exited {code}; will retry",
+                        alert_kind="scoring_failure", key=f"{wk.key}:cutoff", stderr_tail=_tail(err, 400))
+    value = None
+    if result:
+        for k in ("data_cutoff_utc", "data_cutoff", "cutoff_utc", "cutoff"):
+            if result.get(k):
+                value = result[k]
+                break
+    if value is None:
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        value = lines[-1] if lines else None
+    try:
+        cutoff = core.parse_time(value)
+    except (TypeError, ValueError):
+        cutoff = None
+    if cutoff is None:
+        raise run.abort(EXIT_RETRY, "score", f"{wk.key}: no data cutoff in the scorer's output {out[-200:]!r}",
+                        alert_kind="scoring_failure", key=f"{wk.key}:cutoff")
+    return cutoff
+
+
+def snapshot_at_or_after(cfg: Config, cutoff: datetime) -> str | None:
+    """The LATEST dim_game snapshot id when it was taken at or after ``cutoff`` (ids are UTC stamps)."""
+    sid = core.dim_game_snapshot_id(cfg.data_dir)
+    if not sid:
+        return None
+    try:
+        stamp = datetime.strptime(sid[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return sid if stamp >= cutoff else None
+
+
 def score_week(run: Run) -> int:
-    """Tuesday job: refresh, the Evaluator's scorer for the oldest unsealed committed week, then seal."""
+    """Friday job (A3): the week's data cutoff, a refresh at or after it, the scorer, then seal."""
     cfg = run.cfg
     if cfg.rehearsal and not cfg.dry_run_branch:
         raise run.abort(EXIT_REFUSED, "score", "score-week is not for rehearsals")
@@ -1699,8 +1913,22 @@ def score_week(run: Run) -> int:
     if repo.remote_blob(f"{key}/{core.SEALED_NAME}") is not None:
         run.log.event("score", "already sealed", week=key)
         return EXIT_OK
+    cutoff = data_cutoff_for(run, wk)
+    if cutoff is None:
+        run.log.event("score", "not yet", week=key, message="the scorer's --data-cutoff exited 4; retry later")
+        return EXIT_RETRY
+    if run.now() < cutoff:
+        run.log.event("score", "before the data cutoff", week=key, data_cutoff=core.iso(cutoff),
+                      message="nothing to do before the cutoff (A3)")
+        return EXIT_OK
     state = load_state(cfg, wk)
-    if not cfg.skip_refresh:
+    existing = snapshot_at_or_after(cfg, cutoff)
+    if cfg.skip_refresh:
+        run.log.event("score", "refresh skipped", message="--skip-refresh", data_cutoff=core.iso(cutoff))
+    elif existing:
+        run.log.event("score", "refresh not needed", snapshot=existing, data_cutoff=core.iso(cutoff),
+                      message="a dim_game snapshot taken at or after the cutoff exists")
+    else:
         refresh = run_refresh(run, wk, state)
         if refresh["status"] == "failed":
             raise run.abort(EXIT_RETRY, "score", f"{key}: refresh failed before scoring; will retry",
@@ -1712,26 +1940,24 @@ def score_week(run: Run) -> int:
         return EXIT_RETRY
     sealed_path = cfg.sealed_dir / f"{key}.sha256"
     if not sealed_path.exists():
-        cmd = [str(cfg.python), "-m", "ffml.eval.livetest_score", "--week", key, "--weekly-sensitivity"]
-        run.log.event("score", "scorer started", cmd=cmd, cwd=str(cfg.code_cwd))
+        args = ["--week", key, "--weekly-sensitivity"]
+        run.log.event("score", "scorer started", cmd=scorer_cmd(cfg, *args), cwd=str(cfg.code_cwd),
+                      priority="above normal" if scorer_creationflags() else "normal",
+                      timeout_minutes=cfg.scorer_timeout_minutes, data_cutoff=core.iso(cutoff))
         t0 = time.perf_counter()
-        try:
-            proc = run.deps.run(cmd, cwd=str(cfg.code_cwd), env=cfg.child_env(), capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=cfg.scorer_timeout_minutes * 60)
-            code, out, err = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as exc:
-            code, out, err = -9, _tail(exc.stdout), f"timed out after {cfg.scorer_timeout_minutes} min"
-        except OSError as exc:
-            code, out, err = -1, "", f"{type(exc).__name__}: {exc}"
+        code, out, err = run_scorer(run, args, timeout_minutes=cfg.scorer_timeout_minutes, priority=True)
         run.log.event("score", "scorer finished", returncode=code, seconds=round(time.perf_counter() - t0, 1),
                       stdout_tail=_tail(out, 800), stderr_tail=_tail(err))
+        if code == SCORER_NOT_YET:
+            run.log.event("score", "not yet", week=key, message="the scorer exited 4; the next repetition retries")
+            return EXIT_RETRY
         if code != 0:
             raise run.abort(EXIT_RETRY, "score", f"{key}: the scorer exited {code}; will retry",
                             alert_kind="scoring_failure", key=f"{key}:score", stderr_tail=_tail(err, 400))
         if not sealed_path.exists():
             raise run.abort(EXIT_RETRY, "score", f"{key}: the scorer exited 0 but wrote no {sealed_path.name}; "
                             "nothing to seal", alert_kind="scoring_failure", key=f"{key}:score", severity="warning")
-    return seal_week(run, wk, plan)
+    return seal_week(run, wk, plan, data_cutoff=cutoff)
 
 
 def cmd_score_week(cfg: Config, deps: Deps) -> int:
@@ -1834,6 +2060,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--no-github", action="store_true", help="skip the gh api record")
     common.add_argument("--trailer", action="append", default=[], help="extra commit message trailer line")
     common.add_argument("--no-env-check", action="store_true", help=argparse.SUPPRESS)
+    common.add_argument("--stub-score", action="store_true",
+                        help="use scripts/livetest_stub_score.py instead of the scorer module (testing)")
     common.add_argument("--preregistration", type=Path, default=None,
                         help="the pre-registration (.json, or the .md with its fenced JSON block); "
                              "missed_weeks.allowed is read from it (default: docs/status/livetest-preregistration-2026.md)")
@@ -1917,6 +2145,7 @@ def make_config(args: argparse.Namespace) -> Config:
             safe = re.sub(r"[^A-Za-z0-9._-]+", "-", cfg.dry_run_branch)
             cfg.commitments_worktree = core.DEFAULT_COMMITMENTS_WORKTREE.parent / f"ffml-{safe}-commitments"
     cfg.force_fail = getattr(args, "force_fail", None)
+    cfg.stub_score = bool(getattr(args, "stub_score", False))
     prereg = args.preregistration or (None if args.command == "init" else saved.get("preregistration"))
     if prereg:
         cfg.preregistration = Path(prereg)
