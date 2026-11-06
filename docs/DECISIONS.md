@@ -114,6 +114,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-112 | 2026-11-05 | accepted (owner) | Delegation: the orchestrator decides routine, reversible implementation choices and logs them; it stops for the owner only before verdict-affecting changes, freezes and registrations, publishing or exposure, permissions, credentials or costs, each time with a recommendation and the main trade-off |
 | D-113 | 2026-11-06 | logged (routine, D-112) | API hardening defaults from QA-4.1: body limit 256 KiB; per-client rate limits by route family (429 + Retry-After); docs endpoints off in production; CSP/frame/referrer headers; compose binds 127.0.0.1 and mounts predictions, artifacts, reports, the three identity tables and raw schedules only, never restricted ECR directories; Dockerfile.api installs from the lock on a digest-pinned base |
 | D-114 | 2026-11-06 | logged (routine, D-112) | Web app conventions (D-UI-1 to D-UI-5): browser calls the API only through the app's own /api proxy (FFML_API_URL read per request, X-Forwarded-For passed on, 256 KiB body limit); league id in localStorage until D-011 sessions exist; approval wording and banners per D-099/D-101; web/mock is test-only; per-request nonce CSP without 'unsafe-inline' scripts, so every route renders dynamically |
+| D-115 | 2026-11-06 | accepted (owner) | Scorer fix before the freeze: a commit that only appends to the change log needs no entry of its own (non-merge, change log only, additions only); freeze waits for an end-to-end rehearsal on synthetic data and the Evaluator's independent review |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -935,6 +936,23 @@ and every private-test view carries the "not approved" label and notices.
 of every route rendering per request instead of being prerendered;
 `style-src` keeps `'unsafe-inline'` for React style attributes. QA-F18 (a
 lint-only minimatch advisory with no patched release) is accepted.
+
+## D-115 Change-log exemption and the pre-freeze rehearsal (owner, 2026-11-06)
+
+Found before the freeze: the scorer's final integrity check required every
+commit after the frozen commit to have a change-log entry, but an entry can
+name only an existing commit, so the commit adding the last entries could
+never be covered and every final verdict would have been INVALID. The owner
+approved a narrow fix (4c35fea): a commit is exempt only if it is not a
+merge, changes the change log and nothing else, and only adds lines (an
+edit or deletion of an existing entry is not exempt, and a deleted entry
+leaves the commit it covered uncovered again). Before X is chosen, QA runs
+an end-to-end rehearsal of the frozen scorer on a temporary copy with
+synthetic post-freeze commits and synthetic data only (PASS, FAIL, 0-3
+missed weeks, sealed results, a missing entry, a change-log-only commit),
+and the Evaluator reviews the fix and the rehearsal independently. The
+owner then sees X, the rehearsal evidence and the freeze trade-off, and
+approves the freeze.
 
 ## Owner answers received 2026-11-01
 
