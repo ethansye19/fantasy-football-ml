@@ -161,5 +161,92 @@ roles. Full report: `docs/SECURITY.md`.
   private-test snapshots exist.
 
 Commits: c2ce878 (CI jobs and gitleaks config), 5e1cd6a (QA tests),
-e671d48 (api-image starts only the api service), plus the commit carrying
-this note and docs/SECURITY.md.
+e671d48 (api-image starts only the api service), 7f5e4eb (this note and
+docs/SECURITY.md).
+
+---
+
+# Phase 4 / QA and Security Reviewer / QA-4.2
+Date: 2026-11-05
+Scope: web CI job; review of the live-test watchdog workflow; the compose
+`web` service in the image smoke; 429 tests against the new rate-limit
+middleware; finding statuses after the Backend's fixes.
+
+## Task list (as briefed)
+
+1. Add the `web` CI job (install, lint, typecheck, vitest, build, Playwright
+   against the mock), independent of the python job; actionlint it.
+2. Review `.github/workflows/livetest_watchdog.yml` and
+   `scripts/livetest_watchdog_gh.py` for least privilege, secret handling,
+   pinned actions, and failure visibility without the secret; fix workflow
+   issues only.
+3. Add the compose `web` service to the `api-image` smoke.
+4. Add 429 tests against the rate-limit middleware (opt-in in the factory).
+5. Re-run the compliance scans on the current tree and update the finding
+   statuses in docs/SECURITY.md.
+6. Review the Backend's edits to the QA test files.
+
+## Done
+
+- Backend edits to QA tests reviewed (68b2e5d, b9bc159, fbc6fa3, e30c8f9,
+  d9c0f4c, 2cba0f4): xfail markers removed with the fixes, the wildcard
+  CORS test now asserts the production refusal and the private_test
+  behavior, and the OpenAPI schema is read in-process because `/openapi.json`
+  is off in production. All preserve the tests' intent.
+- `.github/workflows/ci.yml` (0f57c5a): `web` job (closes QA-F20);
+  `api-image` starts `api web`, adds the web-image smoke (`/`, `/about`,
+  `/projections` render; `X-Frame-Options: DENY`, CSP `frame-ancestors
+  'none'`, nosniff, referrer policy, no `X-Powered-By`; `/api/projections`
+  through the proxy is the 503 `no_approved_model` body with
+  `X-FFML-Approval: none`; `/api/nope` is 404) and makes the image package
+  audit blocking (QA-F09 fixed in b8c193b).
+- `.github/workflows/livetest_watchdog.yml` (0f57c5a): `persist-credentials:
+  false` on the checkout (QA-F23). Review in docs/SECURITY.md section 11:
+  least privilege, secret never echoed, inputs through `env:`, failure
+  visible without the secret, stdlib-only alert path; QA-F24 (major-tag
+  pins) and QA-F25 (schedule mail and 60-day rule) filed.
+- `tests/api/test_qa_rate_limits.py` (bcbb683): 9 new 429 tests (envelope
+  and headers, private_test label, preflights, spoofed and trusted
+  `X-Forwarded-For`, before validation and body limit, disabled family,
+  `Retry-After` with an injected clock, defaults, family classification of
+  every OpenAPI operation).
+- `docs/SECURITY.md`: status column on the finding table (22 fixed or
+  open statuses with commits), QA-F23 to QA-F25, sections 2, 3, 4a, 5, 7,
+  8, 9 and 10 updated, section 11 added.
+
+## Evidence
+
+- `pytest tests/api/test_qa_*.py tests/compliance tests/data/test_watchdog_gh.py`
+  on the current tree (2cba0f4 plus the frontend's uncommitted v1.3 work):
+  `167 passed in 122 s`, no xfails left.
+- `ruff check tests/api/test_qa_*.py tests/compliance/`: all checks passed.
+- `actionlint .github/workflows/ci.yml .github/workflows/livetest_watchdog.yml`:
+  no findings. CI jobs: python, api-postgres, api-image, web, security.
+- Compliance scans (a) to (e) pass against the current `api/` and `web/`
+  working tree.
+
+## Not done / blocked
+
+- The CI jobs still have not run on GitHub (nothing pushed). The web image
+  build adds a few minutes to `api-image`; `timeout-minutes` is 40.
+- QA-F24 (SHA pins plus Dependabot) is accepted as-is; QA can add
+  `.github/dependabot.yml` on request.
+- The web proxy does not add `X-Forwarded-For`; behind the Next.js app the
+  API sees one client unless a reverse proxy sets it (SECURITY.md section 5).
+
+## Decisions proposed
+
+- **P-QA-DEPENDABOT (Orchestrator).** `.github/dependabot.yml` for
+  `github-actions` (weekly) and `pip`/`npm` (security updates only), with SHA
+  pins for actions.
+- **P-QA-XFF (Frontend).** The `/api` proxy adds `X-Forwarded-For` with the
+  browser's address, and the deployment sets `FFML_TRUSTED_PROXIES` to the
+  web container, so the API's per-client limits apply per browser.
+
+## Next
+
+- Read the first GitHub run of the five jobs and fix workflow issues.
+- Phase 6: `e2e:real` against the API image in the end-to-end job.
+
+Commits (QA-4.2): 0f57c5a (CI and watchdog), bcbb683 (429 tests), plus the
+commit carrying this section and docs/SECURITY.md.
