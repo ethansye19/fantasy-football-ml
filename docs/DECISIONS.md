@@ -110,6 +110,8 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-108 | 2026-11-05 | accepted (conditional) | LightGBM `num_threads` 8 -> 4 for determinism on Linux CI, only if all four identity weeks stay byte-identical; otherwise threads stay 8 and the CI test pins 1 thread |
 | D-109 | 2026-11-05 | accepted | Live-test timing constants: window opens K-25h, first run K-24h15m, retries every 30 min, build cutoff K-30m, push deadline K-5m; GitHub watchdog windows [6.5h, 5.5h) and [1.5h, 0) before kickoff; MISSED.json format missed/2 |
 | D-110 | 2026-11-05 | recorded | D-105 selects no candidate (best good-model pass 0.614 < 0.70); fallback applies: unchanged 22 rules over 2026 w10-18 + 2027 w1-9; no approved model for the rest of 2026; no provisional approval tier |
+| D-111 | 2026-11-05 | accepted (owner) | Corrected live-test pre-registration approved: verdict about 2027-11-09, app on no approved model until then; replay-proven compatibility fixes only; two misses allowed; sealed interim results; v3 outside frozen paths; 56% good-model pass rate stated plainly; report-only 5,000-draw sensitivity check; 500-draw seed-0 bootstrap the only binding rule |
+| D-112 | 2026-11-05 | accepted (owner) | Delegation: the orchestrator decides routine, reversible implementation choices and logs them; it stops for the owner only before verdict-affecting changes, freezes and registrations, publishing or exposure, permissions, credentials or costs, each time with a recommendation and the main trade-off |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -856,6 +858,49 @@ only the accuracy lines cannot pass a good model more than about 61% of
 the time, because the unchanged start/sit and coverage lines (WR start/sit
 0.815, QB coverage 0.859, DST coverage 0.959) set that limit. This is
 recorded as information, not as a proposal.
+
+## D-111 Corrected live-test pre-registration approved (owner, 2026-11-05)
+
+After the Evaluator's D-105 candidate table (D-110) the owner required five
+changes, all now in docs/status/livetest-preregistration-2026.md: the
+expected verdict date (about 2027-11-09) with the real app on "no approved
+model" until then, through the 2027 draft and weeks 1-9; outside changes
+(nflverse schema, dependency breaks, Sleeper API, laptop replacement) handled
+only by logged compatibility fixes proven by replay checks not to change
+model behaviour, else stop and ask; up to two missed weeks excluded without
+extension and a third miss INVALID; interim results sealed until the
+verdict, never used to tune v2 or stop early; a separate v3 allowed outside
+the frozen paths, without sealed results, with its own unseen test.
+
+The owner then asked for a reconciliation of the 18-week pass rate (first
+report about 77% / 63% corrected; pre-registration 55.7%). Finding
+(docs/status/livetest-power-reconciliation.md, for Evaluator verification):
+both come from the same code; the first was a reference window in weeks
+1-18 order, the second the test's own order (2026 w10-18, 2027 w1-9); same
+week numbers and game counts; the gap is the frozen 500-draw, seed-0
+bootstrap's fixed weight matrix interacting with cluster order (other seeds
+give 0.59-0.61 for both orders). 0.557 is the planning number for the test
+as it will be run. The pre-registration says plainly that even a good model
+has only about a 56% chance of passing, reports the no-edge rate as 0 of
+5,000 with a 95% upper bound of 0.0006, and states the simulation
+assumptions and run counts.
+
+Ruling: approved as corrected, with the 500-draw, seed-0 bootstrap as the
+only binding verdict rule and a **report-only** 5,000-draw sensitivity check
+that can never change the verdict; any disagreement is disclosed. The
+Evaluator verifies the reconciliation; the final frozen commit goes to the
+owner for approval.
+
+## D-112 Delegation rule (owner, 2026-11-05)
+
+The orchestrator uses its discretion on routine, reversible implementation
+choices and logs them in this file. It stops and asks the owner only before:
+changing the frozen test, approval rules, thresholds, sealed results, or
+anything else that could affect the verdict; freezing the pre-registration,
+registering the scheduled task, or any other hard-to-undo step; publishing
+projections or approval claims, making the repository public, or exposing
+restricted data; expanding permissions, handling credentials, or creating
+new costs. Each stop comes with a recommendation and the main trade-off.
 
 ## Owner answers received 2026-11-01
 
