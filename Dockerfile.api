@@ -12,8 +12,10 @@ ENV PYTHONUTF8=1 \
 
 WORKDIR /app
 COPY requirements.lock.txt ./
-RUN pip install --no-cache-dir -r requirements.lock.txt \
-    && pip install --no-cache-dir "setuptools==80.9.0" \
+# pip and setuptools are not in the lock; the versions the base image ships carry
+# advisories, so both are pinned here at their fixed releases (image audit, QA-4.2)
+RUN pip install --no-cache-dir "pip==26.2" "setuptools==84.1.0" \
+    && pip install --no-cache-dir -r requirements.lock.txt \
     && useradd --create-home --uid 10001 ffml
 COPY pyproject.toml README.md ./
 COPY ffml ./ffml
