@@ -301,3 +301,41 @@ Still open from BE-4.9:
   Docker); the proposed CI job `api-image` should add `web` to the smoke.
 - `low_confidence_positions` is read defensively; the ML Engineer may start
   writing it to manifests when chain_v2 calibration results are known.
+
+
+## BE-4.10 QA findings (2026-11-05)
+
+Fixes for the backend-owned findings in docs/SECURITY.md section 1. Each
+pinned strict-xfail test lost its QA-Fnn marker in the fixing commit.
+
+| Commit | Finding | Change |
+| --- | --- | --- |
+| 68b2e5d | QA-F01 (High) | Production verifies the live entry's report with `registry.check_report` (exists under reports/, exact `Verdict: APPROVED`); fixture writes real reports; 3 cases unmarked |
+| b9bc159 | QA-F02 | `BodyLimitMiddleware` (413 over `FFML_BODY_MAX_BYTES`, 256 KiB; body pre-read and replayed); league `settings` limited to known keys with scalar values; 2 cases unmarked |
+| fbc6fa3 | QA-F04 | One `SleeperClient` and token bucket per process (`SleeperHolder`), closed in the lifespan; 1 case unmarked |
+| f988e60 | QA-F03 | `RateLimitMiddleware` per client and route family (sleeper 10/5, write 30/10, heavy 30/10, read 120/30, meta 300/60), 429 + `Retry-After`, `FFML_TRUSTED_PROXIES`, limits in `ApiSettings`, off in the test factory unless a test opts in |
+| e30c8f9 | QA-F11, F12, F05, F06, F21 | exact labels and explicit `environment: null` refused; model card skips non-object registry entries; finite weights within +-100; ASCII-only usernames on the lookup path; production refuses `*` and non-http(s) CORS origins; 3+5+3+3 cases unmarked |
+| d9c0f4c | QA-F21 follow-up | QA's wildcard CORS test now asserts the production refusal and keeps its no-credentials check in private_test (it documented the removed behaviour) |
+| 68a58f9 | QA-F08 | `Referrer-Policy`, `X-Frame-Options`, CSP on every response; `/docs`, `/redoc`, `/openapi.json` off in production (`FFML_DOCS_ENABLED`) |
+| b8c193b | QA-F13, F22, F09 | compose API port on 127.0.0.1 only; mounts limited to predictions, three identity tables, schedules, artifacts, reports (never the restricted ECR directories); root `.dockerignore`; Dockerfile.api on a digest-pinned base installing from `requirements.lock.txt` with `--no-deps .` |
+| 2cba0f4 | QA-F08 follow-up | QA helpers `_operations()` read the schema with `client.app.openapi()` because `/openapi.json` is off in production |
+| b8ad1ef | QA-F07, F17 | error envelopes truncate messages and details, slot names bounded, unknown-id lists capped; QA-F14 single-user note in docs/API.md; changelog v1.4; `.env.example` lists the real `FFML_*` API variables |
+
+Evidence:
+- `ruff check api tests/api tests/compliance` -> All checks passed.
+- `pytest -q tests/api tests/compliance` -> 350 passed, 2 warnings in 785.91s (0:13:05)
+- No QA-Fnn xfail marker remains in tests/api (F01, F02, F04, F05, F06, F11,
+  F12 removed with their fixes).
+
+Not done / notes:
+- QA-F14 (auth and ownership) is a Gate 6 item: documented as single-user,
+  localhost only; the compose file binds the API port to loopback.
+- QA-F10 (waivers p95) accepted for now.
+- The web proxy does not forward `X-Forwarded-For`, so behind the web app the
+  limiter sees one client until the proxy adds it and `FFML_TRUSTED_PROXIES`
+  names the proxy (Frontend).
+- Docker image and compose are still unverified locally; CI `api-image`
+  builds them. CI should add `web` to the compose smoke (QA).
+- `ffml.data.sleeper.normalize_scoring_settings` still accepts infinite
+  values (QA-F05 cites it); the API refuses them at the boundary. Proposal
+  for the Data Engineer: reject non-finite values there as well.
