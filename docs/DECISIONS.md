@@ -113,6 +113,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-111 | 2026-11-05 | accepted (owner) | Corrected live-test pre-registration approved: verdict about 2027-11-09, app on no approved model until then; replay-proven compatibility fixes only; two misses allowed; sealed interim results; v3 outside frozen paths; 56% good-model pass rate stated plainly; report-only 5,000-draw sensitivity check; 500-draw seed-0 bootstrap the only binding rule |
 | D-112 | 2026-11-05 | accepted (owner) | Delegation: the orchestrator decides routine, reversible implementation choices and logs them; it stops for the owner only before verdict-affecting changes, freezes and registrations, publishing or exposure, permissions, credentials or costs, each time with a recommendation and the main trade-off |
 | D-113 | 2026-11-06 | logged (routine, D-112) | API hardening defaults from QA-4.1: body limit 256 KiB; per-client rate limits by route family (429 + Retry-After); docs endpoints off in production; CSP/frame/referrer headers; compose binds 127.0.0.1 and mounts predictions, artifacts, reports, the three identity tables and raw schedules only, never restricted ECR directories; Dockerfile.api installs from the lock on a digest-pinned base |
+| D-114 | 2026-11-06 | logged (routine, D-112) | Web app conventions (D-UI-1 to D-UI-5): browser calls the API only through the app's own /api proxy (FFML_API_URL read per request, X-Forwarded-For passed on, 256 KiB body limit); league id in localStorage until D-011 sessions exist; approval wording and banners per D-099/D-101; web/mock is test-only; per-request nonce CSP without 'unsafe-inline' scripts, so every route renders dynamically |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -919,6 +920,21 @@ the restricted consensus directories; a root `.dockerignore` keeps `data/`
 and `artifacts/` out of build contexts; `Dockerfile.api` installs from
 `requirements.lock.txt` on a digest-pinned base. Authentication (QA-F14)
 stays a Gate 6 item; the API is single-user on localhost until then.
+
+## D-114 Web app conventions (Frontend proposals D-UI-1 to D-UI-5, logged as routine under D-112; 2026-11-06)
+
+The browser calls the API only through the app's own `/api/*` proxy, which
+reads `FFML_API_URL` per request (no CORS), enforces a 256 KiB body limit
+and passes `X-Forwarded-For` for the API's rate limiter. The chosen league
+id lives in localStorage until the D-011 session cookie exists (the API has
+no session endpoint). Approval wording and banners follow D-099 and D-101:
+"approved" appears only when the API returns `approval_status: approved`,
+and every private-test view carries the "not approved" label and notices.
+`web/mock` is test-only. The CSP uses a per-request nonce with
+`strict-dynamic` and no `'unsafe-inline'` for scripts (QA-F16), at the cost
+of every route rendering per request instead of being prerendered;
+`style-src` keeps `'unsafe-inline'` for React style attributes. QA-F18 (a
+lint-only minimatch advisory with no patched release) is accepted.
 
 ## Owner answers received 2026-11-01
 
