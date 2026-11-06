@@ -386,14 +386,43 @@ def changelog_commits(text: str) -> set[str]:
     return out
 
 
+def _changelog_append_only(sha: str, root: Path) -> bool:
+    """True only for a non-merge commit whose single changed file is the change log and which only adds lines.
+
+    Such a commit adds entries; an entry can name only a commit that already
+    exists, so it cannot list itself. A merge commit, a commit that also touches
+    another path, and a commit that edits or deletes any existing line of the
+    change log (an edit shows as a deleted line) do not qualify.
+    """
+    parents = _run_git(root, "rev-list", "--parents", "-n", "1", sha)
+    if parents.returncode != 0 or len(parents.stdout.split()) != 2:  # the commit itself plus exactly one parent
+        return False
+    names = _run_git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+    files = [f.strip().replace("\\", "/") for f in names.stdout.splitlines() if f.strip()] if names.returncode == 0 else []
+    if files != [CHANGELOG_DOC]:
+        return False
+    stat = _run_git(root, "diff-tree", "--no-commit-id", "--numstat", "-r", sha, "--", CHANGELOG_DOC)
+    rows = [r.split("\t") for r in stat.stdout.splitlines() if r.strip()] if stat.returncode == 0 else []
+    if len(rows) != 1 or not rows[0][0].isdigit() or not rows[0][1].isdigit():
+        return False
+    added, deleted = int(rows[0][0]), int(rows[0][1])
+    return added > 0 and deleted == 0
+
+
 def uncovered_commits(x: str, y: str, root: Path, logged: set[str]) -> list[str]:
-    """Commits in ``x..y`` without an entry (prefix match) in the change log."""
+    """Commits in ``x..y`` without an entry (prefix match) in the change log.
+
+    A commit that only appends to the change log (:func:`_changelog_append_only`)
+    is not required to have an entry: an entry can name only a commit that
+    already exists, so the commit adding the last entries can never list itself.
+    """
     fx, fy = H._full_sha(x, root), H._full_sha(y, root)
     if fx is None or fy is None or fx == fy:
         return []
     out = _run_git(root, "rev-list", f"{fx}..{fy}")
     shas = out.stdout.split() if out.returncode == 0 else []
-    return [sha for sha in shas if not any(sha.startswith(tok) for tok in logged)]
+    return [sha for sha in shas
+            if not any(sha.startswith(tok) for tok in logged) and not _changelog_append_only(sha, root)]
 
 
 def commit_relation_allowed(x: str | None, y: str | None, root: Path, allowed: Sequence[str],

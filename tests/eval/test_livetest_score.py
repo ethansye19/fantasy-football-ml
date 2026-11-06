@@ -461,3 +461,64 @@ def test_prereg_window_and_week_parsing():
     assert LS.parse_week("2026w10") == (2026, 10) and LS.week_key(2027, 9) == "2027w09"
     with pytest.raises(ValueError):
         LS.parse_week("week10")
+
+
+def test_changelog_only_exemption_is_narrow(tmp_path):
+    """Only a non-merge commit that appends to the change log alone is exempt from needing its own entry."""
+    _g(tmp_path, "init", "-q", "-b", "main")
+    _g(tmp_path, "config", "user.email", "t@example.com")
+    _g(tmp_path, "config", "user.name", "t")
+    log = tmp_path / LS.CHANGELOG_DOC
+    log.parent.mkdir(parents=True, exist_ok=True)
+    header = ("# log\n\n| Date (UTC) | Commit | Paths | Reason | Verification | Verified by | First week |\n"
+              "| --- | --- | --- | --- | --- | --- | --- |\n")
+
+    def write(rel, text, msg):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8", newline="\n")
+        _g(tmp_path, "add", rel)
+        _g(tmp_path, "commit", "-q", "-m", msg)
+        return _g(tmp_path, "rev-parse", "HEAD")
+
+    def row(sha, note="entry"):
+        return f"| 2026-11-20 | `{sha[:9]}` | scripts/ | {note} | none | Evaluator | 2026w11 |\n"
+
+    log.write_text(header, encoding="utf-8", newline="\n")
+    x = write(LS.CHANGELOG_DOC, header, "X: frozen commit with the empty log")
+    a = write("scripts/a.py", "a\n", "allowed change a")
+    app = write(LS.CHANGELOG_DOC, header + row(a), "append the entry for a")       # append only: exempt
+    assert LS._changelog_append_only(app, tmp_path)
+    logged = LS.changelog_commits(log.read_text(encoding="utf-8"))
+    assert LS.uncovered_commits(x, app, tmp_path, logged) == []
+
+    edit = write(LS.CHANGELOG_DOC, header + row(a, "entry, reworded"), "edit an existing entry")
+    assert not LS._changelog_append_only(edit, tmp_path)                         # an edit deletes a line
+    assert LS.uncovered_commits(x, edit, tmp_path, logged) == [edit]
+
+    delete = write(LS.CHANGELOG_DOC, header, "delete an entry")
+    assert not LS._changelog_append_only(delete, tmp_path)
+    b = write("scripts/b.py", "b\n", "allowed change b")
+    both_path = tmp_path / "docs" / "n.md"
+    both_path.parent.mkdir(parents=True, exist_ok=True)
+    both_path.write_text("n\n", encoding="utf-8")
+    log.write_text(header + row(b), encoding="utf-8", newline="\n")
+    _g(tmp_path, "add", "docs/n.md", LS.CHANGELOG_DOC)
+    _g(tmp_path, "commit", "-q", "-m", "log plus another path")
+    both = _g(tmp_path, "rev-parse", "HEAD")
+    assert not LS._changelog_append_only(both, tmp_path)                         # another path in the same commit
+
+    # a merge commit whose branch only appended to the log is still not exempt
+    _g(tmp_path, "checkout", "-q", "-b", "side")
+    side = write(LS.CHANGELOG_DOC, header + row(b) + row(both), "append on a side branch")
+    assert LS._changelog_append_only(side, tmp_path)
+    _g(tmp_path, "checkout", "-q", "main")
+    c = write("scripts/c.py", "c\n", "allowed change c")
+    _g(tmp_path, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    merge = _g(tmp_path, "rev-parse", "HEAD")
+    assert not LS._changelog_append_only(merge, tmp_path)
+    logged = LS.changelog_commits(log.read_text(encoding="utf-8")) | {edit[:9], delete[:9], c[:9]}
+    # the merge needs its own entry, and a whose entry was deleted is uncovered again
+    assert set(LS.uncovered_commits(x, merge, tmp_path, logged)) == {merge, a}
+    # the root commit has no parent and is never exempt
+    assert not LS._changelog_append_only(x, tmp_path)
