@@ -154,6 +154,29 @@ class Env:
             return []
         return [json.loads(line) for line in self.alert_log.read_text(encoding="utf-8").splitlines()]
 
+    def mark_final(self, through_week: int) -> None:
+        """A new dim_game snapshot with every game through ``through_week`` final (the scorer's precondition)."""
+        from ffml.data.store import SnapshotStore
+
+        frame = load_fixture().with_columns(
+            pl.when(pl.col("week") <= through_week).then(pl.lit("final")).otherwise(pl.col("status")).alias("status")
+        )
+        SnapshotStore(self.data / "processed").write_snapshot("dim_game", {2026: frame})
+
+    def sealed_file(self, week: int = 10) -> Path:
+        return self.data / "livetest" / "scoring" / "sealed" / f"2026w{week:02d}.sha256"
+
+    def write_sealed(self, week: int = 10, parts: dict[str, bytes] | None = None) -> Path:
+        parts = parts or {f"2026_w{week:02d}_part.parquet": b"sealed-metrics-" + str(week).encode()}
+        sealed = self.sealed_file(week)
+        sealed.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for name, data in parts.items():
+            (sealed.parent / name).write_bytes(data)
+            lines.append(f"{core.sha256_bytes(data)}  {name}")
+        sealed.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return sealed
+
     def commitment_path(self, week: int = 10, rehearsal: bool = False) -> Path:
         base = self.data / "livetest" / ("rehearsal" if rehearsal else "")
         return base / f"2026w{week:02d}" / "commitment.json"
@@ -184,9 +207,33 @@ def env(tmp_path, monkeypatch, tmp_settings):
     git("add", "README.md", cwd=e.main)
     git("commit", "--quiet", "-m", "main: unreviewed work that must never be pushed", cwd=e.main)
     git("remote", "add", "origin", str(e.remote), cwd=e.main)
+    prereg = tmp_path / "preregistration.json"  # the fields the runner reads from the real pre-registration
+    prereg.write_text(json.dumps({"missed_weeks": {"allowed": 2}, "miss_rule": "D-106 as revisited (D-111)"}))
     assert e.main_(["init", "--season", "2026", "--weeks", "10-18", "--main-repo", str(e.main),
-                    "--commitments-worktree", str(e.worktree)]) == 0
+                    "--commitments-worktree", str(e.worktree), "--preregistration", str(prereg)]) == 0
     return e
+
+
+def test_the_real_preregistration_sets_the_allowed_misses():
+    doc = Path(__file__).resolve().parents[2] / "docs" / "status" / "livetest-preregistration-2026.md"
+    if not doc.exists():
+        pytest.skip("pre-registration document not present")
+    prereg = core.load_preregistration(doc)
+    assert core.misses_allowed_from(prereg) == 2
+    assert "miss_rule" in prereg and "one_miss_rule" not in prereg
+    assert core.parse_sha256_file("a" * 64 + "  part.parquet\n" + "b" * 64 + " *other\n" + "c" * 64 + "\n") == {
+        "part.parquet": "a" * 64, "other": "b" * 64, "line3": "c" * 64}
+    assert core.parse_sha256_file(json.dumps({"x": "d" * 64, "y": {"sha256": "E" * 64}})) == {"x": "d" * 64, "y": "e" * 64}
+    with pytest.raises(ValueError):
+        core.parse_sha256_file("not a hash line\n")
+
+
+def test_a_real_run_refuses_without_the_preregistration(env):
+    assert env.main_(["init", "--force", "--season", "2026", "--weeks", "10-18", "--main-repo", str(env.main),
+                      "--commitments-worktree", str(env.worktree)]) == 0  # no --preregistration, none in main
+    assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_REFUSED
+    assert env.main_(env.argv("check", K10 + timedelta(hours=2), week=None)) == runner.EXIT_REFUSED
+    assert env.remote_blob("2026w10/MISSED.json") is None
 
 
 def test_run_pushes_commitment_to_orphan_branch_only(env):
@@ -282,12 +329,14 @@ def test_missed_week_gets_a_marker_with_machine_offline_reason(env):
     assert marker["status"].startswith("MISSED") and marker["first_kickoff_utc"] == "2026-11-13T01:15:00Z"
     assert marker["reason"]["category"] == "machine_offline"  # no runner log in the 25 h before kickoff
     assert marker["run_logs"]["files"] == [] and marker["run_logs"]["window"]["from"] == "2026-11-12T00:15:00Z"
-    assert marker["miss_number"] == 1 and marker["test_status"].startswith("VALID")
+    assert marker["miss_number"] == 1 and marker["allowed"] == 2
+    assert marker["test_status"].startswith("VALID: miss 1 of 2 allowed")
     assert marker["late_commitment"] is None
     assert env.remote_blob("2026w10/commitment.json") is None
     status = env.remote_blob("STATUS.md").decode()
-    assert "Misses: 1" in status and "Test state: VALID" in status and "| 2026w10 |" in status
-    assert "machine_offline" in status
+    assert "Misses: 1" in status and "allowed: 2" in status and "Test state: VALID" in status
+    assert "| 2026w10 |" in status and "machine_offline" in status
+    assert "up to 2 missed weeks" in env.remote_blob("README.md").decode()
     assert any(a["kind"] == "missed_commitment" for a in env.alerts())
     head = git("rev-parse", "livetest-2026", cwd=env.remote)
     assert env.main_(env.argv("check", K10 + timedelta(hours=2), week=None)) in (0, 1)
@@ -327,16 +376,23 @@ def test_built_but_unpushed_commitment_is_pushed_late_and_never_withheld(env, mo
     assert "| yes |" in env.remote_blob("STATUS.md").decode()
 
 
-def test_second_miss_makes_the_test_invalid(env):
+def test_third_miss_makes_the_test_invalid_two_are_allowed(env):
     K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
+    K12 = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
     assert env.main_(env.argv("run", K10 + timedelta(hours=1), week=None)) == runner.EXIT_OK
     assert env.main_(env.argv("run", K11 + timedelta(hours=1), week=None)) == runner.EXIT_OK
-    first = json.loads(env.remote_blob("2026w10/MISSED.json"))
     second = json.loads(env.remote_blob("2026w11/MISSED.json"))
-    assert (first["miss_number"], second["miss_number"]) == (1, 2)
-    assert second["earlier_misses"] == ["2026w10"] and second["test_status"].startswith("INVALID")
+    assert second["miss_number"] == 2 and second["allowed"] == 2
+    assert second["earlier_misses"] == ["2026w10"] and second["test_status"].startswith("VALID: miss 2 of 2")
     status = env.remote_blob("STATUS.md").decode()
-    assert "Misses: 2" in status and "INVALID" in status
+    assert "Misses: 2" in status and "Test state: VALID" in status
+    assert "INVALID" not in git("log", "-1", "--format=%s", "livetest-2026", cwd=env.remote)
+    assert env.main_(env.argv("run", K12 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    third = json.loads(env.remote_blob("2026w12/MISSED.json"))
+    assert third["miss_number"] == 3 and third["earlier_misses"] == ["2026w10", "2026w11"]
+    assert third["test_status"].startswith("INVALID: miss 3 of 2 allowed")
+    status = env.remote_blob("STATUS.md").decode()
+    assert "Misses: 3" in status and "INVALID (D-106, D-111: more than 2 misses)" in status
     assert "INVALID" in git("log", "-1", "--format=%s", "livetest-2026", cwd=env.remote)
     assert "INVALID" in [a for a in env.alerts() if a["kind"] == "missed_commitment"][-1]["message"]
 
@@ -347,22 +403,92 @@ def test_status_shows_misses_and_the_test_state(env, capsys):
     assert env.main_(env.argv("status", K10 + timedelta(hours=2), week=None)) == runner.EXIT_OK
     out = capsys.readouterr().out
     assert "2026w10" in out and "machine_offline" in out
-    assert "misses: 1 (2026w10); allowed 1; test state: VALID" in out
+    assert "misses: 1 (2026w10); allowed 2; test state: VALID" in out
     assert env.main_(env.argv("status", K10 + timedelta(hours=2), "--json", week=None)) == runner.EXIT_OK
     data = json.loads(capsys.readouterr().out)
-    assert data["misses"] == ["2026w10"] and data["test_state"] == "VALID"
-    assert data["weeks"][0]["missed_reason"] == "machine_offline"
+    assert data["misses"] == ["2026w10"] and data["test_state"] == "VALID" and data["allowed"] == 2
+    assert data["weeks"][0]["missed_reason"] == "machine_offline" and data["weeks"][0]["sealed"] is False
 
 
 def test_plan_export_writes_the_tracked_schedule(env, tmp_path):
     out = tmp_path / "schedule.json"
     assert env.main_(env.argv("plan", K10 - timedelta(days=5), "--export", str(out), week=None)) == runner.EXIT_OK
     data = json.loads(out.read_text(encoding="utf-8"))
+    stamp = out.stat().st_mtime_ns
+    assert env.main_(env.argv("plan", K10 - timedelta(days=4), "--export", str(out), week=None)) == runner.EXIT_OK
+    assert out.stat().st_mtime_ns == stamp and json.loads(out.read_text(encoding="utf-8")) == data  # unchanged
     assert data["format"] == "ffml.livetest.schedule/1"
     assert data["season"] == 2026 and data["test_weeks"] == list(range(10, 19))
     w12 = next(w for w in data["weeks"] if w["week"] == 12)
     assert w12["key"] == "2026w12" and w12["first_kickoff_utc"] == "2026-11-26T01:00:00Z"
     assert w12["tentative"] is False and w12["games"] == 16
+
+
+def test_seal_publishes_sealed_hashes_idempotently_and_refuses_changes(env, capsys):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    after = K10 + timedelta(days=4)
+    assert env.main_(env.argv("seal", after)) == runner.EXIT_REFUSED  # the scorer has not sealed the week
+    assert env.main_(env.argv("seal-check", after)) == runner.EXIT_RETRY
+    sealed = env.write_sealed(10)
+    assert env.main_(env.argv("seal", after)) == runner.EXIT_OK
+    published = json.loads(env.remote_blob("2026w10/sealed_hashes.json"))
+    assert published["sealed_file_sha256"] == core.sha256_file(sealed)
+    assert published["entries"] == core.parse_sha256_file(sealed.read_text(encoding="utf-8"))
+    assert published["sealed_file"] == "data/livetest/scoring/sealed/2026w10.sha256"
+    head = git("rev-parse", "livetest-2026", cwd=env.remote)
+    assert "| yes |" in env.remote_blob("STATUS.md").decode()  # sealed column
+    record = json.loads((env.data / "livetest" / "runner" / "2026w10" / "seal_record.json").read_text())
+    assert record["ok"] and record["commit_sha"] == head
+    assert env.main_(env.argv("seal", after + timedelta(hours=1))) == runner.EXIT_OK  # idempotent
+    assert git("rev-parse", "livetest-2026", cwd=env.remote) == head
+    capsys.readouterr()
+    assert env.main_(env.argv("seal-check", after + timedelta(hours=2))) == runner.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    # a changed local sealed file is never pushed over the published hashes
+    sealed.write_text("f" * 64 + "  2026_w10_part.parquet\n", encoding="utf-8")
+    assert env.main_(env.argv("seal", after + timedelta(hours=3))) == runner.EXIT_INTEGRITY
+    assert env.alerts()[-1]["kind"] == "integrity"
+    assert git("rev-parse", "livetest-2026", cwd=env.remote) == head
+    capsys.readouterr()
+    assert env.main_(env.argv("seal-check", after + timedelta(hours=4))) == runner.EXIT_INTEGRITY
+    assert any("different sealed file" in p for p in json.loads(capsys.readouterr().out)["problems"])
+
+
+def test_score_week_runs_the_scorer_for_the_oldest_unsealed_week_then_seals(env):
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    scorer_calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        if "ffml.eval.livetest_score" in cmd:
+            scorer_calls.append(list(cmd))
+            env.write_sealed(10)
+            return subprocess.CompletedProcess(cmd, 0, "scored 2026w10\n", "")
+        return subprocess.run(cmd, **kwargs)
+
+    deps = runner.Deps(live_schedule=None, run=fake_run)
+    after = K10 + timedelta(days=4)
+    assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None), deps) == runner.EXIT_RETRY
+    assert not scorer_calls and '"status": "week not final yet"' in env.logs()  # games still scheduled
+    env.mark_final(10)
+    assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None), deps) == runner.EXIT_OK
+    assert scorer_calls and scorer_calls[0][-2:] == ["--week", "2026w10"]
+    assert env.remote_blob("2026w10/sealed_hashes.json") is not None
+    assert env.main_(env.argv("score-week", after + timedelta(hours=2), "--skip-refresh", week=None), deps) == runner.EXIT_OK
+    assert len(scorer_calls) == 1  # nothing left to do: week 10 is sealed, week 11 has not kicked off
+    assert '"status": "nothing to do"' in env.logs()
+
+    def failing_run(cmd, **kwargs):
+        if "ffml.eval.livetest_score" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, "", "not final")
+        return subprocess.run(cmd, **kwargs)
+
+    K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
+    assert env.main_(env.argv("run", K11 - timedelta(hours=9), week=11)) == runner.EXIT_OK
+    env.mark_final(11)
+    code = env.main_(env.argv("score-week", K11 + timedelta(days=4), "--skip-refresh", week=None),
+                     runner.Deps(live_schedule=None, run=failing_run))
+    assert code == runner.EXIT_RETRY and env.alerts()[-1]["kind"] == "scoring_failure"
+    assert env.remote_blob("2026w11/sealed_hashes.json") is None
 
 
 def test_dry_run_branch_pushes_elsewhere_and_force_fail_proves_alert_and_retry(env):

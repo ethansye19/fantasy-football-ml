@@ -45,6 +45,9 @@ SUMMARY_NAME = "player_summary.parquet"
 MISSED_NAME = "MISSED.json"
 LATE_DIR = "late"  # <week>/late/commitment.json: built before kickoff, pushed after it
 STATUS_NAME = "STATUS.md"
+SEALED_NAME = "sealed_hashes.json"  # <week>/sealed_hashes.json: SHA-256 of the week's sealed metric parts
+SEALED_SUBDIR = ("livetest", "scoring", "sealed")  # <data_dir>/livetest/scoring/sealed/<week>.sha256
+PREREGISTRATION_DOC = Path("docs") / "status" / "livetest-preregistration-2026.md"
 MUTABLE_FILES = frozenset({"README.md", STATUS_NAME})  # everything else on the branch is immutable
 SUMMARY_MAX_BYTES = 5 * 1024 * 1024
 TENTATIVE_LEAD = timedelta(hours=24)
@@ -67,15 +70,19 @@ Layout:
   this branch at the first kickoff. It carries the reason
   (`technical_failure` with the last error, or `machine_offline` when no
   runner log exists in the 25 hours before kickoff), the runner log excerpt,
-  the miss number and the test state.
+  the miss number, the allowed count and the test state.
 - `<season>w<week>/late/commitment.json`: a commitment built before kickoff
   but pushed after it. Projections that exist are never withheld; a late
   commitment is not part of the test.
+- `<season>w<week>/sealed_hashes.json`: the SHA-256 of the week's sealed
+  metric parts, published after the week is scored. The parts themselves
+  stay local and sealed until the final evaluation.
 - `STATUS.md`: the per-week state, regenerated at every push.
 - `rehearsal/...`: rehearsal commitments. They are not part of the test.
 
-Missed weeks (D-106): one miss is allowed; it is excluded from scoring and
-the window is not extended. A second miss makes the test INVALID. The
+Missed weeks (D-106, D-111): up to {allowed} missed weeks are excluded from
+scoring without extending the window; one more makes the test INVALID. The
+allowed count comes from the pre-registration (`missed_weeks.allowed`). The
 deadline is the official first kickoff of the week, including Thanksgiving
 and other early games.
 
@@ -87,6 +94,11 @@ Outputs are labeled "not approved" and are never shown in the app (D-099).
 Pushed by `scripts/livetest_week.py`; never force-pushed. Only `README.md`
 and `STATUS.md` are ever rewritten; every other file is immutable.
 """
+
+
+def branch_readme(allowed: int | None) -> str:
+    """The branch README with the allowed miss count filled in."""
+    return BRANCH_README.replace("{allowed}", str(allowed) if allowed is not None else "the pre-registered number of")
 
 
 class LivetestError(RuntimeError):
@@ -319,6 +331,67 @@ def sha256_file(path: Path | str, chunk: int = 1 << 20) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+_JSON_FENCE = re.compile(r"```json[^\n]*\n(.*?)```", re.DOTALL)
+
+
+def load_preregistration(path: Path | str) -> dict[str, Any]:
+    """The pre-registration as a dict: a ``.json`` file, or the first fenced JSON block of a ``.md``."""
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() != ".json":
+        match = _JSON_FENCE.search(text)
+        if match is None:
+            raise ValueError(f"{path} has no fenced JSON block")
+        text = match.group(1)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: the pre-registration is not a JSON object")
+    return data
+
+
+def misses_allowed_from(prereg: Mapping[str, Any]) -> int:
+    """``missed_weeks.allowed`` from the pre-registration (D-111: 2)."""
+    block = prereg.get("missed_weeks")
+    if not isinstance(block, Mapping) or "allowed" not in block:
+        raise ValueError("the pre-registration has no missed_weeks.allowed")
+    allowed = block["allowed"]
+    if isinstance(allowed, bool) or not isinstance(allowed, int) or allowed < 0:
+        raise ValueError(f"missed_weeks.allowed must be a non-negative integer, got {allowed!r}")
+    return allowed
+
+
+_SHA_LINE = re.compile(r"^([0-9a-fA-F]{64})(?:\s+\*?(.+?))?\s*$")
+
+
+def parse_sha256_file(text: str) -> dict[str, str]:
+    """``name -> sha256`` from a ``.sha256`` file: ``sha256sum`` lines, a JSON object, or bare hashes."""
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        data = json.loads(stripped)
+        if not isinstance(data, Mapping):
+            raise ValueError("sealed hash file: JSON is not an object")
+        out = {}
+        for name, value in data.items():
+            if isinstance(value, Mapping):
+                value = value.get("sha256")
+            if not isinstance(value, str) or not _HEX64.match(value.lower()):
+                raise ValueError(f"sealed hash file: {name!r} has no sha256")
+            out[str(name)] = value.lower()
+        return out
+    out = {}
+    for n, line in enumerate(stripped.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _SHA_LINE.match(line)
+        if match is None:
+            raise ValueError(f"sealed hash file: line {n} is not '<sha256>  <name>': {line[:60]!r}")
+        out[(match.group(2) or f"line{n}").strip()] = match.group(1).lower()
+    if not out:
+        raise ValueError("sealed hash file is empty")
+    return out
 
 
 def canonical_digest(data: Mapping[str, Any], exclude: str | None = "digest") -> str:
@@ -915,14 +988,16 @@ class CommitmentsRepo:
             return []
         return self.git("ls-tree", "-r", "--name-only", self.remote_ref).stdout.splitlines()
 
-    def commit(self, files: Mapping[str, bytes], message: str, *, allow_overwrite: bool = False) -> str | None:
+    def commit(self, files: Mapping[str, bytes], message: str, *, allow_overwrite: bool = False,
+               readme: str | None = None) -> str | None:
         """Write ``files`` (branch path -> bytes), commit them, return the sha (None if unchanged).
 
         Commitment files are immutable: a path that already holds different
         bytes is refused, except ``README.md`` and ``STATUS.md`` (regenerated
         text) or when ``allow_overwrite`` is set (dry-run branches only).
+        ``readme`` replaces the default README text (the allowed miss count).
         """
-        extras = {"README.md": BRANCH_README.encode()}
+        extras = {"README.md": (readme or branch_readme(None)).encode()}
         if not (self.worktree / ".gitattributes").exists():
             extras[".gitattributes"] = BRANCH_GITATTRIBUTES.encode()
         to_add: list[str] = []

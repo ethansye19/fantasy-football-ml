@@ -51,6 +51,7 @@ KINDS: dict[str, str] = {
     "missed_commitment": "no pushed commitment before kickoff",
     "stale_predictions": "predictions are stale",
     "integrity": "integrity check failed",
+    "scoring_failure": "weekly scoring or sealed-hash publication failed",
     "schedule_drift": "schedule changed since the tasks were registered",
     "test": "test alert",
     "info": "information",

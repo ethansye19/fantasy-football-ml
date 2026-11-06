@@ -28,6 +28,9 @@ Commands::
     python scripts/livetest_week.py status [--json]
     python scripts/livetest_week.py verify --season S --week W [--rehearsal]
     python scripts/livetest_week.py run --dry-run-branch livetest-dryrun [--force-fail refresh|build|push] ...
+    python scripts/livetest_week.py score-week [--season S --week W] [--skip-refresh]
+    python scripts/livetest_week.py seal --season S --week W
+    python scripts/livetest_week.py seal-check --season S --week W
 
 Exit codes: 0 done or nothing to do; 1 failed, retry later; 2 build blocked
 or pin refused; 3 missed (too late for this week); 4 refused (bad arguments
@@ -41,14 +44,23 @@ starts after K - 3 h (the build then uses the newest snapshots, with an
 alert); no refresh or build starts after K - 30 min; no push starts after
 K - 5 min; nothing counts for the week after K.
 
-Missed weeks (D-106): after K, a week without a pushed commitment gets
+Missed weeks (D-106, D-111): after K, a week without a pushed commitment gets
 ``<week>/MISSED.json`` on the branch with the reason (``technical_failure``
 with the last error, or ``machine_offline`` when no runner log exists in the
-window), the log excerpt, the miss number and the test state (one miss is
-excluded from scoring without extending the window; a second makes the test
-INVALID). A commitment built before K but not pushed in time is pushed under
+window), the log excerpt, the miss number, the allowed count and the test
+state. The allowed count is read from the pre-registration
+(``missed_weeks.allowed``, 2 under D-111): that many misses are excluded from
+scoring without extending the window, one more makes the test INVALID. A
+commitment built before K but not pushed in time is pushed under
 ``<week>/late/`` so projections that exist are never withheld. ``STATUS.md``
 on the branch is regenerated at every push.
+
+Sealed hashes (pre-registration ``sealed_interim``): after the Evaluator's
+scorer seals a week (``data/livetest/scoring/sealed/<week>.sha256``),
+``seal`` publishes those hashes as ``<week>/sealed_hashes.json`` on the branch,
+idempotently; ``seal-check`` compares the branch copy with the local sealed
+files; ``score-week`` is the Tuesday job: refresh, the Evaluator's scorer for
+the oldest unsealed committed week, then ``seal``.
 
 Dry runs (D-107): ``--dry-run-branch <name>`` pushes to that branch only
 (never ``livetest-2026``), builds in the rehearsal sandbox without deadlines,
@@ -91,7 +103,6 @@ REFRESH_STEPS = ("ingest", "sleeper", "process", "validate", "features")
 ALERT_COOLDOWN_MINUTES = 120.0
 RESULT_PREFIX = "REFRESH_RESULT "
 FORCE_FAIL_STEPS = ("refresh", "build", "push")
-MISSES_ALLOWED = 1  # D-106: one miss is excluded; a second makes the test INVALID
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +147,14 @@ class Config:
     dry_run_branch: str | None = None  # push to this branch only; implies the rehearsal sandbox
     real_branch: str = core.DEFAULT_BRANCH
     force_fail: str | None = None  # dry-run branch only
+    preregistration: Path | None = None  # the pre-registration (JSON, or the fenced block of the .md)
+    misses_allowed: int | None = None  # missed_weeks.allowed from the pre-registration (D-111: 2)
+    misses_allowed_error: str | None = None
+    scorer_timeout_minutes: float = 180.0
+
+    @property
+    def sealed_dir(self) -> Path:
+        return self.data_dir.joinpath(*core.SEALED_SUBDIR)
 
     @property
     def livetest_dir(self) -> Path:
@@ -630,10 +649,20 @@ def miss_reason(cfg: Config, wk: core.WeekKickoff, t: dict[str, datetime],
     return {"category": "technical_failure", "detail": detail}, record
 
 
+def require_allowed(run: Run) -> int:
+    """The allowed miss count; a real run refuses without a readable pre-registration."""
+    cfg = run.cfg
+    if cfg.misses_allowed is not None:
+        return cfg.misses_allowed
+    raise run.abort(EXIT_REFUSED, "preregistration",
+                    f"missed_weeks.allowed is not available: {cfg.misses_allowed_error or 'no pre-registration'} "
+                    "(pass --preregistration, or init with it)")
+
+
 def missed_marker(run: Run, wk: core.WeekKickoff, t: dict[str, datetime], local: core.Commitment | None,
-                  miss_number: int, earlier: list[str]) -> dict[str, Any]:
+                  miss_number: int, earlier: list[str], allowed: int) -> dict[str, Any]:
     reason, logs = miss_reason(run.cfg, wk, t, local)
-    invalid = miss_number > MISSES_ALLOWED
+    invalid = miss_number > allowed
     local_info: dict[str, Any] = {"exists": local is not None}
     if local is not None:
         local_info.update(
@@ -652,22 +681,24 @@ def missed_marker(run: Run, wk: core.WeekKickoff, t: dict[str, datetime], local:
         "local_commitment": local_info,
         "late_commitment": None,
         "miss_number": miss_number,
-        "misses_allowed": MISSES_ALLOWED,
+        "allowed": allowed,
         "earlier_misses": earlier,
         "test_status": (
-            "INVALID: second miss; the test is invalid (D-106)" if invalid
-            else "VALID: first miss; this week is excluded from scoring and the window is not extended (D-106)"
+            f"INVALID: miss {miss_number} of {allowed} allowed; the test is invalid (D-106, D-111)" if invalid
+            else f"VALID: miss {miss_number} of {allowed} allowed; this week is excluded from scoring and the "
+                 "window is not extended (D-106, D-111)"
         ),
     }
 
 
 def branch_status_markdown(cfg: Config, repo: core.CommitmentsRepo, test_weeks: list[core.WeekKickoff],
-                           now: datetime, pending: dict[str, dict[str, Any]] | None = None,
-                           pushed_now: str | None = None) -> str:
-    """``STATUS.md`` for the branch: one row per test week, misses and the test state (D-106)."""
+                           now: datetime, allowed: int, pending: dict[str, dict[str, Any]] | None = None,
+                           pushed_now: str | None = None, sealed_now: str | None = None) -> str:
+    """``STATUS.md`` for the branch: one row per test week, misses, sealing and the test state (D-106, D-111)."""
     rows, misses = [], []
     for w in test_weeks:
         committed = pushed_now == w.key or repo.remote_blob(f"{w.key}/{core.COMMITMENT_NAME}") is not None
+        sealed = sealed_now == w.key or repo.remote_blob(f"{w.key}/{core.SEALED_NAME}") is not None
         marker = (pending or {}).get(w.key)
         if marker is None:
             blob = repo.remote_blob(f"{w.key}/{core.MISSED_NAME}")
@@ -686,8 +717,9 @@ def branch_status_markdown(cfg: Config, repo: core.CommitmentsRepo, test_weeks: 
         else:
             state = "open" if w.first_kickoff_utc > now else "kicked off, not yet recorded"
         reason = ((marker or {}).get("reason") or {}).get("category", "") if marker else ""
-        rows.append(f"| {w.key} | {core.iso(w.first_kickoff_utc)} | {state} | {reason} | {'yes' if late else ''} |")
-    invalid = len(misses) > MISSES_ALLOWED
+        rows.append(f"| {w.key} | {core.iso(w.first_kickoff_utc)} | {state} | {reason} | {'yes' if late else ''} | "
+                    f"{'yes' if sealed else ''} |")
+    invalid = len(misses) > allowed
     season = test_weeks[0].season if test_weeks else cfg.test_season
     weeks = f"{test_weeks[0].week}-{test_weeks[-1].week}" if test_weeks else ""
     return "\n".join([
@@ -695,15 +727,17 @@ def branch_status_markdown(cfg: Config, repo: core.CommitmentsRepo, test_weeks: 
         "",
         f"Generated by scripts/livetest_week.py at {core.iso(now)}. Season {season}, weeks {weeks}.",
         "",
-        f"**Misses: {len(misses)}** ({', '.join(misses) if misses else 'none'}); allowed: {MISSES_ALLOWED}. "
-        f"**Test state: {'INVALID (D-106: more than one miss)' if invalid else 'VALID'}.**",
+        f"**Misses: {len(misses)}** ({', '.join(misses) if misses else 'none'}); allowed: {allowed}. "
+        f"**Test state: {f'INVALID (D-106, D-111: more than {allowed} misses)' if invalid else 'VALID'}.**",
         "",
-        "A missed week is excluded from scoring and the window is not extended; a second miss makes the",
-        "test invalid (D-106). A late commitment was built before kickoff and pushed after it; it is not",
-        "part of the test.",
+        f"Up to {allowed} missed weeks are excluded from scoring without extending the window; one more makes",
+        "the test invalid (D-106, D-111; the allowed count is the pre-registration's missed_weeks.allowed).",
+        "A late commitment was built before kickoff and pushed after it; it is not part of the test.",
+        "Sealed means the SHA-256 of the week's sealed metric parts is published here; the parts stay",
+        "sealed until the final evaluation.",
         "",
-        "| week | first kickoff (UTC) | state | missed: reason | late commitment |",
-        "| --- | --- | --- | --- | --- |",
+        "| week | first kickoff (UTC) | state | missed: reason | late commitment | sealed |",
+        "| --- | --- | --- | --- | --- | --- |",
         *rows,
         "",
     ])
@@ -720,6 +754,7 @@ def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.Commitments
     due = [w for w in test_weeks if w.first_kickoff_utc <= now]
     if not due:
         return []
+    allowed = require_allowed(run)
     repo = repo or run.repo()
     if remote_state(run, repo, create=True) is None:
         run.log.event("misses", "skipped", message="remote unreachable; cannot tell what was pushed")
@@ -741,7 +776,7 @@ def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.Commitments
                 local = core.load_commitment(path)
             except (ValueError, OSError) as exc:
                 run.log.event("misses", "local commitment unreadable", week=wk.key, message=str(exc))
-        marker = missed_marker(run, wk, t, local, miss_number, earlier)
+        marker = missed_marker(run, wk, t, local, miss_number, earlier, allowed)
         files: dict[str, bytes] = {}
         if local is not None and local.created_at is not None and local.created_at < wk.first_kickoff_utc:
             v = core.verify_commitment(local, roots=roots(cfg, wk), season=wk.season, week=wk.week,
@@ -762,9 +797,9 @@ def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.Commitments
                         "(D-106: projections that exist are never withheld)",
             }
         files[f"{wk.key}/{core.MISSED_NAME}"] = (json.dumps(marker, indent=2) + "\n").encode("utf-8")
-        title = f"livetest {wk.key}: MISSED ({marker['reason']['category']}), miss {miss_number} of {MISSES_ALLOWED} allowed"
-        if miss_number > MISSES_ALLOWED:
-            title += "; TEST INVALID (D-106)"
+        title = f"livetest {wk.key}: MISSED ({marker['reason']['category']}), miss {miss_number} of {allowed} allowed"
+        if miss_number > allowed:
+            title += "; TEST INVALID (D-106, D-111)"
         message = (
             f"{title}\n\nfirst kickoff: {core.iso(wk.first_kickoff_utc)}\nreason: {marker['reason']['detail']}\n"
             f"late commitment: {(marker.get('late_commitment') or {}).get('sha256')}\n"
@@ -773,8 +808,8 @@ def record_misses(run: Run, plan: list[core.WeekKickoff], repo: core.Commitments
         try:
             repo.sync()
             files[core.STATUS_NAME] = branch_status_markdown(
-                cfg, repo, test_weeks, now, pending={wk.key: marker}).encode("utf-8")
-            sha = repo.commit(files, message)
+                cfg, repo, test_weeks, now, allowed, pending={wk.key: marker}).encode("utf-8")
+            sha = repo.commit(files, message, readme=core.branch_readme(allowed))
             push = repo.push(clock=run.now, sleep=run.deps.sleep)
         except core.GitError as exc:
             run.log.event("misses", "failed", week=wk.key, message=str(exc))
@@ -1063,11 +1098,15 @@ def attempt(run: Run) -> int:
         raise run.abort(EXIT_RETRY, "push", f"{key}: remote unreachable; will retry", alert_kind="push_failure", key=key)
     try:
         sync = repo.sync()
+        readme = None
         if not cfg.rehearsal:
+            allowed = require_allowed(run)
             test_weeks = [w for w in plan if w.season == cfg.test_season and w.week in cfg.weeks]
             files[core.STATUS_NAME] = branch_status_markdown(
-                cfg, repo, test_weeks, run.now(), pushed_now=wk.key).encode("utf-8")
-        sha = repo.commit(files, commit_message(cfg, wk, c, run, refresh), allow_overwrite=bool(cfg.dry_run_branch))
+                cfg, repo, test_weeks, run.now(), allowed, pushed_now=wk.key).encode("utf-8")
+            readme = core.branch_readme(allowed)
+        sha = repo.commit(files, commit_message(cfg, wk, c, run, refresh), allow_overwrite=bool(cfg.dry_run_branch),
+                          readme=readme)
         if sha is None:
             sha = repo.head()
             for rel, data in files.items():
@@ -1218,7 +1257,14 @@ def export_schedule(cfg: Config, rows: list[dict[str, Any]], now: datetime, path
             for r in rows
         ],
     }
-    core.write_json(path, payload)
+    existing = core.read_json(path) or {}
+    same = {k: existing.get(k) for k in ("season", "test_weeks", "weeks")} == \
+        {k: payload[k] for k in ("season", "test_weeks", "weeks")}
+    if same:
+        payload = existing
+        payload["unchanged"] = True
+    else:
+        core.write_json(path, payload)
     return payload
 
 
@@ -1233,8 +1279,9 @@ def cmd_plan(cfg: Config, deps: Deps, as_json: bool, save: bool, export: Path | 
     if save:
         core.write_json(cfg.livetest_dir / "schedule_plan.json", {"saved_at": core.iso(run.now()), "weeks": rows})
     if export is not None:
-        export_schedule(cfg, rows, run.now(), export)
-        print(f"schedule exported to {export} ({len(rows)} weeks)", file=sys.stderr)
+        exported = export_schedule(cfg, rows, run.now(), export)
+        state = "unchanged" if exported.get("unchanged") else "written"
+        print(f"schedule {state}: {export} ({len(rows)} weeks)", file=sys.stderr)
     if as_json:
         print(json.dumps(rows, indent=2))
     else:
@@ -1282,6 +1329,9 @@ def cmd_check(cfg: Config, deps: Deps) -> int:
     except core.LockBusy as exc:
         marked = []
         run.log.event("misses", "skipped", message=str(exc))
+    except Abort as exc:  # e.g. no readable pre-registration: refuse, never guess the allowed count
+        marked = []
+        code = exc.code
     run.log.event("summary", "exit", exit_code=code, misses_marked=marked)
     return code
 
@@ -1292,11 +1342,12 @@ def week_status(cfg: Config, run: Run, repo: core.CommitmentsRepo | None, remote
     c = core.load_commitment(c_path) if c_path.exists() else None
     record = core.read_json(cfg.runner_dir(wk.season, wk.week) / "push_record.json") or {}
     prefix = branch_prefix(cfg, wk, c)
-    pushed = missed = late = None
+    pushed = missed = late = sealed = None
     missed_reason = test_state = None
     if remote is not None and repo is not None:
         blob = repo.remote_blob(f"{prefix}/{core.COMMITMENT_NAME}") if prefix else None
         pushed = blob is not None and (c is None or blob == c.raw)
+        sealed = repo.remote_blob(f"{wk.key}/{core.SEALED_NAME}") is not None
         missed_blob = repo.remote_blob(f"{wk.key}/{core.MISSED_NAME}")
         missed = missed_blob is not None
         if missed_blob:
@@ -1319,6 +1370,7 @@ def week_status(cfg: Config, run: Run, repo: core.CommitmentsRepo | None, remote
         "missed_marker": missed,
         "missed_reason": missed_reason,
         "late_commitment": late,
+        "sealed": sealed,
         "test_status": test_state,
         "commit_sha": record.get("commit_sha"),
     }
@@ -1339,22 +1391,334 @@ def cmd_status(cfg: Config, deps: Deps, as_json: bool) -> int:
     rows = [week_status(cfg, run, repo, remote, w) for w in plan
             if w.season == season and (not cfg.weeks or w.week in cfg.weeks)]
     misses = [r["week"] for r in rows if r["missed_marker"]]
-    test_state = "unknown (remote unreachable)" if remote is None else \
-        "INVALID (D-106: more than one miss)" if len(misses) > MISSES_ALLOWED else "VALID"
+    allowed = cfg.misses_allowed
+    if remote is None:
+        test_state = "unknown (remote unreachable)"
+    elif allowed is None:
+        test_state = f"unknown (no pre-registration: {cfg.misses_allowed_error})"
+    elif len(misses) > allowed:
+        test_state = f"INVALID (D-106, D-111: more than {allowed} misses)"
+    else:
+        test_state = "VALID"
     if as_json:
         print(json.dumps({"remote_reachable": remote is not None, "branch": cfg.branch, "weeks": rows,
-                          "misses": misses, "misses_allowed": MISSES_ALLOWED, "test_state": test_state}, indent=2))
+                          "misses": misses, "allowed": allowed, "test_state": test_state,
+                          "preregistration": str(cfg.preregistration) if cfg.preregistration else None}, indent=2))
     else:
         print(f"remote {cfg.remote}/{cfg.branch} reachable: {remote is not None}")
         print(f"{'week':<8} {'first kickoff UTC':<22} {'local':<13} {'pushed':<7} {'GitHub push time':<22} "
-              f"{'on time':<8} {'missed':<7} {'reason':<18} late")
+              f"{'on time':<8} {'missed':<7} {'reason':<18} {'late':<5} sealed")
         for r in rows:
             print(f"{r['week']:<8} {r['first_kickoff_utc']:<22} {str(r['local_commitment']):<13} {str(r['pushed']):<7} "
                   f"{str(r['github_push_timestamp']):<22} {str(r['on_time']):<8} {str(r['missed_marker']):<7} "
-                  f"{str(r['missed_reason'] or ''):<18} {r['late_commitment'] or ''}")
-        print(f"misses: {len(misses)} ({', '.join(misses) if misses else 'none'}); allowed {MISSES_ALLOWED}; "
-              f"test state: {test_state}")
+                  f"{str(r['missed_reason'] or ''):<18} {str(r['late_commitment'] or ''):<5} {r['sealed'] or ''}")
+        print(f"misses: {len(misses)} ({', '.join(misses) if misses else 'none'}); "
+              f"allowed {allowed if allowed is not None else '?'}; test state: {test_state}")
     return EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
+# seal, seal-check, score-week
+# --------------------------------------------------------------------------- #
+
+
+def read_sealed(cfg: Config, wk: core.WeekKickoff) -> tuple[Path, bytes, dict[str, str]]:
+    path = cfg.sealed_dir / f"{wk.key}.sha256"
+    raw = path.read_bytes()
+    return path, raw, core.parse_sha256_file(raw.decode("utf-8"))
+
+
+def verify_sealed_parts(cfg: Config, entries: dict[str, str]) -> dict[str, Any]:
+    """Re-hash the sealed part files the ``.sha256`` names, when they are present locally."""
+    checked, problems = {}, []
+    for name, expected in entries.items():
+        candidate = Path(name)
+        if not candidate.is_absolute():
+            candidate = cfg.sealed_dir / name
+        if not candidate.exists():
+            checked[name] = "not present locally"
+            continue
+        actual = core.sha256_file(candidate)
+        checked[name] = "ok" if actual == expected else "MISMATCH"
+        if actual != expected:
+            problems.append(f"{name}: local file hashes to {actual}, sealed hash is {expected}")
+    return {"checked": checked, "problems": problems}
+
+
+def sealed_payload(cfg: Config, wk: core.WeekKickoff, path: Path, raw: bytes, entries: dict[str, str],
+                   now: datetime) -> dict[str, Any]:
+    rel = path.resolve()
+    try:
+        rel_text = rel.relative_to(cfg.data_dir.resolve()).as_posix()
+        rel_text = f"data/{rel_text}"
+    except ValueError:
+        rel_text = rel.as_posix()
+    return {
+        "format": "ffml.livetest.sealed/1",
+        "season": wk.season,
+        "week": wk.week,
+        "sealed_file": rel_text,
+        "sealed_file_sha256": core.sha256_bytes(raw),
+        "entries": entries,
+        "raw": raw.decode("utf-8"),
+        "published_at": core.iso(now),
+        "note": "SHA-256 of the week's sealed metric parts written by the Evaluator's scorer; the parts stay local "
+                "and sealed until the final evaluation (pre-registration sealed_interim). Published by "
+                "scripts/livetest_week.py seal; immutable once pushed.",
+    }
+
+
+def _same_seal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return a.get("sealed_file_sha256") == b.get("sealed_file_sha256") and a.get("entries") == b.get("entries")
+
+
+def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> int:
+    """Publish ``<week>/sealed_hashes.json`` from the local sealed file; idempotent; immutable."""
+    cfg = run.cfg
+    key = wk.key
+    if cfg.rehearsal and not cfg.dry_run_branch:
+        raise run.abort(EXIT_REFUSED, "seal", "seal is not for rehearsals")
+    try:
+        path, raw, entries = read_sealed(cfg, wk)
+    except FileNotFoundError:
+        raise run.abort(EXIT_REFUSED, "seal", f"{key}: no sealed file {cfg.sealed_dir / (key + '.sha256')}; "
+                        "the Evaluator's scorer has not sealed this week") from None
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise run.abort(EXIT_INTEGRITY, "seal", f"{key}: sealed file unreadable: {exc}", alert_kind="integrity",
+                        key=f"{key}:seal", severity="critical") from None
+    parts = verify_sealed_parts(cfg, entries)
+    if parts["problems"]:
+        raise run.abort(EXIT_INTEGRITY, "seal", f"{key}: sealed parts do not match their hashes: "
+                        f"{parts['problems'][:3]}", alert_kind="integrity", key=f"{key}:seal", severity="critical")
+    payload = sealed_payload(cfg, wk, path, raw, entries, run.now())
+    run.log.event("seal", "local sealed file read", file=str(path), sha256=payload["sealed_file_sha256"],
+                  entries=len(entries), parts=parts["checked"])
+    repo = run.repo()
+    remote = remote_state(run, repo, create=True)
+    if remote is None:
+        raise run.abort(EXIT_RETRY, "seal", f"{key}: remote unreachable; will retry", alert_kind="scoring_failure",
+                        key=f"{key}:seal")
+    rel = f"{key}/{core.SEALED_NAME}"
+    blob = repo.remote_blob(rel) if remote else None
+    if blob is not None:
+        try:
+            existing = json.loads(blob)
+        except ValueError:
+            existing = {}
+        if _same_seal(existing, payload):
+            run.log.event("seal", "already published", path=rel, sha256=payload["sealed_file_sha256"])
+            return EXIT_OK
+        raise run.abort(EXIT_INTEGRITY, "seal", f"{key}: the branch already holds different sealed hashes "
+                        f"({existing.get('sealed_file_sha256')} vs local {payload['sealed_file_sha256']}); sealed "
+                        "hashes are immutable", alert_kind="integrity", key=f"{key}:seal", severity="critical")
+    if cfg.no_push or cfg.dry_run:
+        run.log.event("seal", "skipped", message="--no-push or --dry-run", path=rel)
+        return EXIT_OK
+    files = {rel: (json.dumps(payload, indent=2) + "\n").encode("utf-8")}
+    readme = None
+    if not cfg.dry_run_branch:
+        allowed = require_allowed(run)
+        test_weeks = [w for w in plan if w.season == cfg.test_season and w.week in cfg.weeks]
+        files[core.STATUS_NAME] = branch_status_markdown(
+            cfg, repo, test_weeks, run.now(), allowed, sealed_now=key).encode("utf-8")
+        readme = core.branch_readme(allowed)
+    message = (f"livetest {key}: sealed hashes of the scored week\n\nsealed file sha256: "
+               f"{payload['sealed_file_sha256']}\nentries: {len(entries)}\npublished by: scripts/livetest_week.py seal\n"
+               + ("\n" + "\n".join(cfg.trailers) + "\n" if cfg.trailers else ""))
+    try:
+        repo.sync()
+        sha = repo.commit(files, message, readme=readme) or repo.head()
+        push = repo.push(clock=run.now, sleep=run.deps.sleep)
+    except core.GitError as exc:
+        raise run.abort(EXIT_RETRY, "seal", f"{key}: {exc}", alert_kind="scoring_failure", key=f"{key}:seal") from None
+    record: dict[str, Any] = {"season": wk.season, "week": wk.week, "branch": cfg.branch, "path": rel,
+                              "commit_sha": sha, "sealed_file_sha256": payload["sealed_file_sha256"],
+                              "entries": entries, "push": push, "ok": push.get("ok"), "recorded_at": core.iso(run.now())}
+    try:
+        record["ls_remote_sha"] = repo.ls_remote()
+    except core.GitError as exc:
+        record["ls_remote_error"] = str(exc)
+    gh_remote = core.parse_github_remote(repo.remote_url())
+    if cfg.github and gh_remote and push.get("ok"):
+        record["github"] = run.deps.github_view(gh_remote[0], gh_remote[1], cfg.branch, sha, sleep=run.deps.sleep)
+        stamp = core.parse_time(((record["github"] or {}).get("push_activity") or {}).get("timestamp"))
+        record["external_timestamp"] = core.iso(stamp) if stamp else None
+    core.write_json(cfg.runner_dir(wk.season, wk.week) / "seal_record.json", record)
+    run.log.event("seal", "pushed" if push.get("ok") else "push failed", commit=sha, path=rel,
+                  external_timestamp=record.get("external_timestamp"))
+    if not push.get("ok"):
+        raise run.abort(EXIT_RETRY, "seal", f"{key}: push failed", alert_kind="scoring_failure", key=f"{key}:seal")
+    check = repo.remote_blob(rel) if repo.fetch() else None
+    if check is None or not _same_seal(json.loads(check), payload):
+        run.alert("integrity", f"{key}: the pushed sealed hashes do not match the local file", key=f"{key}:seal-post",
+                  severity="critical")
+        return EXIT_INTEGRITY
+    return EXIT_OK
+
+
+def seal_check(run: Run, wk: core.WeekKickoff) -> int:
+    """Compare the branch copy of the sealed hashes with the local sealed file and parts."""
+    cfg = run.cfg
+    key = wk.key
+    result: dict[str, Any] = {"week": key, "ok": True, "problems": [], "branch": cfg.branch}
+    try:
+        path, raw, entries = read_sealed(cfg, wk)
+        result["local"] = {"file": str(path), "sha256": core.sha256_bytes(raw), "entries": len(entries)}
+        parts = verify_sealed_parts(cfg, entries)
+        result["parts"] = parts["checked"]
+        result["problems"] += parts["problems"]
+    except FileNotFoundError:
+        raw, entries = b"", {}
+        result["local"] = None
+        result["problems"].append("no local sealed file")
+    except ValueError as exc:
+        raw, entries = b"", {}
+        result["local"] = None
+        result["problems"].append(f"local sealed file unreadable: {exc}")
+    repo = run.repo()
+    remote = remote_state(run, repo)
+    blob = repo.remote_blob(f"{key}/{core.SEALED_NAME}") if remote else None
+    if remote is None:
+        result["problems"].append("remote unreachable")
+    elif blob is None:
+        result["branch_copy"] = None
+        result["problems"].append("not sealed on the branch")
+    else:
+        try:
+            published = json.loads(blob)
+        except ValueError:
+            published = {}
+            result["problems"].append("branch copy is not valid JSON")
+        result["branch_copy"] = {k: published.get(k) for k in ("sealed_file_sha256", "published_at")}
+        if raw and published.get("sealed_file_sha256") != core.sha256_bytes(raw):
+            result["problems"].append("the branch copy was made from a different sealed file than the local one")
+        if entries and published.get("entries") != entries:
+            result["problems"].append("the branch entries differ from the local sealed file")
+    result["ok"] = not result["problems"]
+    result["checked_at"] = core.iso(run.now())
+    core.write_json(cfg.runner_dir(wk.season, wk.week) / "seal_check.json", result)
+    print(json.dumps(result, indent=2))
+    run.log.event("seal-check", "ok" if result["ok"] else "problems", problems=result["problems"])
+    if not result["ok"] and any("differ" in p or "different" in p or "MISMATCH" in p or "unreadable" in p
+                                for p in result["problems"]):
+        run.alert("integrity", f"{key}: sealed hashes check failed: {result['problems'][:3]}", key=f"{key}:seal-check",
+                  severity="critical")
+        return EXIT_INTEGRITY
+    return EXIT_OK if result["ok"] else EXIT_RETRY
+
+
+def cmd_seal(cfg: Config, deps: Deps, check_only: bool) -> int:
+    name = "seal_check" if check_only else "seal"
+    run = Run(cfg, deps, f"{_mode_prefix(cfg)}{core.week_key(cfg.season, cfg.week)}_{name}", echo=not check_only)
+    try:
+        plan = load_plan(run, season_hint=cfg.season, live=False)
+        wk = select_week(run, plan)
+        with core.RunLock(cfg.livetest_dir / ".runner.lock"):
+            code = seal_check(run, wk) if check_only else seal_week(run, wk, plan)
+    except Abort as exc:
+        code = exc.code
+    except core.LockBusy as exc:
+        run.log.event("lock", "busy", message=str(exc))
+        code = EXIT_RETRY
+    run.log.event("summary", "exit", exit_code=code)
+    return code
+
+
+def week_is_final(cfg: Config, wk: core.WeekKickoff) -> tuple[bool, list[str]]:
+    import polars as pl
+
+    dim = core.load_dim_game(cfg.data_dir, [wk.season])
+    pending = dim.filter((pl.col("game_type") == "REG") & (pl.col("week") == wk.week) & (pl.col("status") != "final"))
+    return pending.height == 0, pending["game_id"].to_list()
+
+
+def pick_week_to_score(run: Run, plan: list[core.WeekKickoff], repo: core.CommitmentsRepo) -> core.WeekKickoff | None:
+    """The oldest test week that kicked off, has a commitment on the branch and no sealed hashes yet."""
+    cfg = run.cfg
+    now = run.now()
+    for w in plan:
+        if w.season != cfg.test_season or w.week not in cfg.weeks or w.first_kickoff_utc > now:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.SEALED_NAME}") is not None:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.MISSED_NAME}") is not None:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.COMMITMENT_NAME}") is None:
+            continue
+        return w
+    return None
+
+
+def score_week(run: Run) -> int:
+    """Tuesday job: refresh, the Evaluator's scorer for the oldest unsealed committed week, then seal."""
+    cfg = run.cfg
+    if cfg.rehearsal and not cfg.dry_run_branch:
+        raise run.abort(EXIT_REFUSED, "score", "score-week is not for rehearsals")
+    plan = load_plan(run, season_hint=cfg.season or cfg.test_season, live=False)
+    if cfg.test_season is None or not cfg.weeks:
+        raise run.abort(EXIT_REFUSED, "score", "the test window is not initialised; run `init` first")
+    repo = run.repo()
+    if remote_state(run, repo, create=True) is None:
+        raise run.abort(EXIT_RETRY, "score", "remote unreachable; will retry", alert_kind="scoring_failure", key="score")
+    wk = select_week(run, plan) if cfg.season is not None else pick_week_to_score(run, plan, repo)
+    if wk is None:
+        run.log.event("score", "nothing to do", message="every committed week that kicked off is sealed")
+        return EXIT_OK
+    key = wk.key
+    if repo.remote_blob(f"{key}/{core.SEALED_NAME}") is not None:
+        run.log.event("score", "already sealed", week=key)
+        return EXIT_OK
+    state = load_state(cfg, wk)
+    if not cfg.skip_refresh:
+        refresh = run_refresh(run, wk, state)
+        if refresh["status"] == "failed":
+            raise run.abort(EXIT_RETRY, "score", f"{key}: refresh failed before scoring; will retry",
+                            alert_kind="refresh_failure", key=f"{key}:score")
+    final, pending = week_is_final(cfg, wk)
+    if not final:
+        run.log.event("score", "week not final yet", week=key, not_final=pending[:8])
+        run.log.event("summary", "exit", exit_code=EXIT_RETRY)
+        return EXIT_RETRY
+    sealed_path = cfg.sealed_dir / f"{key}.sha256"
+    if not sealed_path.exists():
+        cmd = [str(cfg.python), "-m", "ffml.eval.livetest_score", "--week", key]
+        run.log.event("score", "scorer started", cmd=cmd, cwd=str(cfg.code_cwd))
+        t0 = time.perf_counter()
+        try:
+            proc = run.deps.run(cmd, cwd=str(cfg.code_cwd), env=cfg.child_env(), capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=cfg.scorer_timeout_minutes * 60)
+            code, out, err = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            code, out, err = -9, _tail(exc.stdout), f"timed out after {cfg.scorer_timeout_minutes} min"
+        except OSError as exc:
+            code, out, err = -1, "", f"{type(exc).__name__}: {exc}"
+        run.log.event("score", "scorer finished", returncode=code, seconds=round(time.perf_counter() - t0, 1),
+                      stdout_tail=_tail(out, 800), stderr_tail=_tail(err))
+        if code != 0:
+            raise run.abort(EXIT_RETRY, "score", f"{key}: the scorer exited {code}; will retry",
+                            alert_kind="scoring_failure", key=f"{key}:score", stderr_tail=_tail(err, 400))
+        if not sealed_path.exists():
+            raise run.abort(EXIT_RETRY, "score", f"{key}: the scorer exited 0 but wrote no {sealed_path.name}; "
+                            "nothing to seal", alert_kind="scoring_failure", key=f"{key}:score", severity="warning")
+    return seal_week(run, wk, plan)
+
+
+def cmd_score_week(cfg: Config, deps: Deps) -> int:
+    run = Run(cfg, deps, f"{_mode_prefix(cfg)}{_label_key(cfg)}_score")
+    try:
+        with core.RunLock(cfg.livetest_dir / ".runner.lock"):
+            code = score_week(run)
+    except Abort as exc:
+        code = exc.code
+    except core.LockBusy as exc:
+        run.log.event("lock", "busy", message=str(exc))
+        code = EXIT_RETRY
+    except Exception as exc:  # unexpected: log, alert, retry later
+        run.log.event("error", "unexpected", message=f"{type(exc).__name__}: {exc}")
+        run.alert("scoring_failure", f"score-week crashed: {type(exc).__name__}: {exc}", key="score-crash")
+        code = EXIT_RETRY
+    run.log.event("summary", "exit", exit_code=code)
+    return code
 
 
 def cmd_verify(cfg: Config, deps: Deps) -> int:
@@ -1404,6 +1768,8 @@ def cmd_init(args: argparse.Namespace, cfg: Config) -> int:
         "code_worktree": str(cfg.code_worktree) if cfg.code_worktree else None,
         "python": str(cfg.python) if cfg.code_worktree else None,
         "expected_commit": cfg.expected_commit,
+        "preregistration": str(cfg.preregistration) if cfg.preregistration else None,
+        "misses_allowed": cfg.misses_allowed,
         "written_at": core.iso(core.utcnow()),
         "note": args.note or "",
         "history": ([{k: v for k, v in old.items() if k != "history"}] + old.get("history", [])) if old else [],
@@ -1437,6 +1803,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--no-github", action="store_true", help="skip the gh api record")
     common.add_argument("--trailer", action="append", default=[], help="extra commit message trailer line")
     common.add_argument("--no-env-check", action="store_true", help=argparse.SUPPRESS)
+    common.add_argument("--preregistration", type=Path, default=None,
+                        help="the pre-registration (.json, or the .md with its fenced JSON block); "
+                             "missed_weeks.allowed is read from it (default: docs/status/livetest-preregistration-2026.md)")
     common.add_argument("--dry-run-branch", default=None,
                         help="push to this separate branch only, never livetest-2026; builds in the rehearsal "
                              "sandbox with no deadlines (logged-off dry run, D-107)")
@@ -1455,8 +1824,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--build-timeout-minutes", type=float, default=240.0)
     p_run.add_argument("--force-fail", choices=FORCE_FAIL_STEPS, default=None,
                        help="dry-run branch only: make this step fail on purpose to prove the alert and the retry")
-    for name in ("watchdog", "check", "verify"):
+    for name in ("watchdog", "check", "verify", "seal", "seal-check"):
         sub.add_parser(name, parents=[common])
+    p_score = sub.add_parser("score-week", parents=[common],
+                             help="Tuesday job: refresh, the Evaluator's scorer, then seal (oldest unsealed week)")
+    p_score.add_argument("--skip-refresh", action="store_true")
+    p_score.add_argument("--no-push", action="store_true")
     p_plan = sub.add_parser("plan", parents=[common])
     p_plan.add_argument("--json", action="store_true")
     p_plan.add_argument("--save", action="store_true", help="save as the registered plan for the drift check")
@@ -1513,6 +1886,21 @@ def make_config(args: argparse.Namespace) -> Config:
             safe = re.sub(r"[^A-Za-z0-9._-]+", "-", cfg.dry_run_branch)
             cfg.commitments_worktree = core.DEFAULT_COMMITMENTS_WORKTREE.parent / f"ffml-{safe}-commitments"
     cfg.force_fail = getattr(args, "force_fail", None)
+    prereg = args.preregistration or (None if args.command == "init" else saved.get("preregistration"))
+    if prereg:
+        cfg.preregistration = Path(prereg)
+    elif (cfg.main_repo / core.PREREGISTRATION_DOC).exists():
+        cfg.preregistration = cfg.main_repo / core.PREREGISTRATION_DOC
+    if cfg.preregistration is not None:
+        try:
+            cfg.misses_allowed = core.misses_allowed_from(core.load_preregistration(cfg.preregistration))
+        except (OSError, ValueError) as exc:
+            cfg.misses_allowed_error = f"{cfg.preregistration}: {type(exc).__name__}: {exc}"
+    else:
+        cfg.misses_allowed_error = "no pre-registration file"
+    if args.command == "score-week":
+        cfg.skip_refresh = args.skip_refresh
+        cfg.no_push = args.no_push
     if args.command == "plan" and args.weeks:
         cfg.weeks = core.parse_weeks(args.weeks)
         cfg.test_season = args.season or cfg.test_season
@@ -1581,6 +1969,13 @@ def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
             print("verify needs --season and --week", file=sys.stderr)
             return EXIT_REFUSED
         return cmd_verify(cfg, deps)
+    if args.command in ("seal", "seal-check"):
+        if cfg.season is None or cfg.week is None:
+            print(f"{args.command} needs --season and --week", file=sys.stderr)
+            return EXIT_REFUSED
+        return cmd_seal(cfg, deps, check_only=args.command == "seal-check")
+    if args.command == "score-week":
+        return cmd_score_week(cfg, deps)
     return EXIT_REFUSED  # pragma: no cover
 
 
