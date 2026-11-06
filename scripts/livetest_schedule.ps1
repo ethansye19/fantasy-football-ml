@@ -11,6 +11,9 @@
                                        kickoff - 30 min and pushing at kickoff - 5 min)
     \ffml\livetest-<S>w<WW>-watchdog  first kickoff - 1 h: alert if nothing is pushed
     \ffml\livetest-daily-check        daily: stale predictions, schedule drift, MISSED markers
+    \ffml\livetest-weekly-score       Tuesdays: refresh, the Evaluator's scorer for the oldest unsealed
+                                       committed week, then the sealed hashes pushed to the branch;
+                                       repeats every 2 h for 12 h until there is nothing left to do
 
   Weeks whose kickoff times are still tentative (every game at one time, as week 18 is until
   the NFL sets it) are scheduled 24 hours earlier again. The daily check alerts when kickoff
@@ -64,6 +67,7 @@ param(
     [string]$LogonMode = "Password",
     [string]$TaskFolder = "\ffml\",
     [string]$DailyCheckTime = "15:00",
+    [string]$ScoreTime = "15:30",
     [string]$PlanJson = "",
     [string]$Weeks = "",
     [int]$Season = 0,
@@ -165,6 +169,10 @@ if ($DryRun) {
     }
     $daily = New-ScheduledTaskTrigger -Daily -At $DailyCheckTime
     $specs += New-TaskSpec "livetest-daily-check" "`"$Runner`" check" $daily "daily at $DailyCheckTime local"
+    $score = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Tuesday -At $ScoreTime
+    $score.Repetition = (New-ScheduledTaskTrigger -Once -At $ScoreTime -RepetitionInterval (New-TimeSpan -Hours 2) `
+        -RepetitionDuration (New-TimeSpan -Hours 12)).Repetition
+    $specs += New-TaskSpec "livetest-weekly-score" "`"$Runner`" score-week" $score "Tuesdays at $ScoreTime local, every 2 h for 12 h"
 }
 
 # AC power only to start (no -AllowStartIfOnBatteries); a run that is already going is not killed on unplugging.
