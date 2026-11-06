@@ -4,7 +4,8 @@ This runbook covers the chain_v2 live test over 2026 weeks 10-18 (D-098,
 D-105). Each week's projections are saved and hashed before that week's
 official first kickoff. They are scored only after the games finish. The
 runbook also covers the alerts that support the test (QA-5.1), the operating
-rules for missed weeks (D-106) and the operations set-up (D-107).
+rules for missed weeks (D-106, revisited in D-111: up to two misses), the
+operations set-up (D-107) and the Tuesday scoring and sealing job (section 15).
 
 Sections 11 to 14 are the ones the owner acts on: the GitHub watchdog, the
 power settings, the logged-off dry run and the registration command.
@@ -33,7 +34,9 @@ power settings, the logged-off dry run and the registration command.
 
 | Piece | Path | Role |
 | --- | --- | --- |
-| Weekly runner | `scripts/livetest_week.py` | `run`, `watchdog`, `check`, `plan`, `status`, `verify`, `init` |
+| Weekly runner | `scripts/livetest_week.py` | `run`, `watchdog`, `check`, `plan`, `status`, `verify`, `init`, `score-week`, `seal`, `seal-check` |
+| Pre-registration | `docs/status/livetest-preregistration-2026.md` (fenced JSON block) | the runner reads `missed_weeks.allowed` (2) from it; a real run refuses without it |
+| Scorer | `python -m ffml.eval.livetest_score --week 2026wNN` | Evaluator: weekly scoring after the games, sealed metric parts; the runner only publishes their hashes |
 | Shared machinery | `scripts/livetest_core.py` | week plan, commitment re-hash, pin check, commitments repo, GitHub record, fingerprints |
 | Refresh driver | `python -m ffml.data.refresh` (also `ffml refresh --step`, `scripts/refresh_data.py`) | `ingest`, `sleeper`, `process`, `validate`, `features`, one step per process; the runner uses the pinned interpreter |
 | Build | `ffml livetest build-week --season S --week W [--rehearsal]` | ML Engineer: refit, calibrate, predict privately, write `commitment.json` |
@@ -51,7 +54,8 @@ Files written under `data/`. None of them is in git.
 | `data/livetest/config.json` | test window and pin, written by `init` (keeps a history of replaced values) |
 | `data/livetest/{S}w{WW}/commitment.json` | written by build-week |
 | `data/livetest/rehearsal/{S}w{WW}/` | rehearsal and dry-run builds (sandbox) |
-| `data/livetest/runner/{S}w{WW}/` | `state.json`, `push_record.json` (push result and GitHub's record), `verify.json`, `MISSED.json` |
+| `data/livetest/runner/{S}w{WW}/` | `state.json`, `push_record.json` (push result and GitHub's record), `verify.json`, `MISSED.json`, `seal_record.json`, `seal_check.json` |
+| `data/livetest/scoring/sealed/{S}w{WW}.sha256` | written by the Evaluator's scorer: the SHA-256 of the week's sealed metric parts (section 15) |
 | `data/livetest/runner/dryrun/<branch>/{S}w{WW}/` | the same for dry runs |
 | `data/livetest/logs/*.jsonl` | one log per run (every step, exit code, alert) and validation reports |
 | `data/livetest/schedule_plan.json` | the plan the tasks were registered from (used by the drift check) |
@@ -68,6 +72,7 @@ STATUS.md                             per-week state, misses and the test state;
 2026w10/player_summary.parquet        copy when under 5 MB; its SHA-256 is in the commitment
 2026w11/MISSED.json                   the week was missed: reason, log excerpt, miss number, test state
 2026w11/late/commitment.json          built before kickoff, pushed after it; not part of the test
+2026w10/sealed_hashes.json            SHA-256 of the week's sealed metric parts, after scoring (section 15)
 rehearsal/2026w10-<created stamp>/... rehearsals, not part of the test
 ```
 
@@ -109,6 +114,10 @@ Run everything from the repository root in PowerShell. Set
 
    If the design starts at the next full week, use `--weeks 11-18`. With
    `--force` the config is replaced. The old values are kept under `history`.
+   `init` also records the pre-registration it found
+   (`docs/status/livetest-preregistration-2026.md`, or `--preregistration`)
+   and the allowed miss count read from it; the printed JSON shows
+   `"misses_allowed": 2`.
 
 3. **Configure alerts.**
    - Put `FFML_ALERT_WEBHOOK=<url>` in `.env`. Slack, Discord and ntfy URLs
@@ -218,12 +227,13 @@ Manual run, the same command the task uses:
    - whether the remote branch holds identical bytes;
    - GitHub's push time;
    - `on time`, meaning the push time is before K;
-   - `missed`, the reason (`technical_failure` or `machine_offline`) and
-     whether a late commitment exists;
+   - `missed`, the reason (`technical_failure` or `machine_offline`),
+     whether a late commitment exists, and `sealed` (section 15);
 
-   and a last line: `misses: N (...); allowed 1; test state: VALID` or
-   `INVALID (D-106: more than one miss)`. `STATUS.md` on the branch shows the
-   same table.
+   and a last line: `misses: N (...); allowed 2; test state: VALID` or
+   `INVALID (D-106, D-111: more than 2 misses)`. The allowed count is the
+   pre-registration's `missed_weeks.allowed`. `STATUS.md` on the branch shows
+   the same table.
 
 2. **External timestamp.** Git commit dates come from this laptop's clock.
    GitHub's repository activity record does not: GitHub's servers set it when
@@ -316,22 +326,25 @@ the stderr tails of the refresh and the build.
 | `push_failure`, exit 1 | remote unreachable or push rejected | Check `gh auth status`, the network and `git -C ..\ffml-livetest-commitments status`. The next repetition pushes the existing commitment as it is, never a new build. Never force-push. Never push `main`. |
 | `missed_commitment` at K - 6 h or K - 1 h (GitHub workflow red, webhook) | the GitHub watchdog found nothing on the branch | Check the laptop: is it on, on AC, online? Run the runner by hand now (`run --season S --week W`). If it cannot push before K - 5 min, the week is missed. |
 | `missed_commitment` at K - 1 h (local) | the local watchdog found nothing on the remote | Same as above. |
-| `missed_commitment` after K, exit 3 | the week kicked off without a pushed commitment | No action on the branch: the MISSED marker (with reason and log excerpt) is pushed automatically, and a late commitment with it. Tell the owner. First miss: excluded, test goes on. Second miss: the test is INVALID (D-106). |
+| `missed_commitment` after K, exit 3 | the week kicked off without a pushed commitment | No action on the branch: the MISSED marker (with reason and log excerpt) is pushed automatically, and a late commitment with it. Tell the owner. First and second miss: excluded, test goes on. Third miss: the test is INVALID (D-106, D-111). |
+| `scoring_failure` (Tuesday) | the refresh before scoring failed, the Evaluator's scorer exited non-zero, it wrote no sealed file, or the sealed hashes could not be pushed | The task repeats every 2 h for 12 h. Read the run log's scorer stderr. A week that is not final yet is retried without an alert. Tell the Evaluator if the scorer itself fails. |
+| `integrity` (seal) | the branch already holds different sealed hashes for the week, or a local sealed part no longer matches its hash | Stop. Sealed hashes are immutable. Tell the Evaluator and the orchestrator; never re-seal by hand. |
 | `integrity`, exit 6 | the branch holds a different commitment, a file no longer matches its hash, or post-push verification failed | Stop. Do not rebuild, delete or re-push. Keep the logs and tell the orchestrator. |
 | `integrity`, exit 7 | an existing snapshot changed during a refresh | Stop. Do not build. Tell the orchestrator. |
 | `integrity` (clock skew) | the laptop clock differs from GitHub by over 2 min | Resync Windows time (Settings, Time, Sync now). Use GitHub's timestamp as the record. |
 | `schedule_drift` | kickoff times changed after the tasks were registered (week 18 flex) | Re-run `scripts\livetest_schedule.ps1 -Register` (dry run first) and re-export `scripts\livetest_schedule_2026.json` (section 11). |
 | `stale_predictions` | in season, the newest private run (or the public run, once a model is live) is over 8 days old | During the test, check that the last week's run completed. Test with `scripts\alert.py check-stale --now <time>`. |
 
-## 8. Missed weeks (D-106), laptop off, asleep or logged out
+## 8. Missed weeks (D-106, D-111), laptop off, asleep or logged out
 
-The one-miss rule:
+The miss rule (the allowed count is read from the pre-registration's
+`missed_weeks.allowed`, 2 under D-111; nothing in the scripts hard-codes it):
 - a week counts as missed when no commitment is on `livetest-2026` at its
   official first kickoff K;
-- the first missed week is **excluded from scoring**; the window is **not
-  extended**; the frozen rules are unchanged and the evaluator reports the
-  lower pass rate of an eight-week test;
-- a **second miss makes the test INVALID** (not failed);
+- up to two missed weeks are **excluded from scoring**; the window is **not
+  extended**; the frozen rules are unchanged and the Evaluator reports the
+  pass rate of a 17- or 16-week test;
+- a **third miss makes the test INVALID** (not failed);
 - a miss counts only for a real technical failure or an offline machine, and
   it is logged with its reason;
 - projections that exist are never withheld: a commitment that was built but
@@ -348,11 +361,11 @@ pushes `<week>/MISSED.json`:
 | `run_logs` | the window, the log file names in it, and the last 12 events of the latest log |
 | `local_commitment` | whether a local commitment exists, its hash, `created_at`, `built_before_kickoff` |
 | `late_commitment` | the `late/` path and hash when one was pushed, with its verification result |
-| `miss_number`, `earlier_misses`, `test_status` | 1 and `VALID: ...`, or 2 and `INVALID: ...` |
+| `miss_number`, `allowed`, `earlier_misses`, `test_status` | `miss N of 2 allowed`: `VALID: ...` for misses 1 and 2, `INVALID: ...` for miss 3 |
 
 `STATUS.md` on the branch is regenerated at every push and shows every test
-week, the misses and the test state. `status` (section 5) prints the same.
-The alert for a second miss says INVALID.
+week, the misses, the sealed weeks and the test state. `status` (section 5)
+prints the same. The alert for the third miss says INVALID.
 
 The tasks use these settings:
 - `StartWhenAvailable`: a missed start runs when the machine is available
@@ -383,12 +396,14 @@ A missed week shows up in five places, and the signals agree:
 4. the GitHub watchdog runs inside the windows are red;
 5. the absence of a commitment with a GitHub push timestamp before K.
 
-## 9. Daily check and one-off commands
+## 9. Daily check, the Tuesday job and one-off commands
 
 `livetest_week.py check` runs daily at 15:00 local. It does three things:
 - the stale-prediction check;
 - schedule drift against `schedule_plan.json`;
 - MISSED markers (with reasons) for weeks that kicked off.
+
+`livetest_week.py score-week` runs on Tuesdays (section 15).
 
 Useful one-off commands:
 
@@ -396,6 +411,7 @@ Useful one-off commands:
 .venv\Scripts\ffml refresh --step all                               # the five refresh steps, one child process each
 .venv\Scripts\python scripts\livetest_week.py plan                  # the week plan and trigger times
 .venv\Scripts\python scripts\livetest_week.py watchdog --season 2026 --week 10
+.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 10   # branch copy vs local sealed file
 .venv\Scripts\python scripts\alert.py tail -n 20
 .venv\Scripts\python scripts\alert.py send --kind push_failure --message "forced failure test" --severity warning
 .venv\Scripts\python scripts\alert.py check-stale --now 2026-11-21T12:00:00Z
@@ -407,7 +423,7 @@ powershell -ExecutionPolicy Bypass -File scripts\livetest_power_check.ps1
 | Code | Meaning |
 | --- | --- |
 | 0 | done, already pushed, or nothing to do (outside the window, too early, another run holds the lock) |
-| 1 | failed; the next repetition retries (refresh, build, push, watchdog finding) |
+| 1 | failed; the next repetition retries (refresh, build, push, watchdog finding, scorer, week not final yet, not sealed on the branch yet) |
 | 2 | build blocked: pin refused, or approval gate refused |
 | 3 | missed: too late for this week |
 | 4 | refused: unsafe environment or bad arguments (`FFML_HOLDOUT_UNLOCK`, `--now` on a real run, stub outside a rehearsal, no `init`, `--dry-run-branch livetest-2026`, `--force-fail` outside a dry run) |
@@ -437,10 +453,42 @@ Set-up:
 - repository secret `FFML_ALERT_WEBHOOK` (Settings, Secrets and variables,
   Actions): the same URL as in `.env`;
 - the workflow and the schedule file must be on `main` (pushed through the
-  normal review);
-- GitHub turns scheduled workflows off after 60 days without a push; a push
-  to `main` during the test keeps it on, and the Actions tab shows a warning
-  beforehand.
+  normal review).
+
+Two GitHub behaviours that can silence this watchdog (QA-F25), and what to do:
+
+1. **Who gets the failure e-mail.** GitHub sends the notification for a
+   failed scheduled run only to the user who last modified the cron line
+   (`- cron: "0 * * * *"`) in the workflow file, not to the repository owner
+   as such. Today every commit is authored and pushed as `ethansye19`, so the
+   owner receives them. To keep it that way:
+   - in GitHub, Settings, Notifications, System, Actions: e-mail on, "Only
+     notify for failed workflows";
+   - if anyone else (another account, a bot or a merged pull request by
+     someone else) ever changes the cron line, the owner commits a change to
+     that line from their own account (for example rewriting it unchanged in
+     a commit they push), so the e-mails go to the owner again;
+   - set the `FFML_ALERT_WEBHOOK` secret as well: the webhook is sent by the
+     workflow itself and does not depend on who edited the cron line.
+2. **Schedules switched off after 60 days.** GitHub documents that scheduled
+   workflows in a *public* repository are disabled automatically after 60
+   days without repository activity, and shows a warning in the Actions tab
+   first. This repository is private, so the documented rule does not apply
+   today; the test runs until about 2027-11, and making the repository
+   public is an owner decision (D-112), so treat it as a risk anyway:
+   - the weekly pushes to `livetest-2026` are repository activity; during the
+     offseason (2027-01 to 2027-09) push at least one commit a month to
+     `main` (any reviewed change, for example the re-exported schedule);
+   - check once a month that the workflow is active, and re-enable it if not:
+
+     ```powershell
+     gh workflow list --all                    # "livetest watchdog" must say active
+     gh workflow enable livetest_watchdog.yml  # if it says disabled_inactivity or disabled_manually
+     gh run list --workflow livetest_watchdog.yml --limit 5
+     ```
+
+   The local watchdog task (section 14) and the alert log do not depend on
+   GitHub and keep working either way.
 
 Manual run (Actions, `livetest watchdog`, Run workflow): `branch`
 (`livetest-dryrun` for the dry run), `now` (a clock override such as
@@ -596,8 +644,8 @@ Every part, in plain words:
 | `-DailyCheckTime 15:00` (default) | the daily check's local time |
 
 What the registered tasks can and cannot do:
-- they run exactly `.venv\Scripts\python.exe scripts\livetest_week.py run|watchdog|check` from this
-  repository, as the owner's user, with the owner's normal rights;
+- they run exactly `.venv\Scripts\python.exe scripts\livetest_week.py run|watchdog|check|score-week`
+  from this repository, as the owner's user, with the owner's normal rights;
 - git and gh use the owner's existing Credential Manager entries; nothing new is stored by this
   project;
 - they push one branch (`livetest-2026`), never `main`, never with force;
@@ -615,3 +663,55 @@ Get-ScheduledTaskInfo -TaskPath "\ffml\" -TaskName "livetest-2026w10-run"       
 ```
 
 To remove everything: `scripts\livetest_schedule.ps1 -Unregister`.
+
+The weekly set also contains `\ffml\livetest-weekly-score` (Tuesdays at
+`-ScoreTime`, default 15:30 local, repeating every 2 hours for 12 hours), the
+Tuesday scoring and sealing job of section 15.
+
+## 15. Tuesday scoring and sealed hashes (pre-registration `sealed_interim`)
+
+Interim results are sealed until the verdict. After a week's games are
+final, the Evaluator's scorer (`python -m ffml.eval.livetest_score --week
+2026wNN`) writes the verification status and the sealed metric parts, and the
+file `data/livetest/scoring/sealed/2026wNN.sha256` with the SHA-256 of those
+parts. The runner publishes only those hashes to the branch, so the parts
+cannot be altered later; no metric, line result or ranking is rendered,
+printed or committed before the final evaluation.
+
+The Tuesday job `livetest_week.py score-week` (task `\ffml\livetest-weekly-score`,
+Tuesdays 15:30 local, repeating every 2 h for 12 h):
+1. picks the oldest test week that has kicked off, has a commitment on the
+   branch, is not missed and has no `sealed_hashes.json` yet (nothing to do:
+   exit 0);
+2. refreshes the data with the pinned interpreter (skip with `--skip-refresh`)
+   and checks that every game of the week is final in `dim_game`; if not,
+   exit 1 without an alert, and the next repetition retries;
+3. runs the scorer from the pinned worktree when no sealed file exists yet;
+   a non-zero exit or a missing sealed file raises `scoring_failure` (exit 1,
+   retried);
+4. `seal`: reads `2026wNN.sha256` (sha256sum lines, a JSON object or bare
+   hashes), re-hashes any sealed part present locally, and commits
+   `2026wNN/sealed_hashes.json` (the file's own SHA-256, its entries and its
+   raw text) plus a regenerated `STATUS.md` with the `sealed` column, then
+   pushes `livetest-2026` only and records the push and GitHub's view in
+   `data/livetest/runner/2026wNN/seal_record.json`.
+
+`seal` is idempotent: the same sealed file is never committed twice. It is
+also immutable: a local sealed file that differs from the published hashes is
+refused with exit 6 and an `integrity` alert; sealed hashes are never
+overwritten, and never by hand.
+
+By hand:
+
+```powershell
+.venv\Scripts\python scripts\livetest_week.py score-week                          # the Tuesday job, oldest unsealed week
+.venv\Scripts\python scripts\livetest_week.py seal --season 2026 --week 10        # publish the hashes of an already scored week
+.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 10  # branch copy vs local sealed file and parts
+git fetch origin livetest-2026; git show origin/livetest-2026:2026w10/sealed_hashes.json
+```
+
+`seal-check` exits 0 when the branch copy matches the local sealed file and
+every locally present part hashes to its sealed value, 1 when the week is not
+sealed yet (locally or on the branch), and 6 on any difference. The scoring
+itself, the weekly reports and the final verdict are the Evaluator's; the
+runner never reads a sealed part.

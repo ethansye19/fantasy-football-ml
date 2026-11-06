@@ -605,3 +605,71 @@ Proposed for the decision log, if wanted: D-108, the timing constants
 (window K - 25 h, start K - 24 h 15 min, repetition until K - 5 min, cutoffs
 unchanged) and the GitHub watchdog windows [6.5, 5.5) and [1.5, 0) hours
 before kickoff.
+
+(Adopted as D-109.)
+
+## DE-5.6: D-111 miss count, sealed hashes, schedule export, QA-F25, scoring settings (2026-11-05)
+
+Done:
+1. **Allowed misses from the pre-registration.** The runner no longer has a
+   constant: `missed_weeks.allowed` is read from the pre-registration (the
+   fenced JSON block of `docs/status/livetest-preregistration-2026.md`, found
+   by default, or `--preregistration <.json|.md>`; `init` records the path and
+   the count). The real document gives 2. `MISSED.json` gains `allowed`
+   (`miss_number` existed); `test_status` reads `VALID: miss N of 2 allowed`
+   for misses 1 and 2 and `INVALID: miss 3 of 2 allowed` for the third.
+   `STATUS.md`, the branch README ("up to 2 missed weeks") and the `status`
+   footer (`allowed 2`) carry the count. A real run, `check` or `seal` that
+   would write any of these refuses (exit 4) when the pre-registration cannot
+   be read; `status` then shows the state as unknown.
+2. **Sealed hashes.** `livetest_week.py seal --season S --week W` reads
+   `data/livetest/scoring/sealed/<week>.sha256` (sha256sum lines, a JSON
+   object or bare hashes), re-hashes any sealed part present locally, and
+   commits and pushes `<week>/sealed_hashes.json` (the file's SHA-256, its
+   entries and raw text) to `livetest-2026` with a regenerated `STATUS.md`
+   (new `sealed` column). Idempotent (the same file is never committed
+   twice); immutable (different local hashes are refused, exit 6, integrity
+   alert); the push and GitHub's view go to `seal_record.json`.
+   `seal-check` compares the branch copy with the local sealed file and
+   parts (exit 0 match, 1 not sealed yet, 6 difference). `score-week` is the
+   Tuesday job: oldest test week that kicked off with a commitment, not
+   missed and not sealed; refresh; every game of the week final in
+   `dim_game` (else exit 1 without an alert); the Evaluator's scorer
+   (`python -m ffml.eval.livetest_score --week <week>`) from the pinned
+   worktree when no sealed file exists; then `seal`. New alert kind
+   `scoring_failure`. The runner never reads a sealed part beyond hashing it.
+   Scheduler: `\ffml\livetest-weekly-score`, Tuesdays at `-ScoreTime` (15:30
+   local), every 2 h for 12 h (dry run shows it; nothing registered).
+3. **Schedule export.** `plan --export` now leaves the tracked file alone
+   when the season, test weeks and kickoffs are unchanged. Re-run against
+   the latest `dim_game` snapshot (still 20261104T233034Z: no refresh has run
+   since, so week 9's finals are not in it yet; the file holds only weeks
+   10-18, whose kickoffs do not depend on week 9's status): **unchanged**,
+   week 18 still tentative. Re-export after the next refresh if the NFL sets
+   the week 18 times.
+4. **QA-F25** (RUNBOOK section 11): GitHub e-mails a failed scheduled run
+   only to the user who last modified the cron line, and documents a 60-day
+   inactivity disable for public repositories; the runbook says what to do
+   about both (notification settings, re-owning the cron line, the webhook
+   secret as a second channel, a monthly `gh workflow list --all` and
+   `gh workflow enable`). This corrects my DE-5.5 sentence ("after 60 days
+   without a push"). The comment in `.github/workflows/livetest_watchdog.yml`
+   carries the same imprecision; I left the workflow file alone (editing it
+   was authorized only in DE-5.5) and it is a one-line fix for whoever edits
+   it next.
+5. **Backend finding:** `ffml.data.sleeper.normalize_scoring_settings` now
+   refuses non-finite values: NaN (as before, also the string `"nan"`),
+   infinities (`inf`, `-inf`, `"inf"`, `"-Infinity"`, `"1e999"`) and ints
+   beyond the float range (`10**400`, which raised `OverflowError` before),
+   all as `ValueError` naming the key; large finite values pass.
+
+Evidence:
+- `PYTHONUTF8=1 FFML_OFFLINE=1 .venv/Scripts/python -m pytest -q tests/data`:
+  **200 passed, 2 skipped** (network) in 173 s; the 4 tests touched by the
+  last change (the `check` refusal) were re-run after it: 4 passed.
+- `ruff check scripts/ tests/data/ ffml/data/ ffml/config.py ffml/cli.py`:
+  All checks passed.
+- `livetest_week.py status --season 2026 --json` on the real branch:
+  `allowed: 2`, `test_state: VALID`, pre-registration path resolved.
+- `livetest_schedule.ps1 -Weeks 10-18 -Season 2026` (dry run) lists
+  `\ffml\livetest-weekly-score`; `Get-ScheduledTask -TaskPath \ffml\` = 0.
