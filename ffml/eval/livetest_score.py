@@ -882,6 +882,11 @@ def score_frames(ppr: pl.DataFrame, consensus: pl.DataFrame | None, *, n_boot: i
 # --------------------------------------------------------------------------- #
 
 
+def default_reports_dir() -> Path:
+    """``<settings.reports_dir>/livetest`` (``FFML_REPORTS_DIR``; the runner points it outside the pinned worktree)."""
+    return Path(get_settings().reports_dir) / "livetest"
+
+
 def scoring_root() -> Path:
     return get_settings().data_dir / "livetest" / "scoring"
 
@@ -1035,7 +1040,7 @@ def score_week(
     when ``weekly_sensitivity``); nothing of it is rendered or printed.
     """
     root = Path(root) if root is not None else scoring_root()
-    reports_dir = Path(reports_dir) if reports_dir is not None else PROJECT_ROOT / "reports" / "livetest"
+    reports_dir = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     c = load_commitment(source, season, week)
     status = week_status(dim_game, season, week)
     summary_bytes = source.read(f"{week_key(season, week)}/{SUMMARY_NAME}")
@@ -1203,13 +1208,19 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
     unknown = [w for w in window if w not in records and w not in misses]
     checks.append(Check("window complete", not unknown,
                         f"{len(scored)} scored, {len(missed)} missed, {len(unknown)} unaccounted {unknown[:3]}"))
-    allowed_misses = int(((data.get("missed_weeks") or {}).get("allowed")) or 1)
+    raw_allowed = (data.get("missed_weeks") or {}).get("allowed")
     rule_text = str(data.get("miss_rule") or data.get("one_miss_rule") or "D-106")[:160]
-    checks.append(Check("missed weeks (miss rule)", len(missed) <= allowed_misses,
-                        f"{len(missed)} missed week(s) {[week_key(*w) for w in missed]}, {allowed_misses} allowed"
-                        + ("; excluded, the window is not extended" if 0 < len(missed) <= allowed_misses else
-                           "; more than allowed: INVALID" if len(missed) > allowed_misses else "")
-                        + f"; rule: {rule_text}"))
+    if isinstance(raw_allowed, bool) or not isinstance(raw_allowed, int) or raw_allowed < 0:
+        checks.append(Check("missed weeks (miss rule)", False,
+                            f"missed_weeks.allowed must be a non-negative integer in the pre-registration, got "
+                            f"{raw_allowed!r}"))
+    else:
+        allowed_misses = raw_allowed
+        checks.append(Check("missed weeks (miss rule)", len(missed) <= allowed_misses,
+                            f"{len(missed)} missed week(s) {[week_key(*w) for w in missed]}, {allowed_misses} allowed"
+                            + ("; excluded, the window is not extended" if 0 < len(missed) <= allowed_misses else
+                               "; more than allowed: INVALID" if len(missed) > allowed_misses else "")
+                            + f"; rule: {rule_text}"))
     overlap = [w for w in window if w in records and w in misses]
     checks.append(Check("no week both scored and missed", not overlap, f"{[week_key(*w) for w in overlap]}"))
     for (s, w), r in sorted(records.items()):
@@ -1232,6 +1243,45 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
             checks.append(Check(f"{wk} sealed part", sha256_file(part) == r["part_sha256"],
                                 f"{part.name} sha256 unchanged since scoring"))
     return checks
+
+
+def branch_record_checks(source: BranchSource, records: Mapping[tuple[int, int], Mapping[str, Any]],
+                         weeks: Sequence[tuple[int, int]], branch_ref: Mapping[str, Any] | None) -> list[Check]:
+    """QA-F29: each scored week's commitment and summary on the branch record equal what was scored."""
+    out: list[Check] = []
+    if branch_ref is not None:
+        out.append(Check("branch record", bool(branch_ref.get("ok")), str(branch_ref.get("detail", ""))))
+    for w in weeks:
+        r = records[w]
+        wk = week_key(*w)
+        c_raw = source.read(f"{wk}/{COMMITMENT_NAME}")
+        problems = []
+        if c_raw is None:
+            problems.append("commitment.json is not on the branch record")
+        elif sha256_bytes(c_raw) != r.get("commitment_sha256"):
+            problems.append("the branch commitment differs from the scored one")
+        summ = source.read(f"{wk}/{SUMMARY_NAME}")
+        if summ is not None and r.get("summary_sha256") and sha256_bytes(summ) != r.get("summary_sha256"):
+            problems.append("the branch player_summary differs from the scored one")
+        out.append(Check(f"{wk} branch commitment", not problems,
+                         "the branch record's commitment (and summary) equal the scored ones" if not problems
+                         else "; ".join(problems)))
+    return out
+
+
+def fetch_branch_ref(repo_root: Path = PROJECT_ROOT, remote: str = REMOTE, branch: str = BRANCH) -> dict[str, Any]:
+    """Fetch the commitments branch and compare the tracking ref with the remote's head (QA-F29)."""
+    ref = f"{remote}/{branch}"
+    fetched = _run_git(repo_root, "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{ref}")
+    if fetched.returncode != 0:
+        raise ScoreRefused(f"the final is refused: git fetch {remote} {branch} failed: {fetched.stderr.strip()[:200]}")
+    local = _run_git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/remotes/{ref}").stdout.strip()
+    remote_line = _run_git(repo_root, "ls-remote", remote, f"refs/heads/{branch}").stdout.split()
+    remote_sha = remote_line[0] if remote_line else ""
+    ok = bool(local) and local == remote_sha
+    return {"ref": ref, "sha": local, "remote_sha": remote_sha, "ok": ok, "fetched_at": iso(datetime.now(UTC)),
+            "detail": f"{ref} {local[:12]} equals the remote head" if ok else
+            f"{ref} {local[:12] or '?'} differs from the remote head {remote_sha[:12] or '?'}"}
 
 
 def line_intervals(sc: Scored, line: H.PreregLine, digits: int = 3) -> str:
@@ -1270,6 +1320,7 @@ def final_evaluation(
     sensitivity_n_boot: int = SENSITIVITY_N_BOOT,
     sensitivity_fn: SensitivityFn | None = None,
     require_seals: bool = True,
+    branch_ref: Mapping[str, Any] | None = None,
 ) -> tuple[str, Path]:
     """The one evaluation of the window. Returns the verdict line and the report path.
 
@@ -1280,7 +1331,7 @@ def final_evaluation(
     stored, and any line whose PASS/FAIL would differ is listed.
     """
     root = Path(root) if root is not None else scoring_root()
-    reports_dir = Path(reports_dir) if reports_dir is not None else PROJECT_ROOT / "reports" / "livetest"
+    reports_dir = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     window = prereg_window(prereg.data)
     last = window[-1]
     st_last = week_status(dim_game, *last)
@@ -1291,7 +1342,18 @@ def final_evaluation(
     if not_final:
         raise ScoreRefused(f"weeks not final in dim_game: {not_final}")
     records = load_records(root, window)
-    misses = {w: m for w in window if w not in records and (m := missed_marker(source, *w)) is not None}
+    # QA-F28: the branch, not the local files, decides which weeks were committed. A week with a commitment
+    # or a sealed-hash record on the branch is never excluded as a miss, whatever markers or local files say.
+    on_branch = {w for w in window if source.read(f"{week_key(*w)}/{COMMITMENT_NAME}") is not None
+                 or source.read(f"{SEALED_BRANCH_DIR}/{week_key(*w)}.sha256") is not None}
+    markers = {w: m for w in window if (m := missed_marker(source, *w)) is not None}
+    unsealed = [week_key(*w) for w in window if w in on_branch and w not in records]
+    if unsealed:
+        raise ScoreRefused("the final is refused: weeks with a commitment or sealed record on the branch but no "
+                           f"local sealed record: {unsealed}; such a week is never excluded as a miss; restore its "
+                           "sealed files (they must match the branch record) or score it")
+    misses = {w: m for w, m in markers.items() if w not in on_branch and w not in records}
+    conflicts = [w for w in window if w in markers and (w in on_branch or w in records)]
     unknown = [week_key(*w) for w in window if w not in records and w not in misses]
     if unknown:
         raise ScoreRefused(f"the final is refused: weeks neither sealed nor marked MISSED: {unknown}")
@@ -1302,6 +1364,12 @@ def final_evaluation(
         raise ScoreRefused("sealed files do not match the branch record: "
                            + "; ".join(f"{c.name}: {c.detail}" for c in bad_seals))
     checks = livetest_integrity_checks(prereg, records, window, misses, repo_root=repo_root, root=root) + seal_checks
+    checks += branch_record_checks(source, records, scored_weeks, branch_ref)
+    # a marker for a committed week is listed but never excludes it and never invalidates the test (QA-F28)
+    checks.append(Check("MISSED markers consistent with the branch", True,
+                        "no marker for a committed or sealed week" if not conflicts else
+                        "markers ignored for committed weeks, which are scored: "
+                        + ", ".join(week_key(*w) for w in conflicts)))
     results: list[LineResult] | None = None
     scored: Scored | None = None
     sens: Scored | None = None
@@ -1315,6 +1383,8 @@ def final_evaluation(
     verdict = H.verdict_text(checks, results, dry_run=dry_run)
     L: list[str] = [f"# Live test final evaluation ({week_key(*window[0])} to {week_key(*last)})", "",
                     f"Evaluated {iso(now or datetime.now(UTC))}. Pre-registration `{PREREG_DOC}` sha256 `{prereg.sha256[:16]}...`.",
+                    "", "Branch record: " + (f"`{branch_ref.get('ref')}` at `{branch_ref.get('sha')}`, fetched "
+                                             f"{branch_ref.get('fetched_at')}" if branch_ref else "as given by the caller"),
                     "", "## Integrity checks (including the sealed-file hashes against the branch record)", "",
                     _checks_table(checks), "", "## The 22 lines (binding: 500 week-clustered paired draws, seed 0)", ""]
     differing: list[dict[str, Any]] = []
@@ -1346,6 +1416,10 @@ def final_evaluation(
                 L += ["No line differs between the binding and the sensitivity intervals.", ""]
     else:
         L += ["Not computed: an integrity check failed.", ""]
+    if conflicts:
+        L += ["## Integrity findings that do not change the verdict", "",
+              "MISSED markers found for weeks that have a commitment or a sealed record on the branch. Those weeks "
+              "were scored; the markers were not used: " + ", ".join(week_key(*w) for w in conflicts) + ".", ""]
     L += ["## Verdict", "", verdict, ""]
     reports_dir.mkdir(parents=True, exist_ok=True)
     out = reports_dir / ("final_dry_run.md" if dry_run else "final.md")
@@ -1380,7 +1454,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     ap.add_argument("--week", help="season-week, for example 2026w10")
     ap.add_argument("--final", action="store_true", help="the single final evaluation (refused until the window is complete)")
     ap.add_argument("--dry-run", action="store_true", help="with --final: label the verdict as a dry run")
-    ap.add_argument("--worktree", default=str(DEFAULT_WORKTREE), help=f"commitments worktree (else git show origin/{BRANCH})")
+    ap.add_argument("--worktree", default=str(DEFAULT_WORKTREE),
+                    help=f"commitments worktree for weekly scoring (else git show origin/{BRANCH}); "
+                         "--final always fetches and reads the remote ref")
     ap.add_argument("--no-worktree", action="store_true", help="read the branch with git show only")
     ap.add_argument("--push-record", default=None, help="runner push_record.json (default data/livetest/runner/<week>/)")
     ap.add_argument("--baselines-run", default=COMPARATORS_RUN,
@@ -1401,7 +1477,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
             print("the final needs the pre-registration", file=sys.stderr)
             return 2
         try:
+            # QA-F29: the final reads the branch record only from the freshly fetched remote ref
+            branch_ref = fetch_branch_ref()
+            source = BranchSource(None, ref=branch_ref["ref"])
             verdict, out = final_evaluation(source=source, dim_game=load_dim_game(), prereg=prereg,
+                                            branch_ref=branch_ref,
                                             consensus=None if args.no_consensus else _all_consensus(prereg),
                                             dry_run=args.dry_run, sensitivity=not args.no_sensitivity)
         except ScoreRefused as exc:

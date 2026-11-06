@@ -116,6 +116,7 @@ def make_week(tmp_path, season: int, week: int, *, kickoff: datetime = KICKOFF, 
 PREREG = {
     "commit": "<frozen commit>", "season": 2026, "weeks": [10, 11], "window": [[2026, 10], [2026, 11]],
     "rules": {"lines_sha256": H.lines_spec_sha256()}, "n_boot": 500, "seed": 0, "metric_seed": 0,
+    "missed_weeks": {"allowed": 2},
     "pins": {"selection": {"path": "ffml/models/chain/selection.json", "sha256": "sel-lf",
                            "sha256_crlf_working_copy": "sel-crlf"},
              "feature_manifest": {"path": "x", "sha256": "fm"}, "feature_version": "0.2.0"},
@@ -353,7 +354,7 @@ def test_miss_rule_from_the_pre_registration(tmp_path):
 
 
 def test_final_second_miss_is_invalid_and_checks_cover_each_week(tmp_path):
-    prereg = _prereg(tmp_path, window=[[2026, 10], [2026, 11], [2026, 12]])
+    prereg = _prereg(tmp_path, window=[[2026, 10], [2026, 11], [2026, 12]], missed_weeks={"allowed": 1})
     dg = dim_game(2026, [10, 11, 12])
     for w in (11, 12):
         (tmp_path / "branch" / f"2026w{w}").mkdir(parents=True, exist_ok=True)
@@ -522,3 +523,118 @@ def test_changelog_only_exemption_is_narrow(tmp_path):
     assert set(LS.uncovered_commits(x, merge, tmp_path, logged)) == {merge, a}
     # the root commit has no parent and is never exempt
     assert not LS._changelog_append_only(x, tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# Pre-freeze fixes (EV-4.6): QA-F27, QA-F28, QA-F29, the allowed read
+# --------------------------------------------------------------------------- #
+
+
+def test_reports_go_to_settings_reports_dir_not_the_checkout(tmp_path, monkeypatch):
+    """QA-F27: a weekly run with the default reports dir writes under FFML_REPORTS_DIR and leaves the checkout clean."""
+    from ffml.config import PROJECT_ROOT, reset_settings_cache
+
+    monkeypatch.setenv("FFML_REPORTS_DIR", str(tmp_path / "settings-reports"))
+    monkeypatch.setenv("FFML_DATA_DIR", str(tmp_path / "data"))
+    reset_settings_cache()
+    try:
+        before = _g(PROJECT_ROOT, "status", "--porcelain", "--untracked-files=all", "--", "reports", "data")
+        dg = dim_game(2026, [10])
+        rec, out = LS.score_week(2026, 10, source=LS.BranchSource(tmp_path / "branch"), dim_game=dg,
+                                 push_record=make_week(tmp_path, 2026, 10), roots=[tmp_path], outcomes=fake_outcomes,
+                                 baselines=_baselines(2026, 10), consensus=_consensus(2026, 10),
+                                 prereg=_prereg(tmp_path), n_boot=20)
+        after = _g(PROJECT_ROOT, "status", "--porcelain", "--untracked-files=all", "--", "reports", "data")
+        assert out == tmp_path / "settings-reports" / "livetest" / "2026w10_verification.md" and out.is_file()
+        assert LS.part_path(tmp_path / "data" / "livetest" / "scoring", 2026, 10).is_file()
+        assert after == before  # nothing new under the checkout's reports/ or data/
+    finally:
+        reset_settings_cache()
+
+
+def _two_week_world(tmp_path):
+    prereg = _prereg(tmp_path, window=[[2026, 10], [2026, 11]])
+    dg = dim_game(2026, [10, 11])
+    for w, kick in ((10, KICKOFF), (11, KICKOFF + timedelta(days=7))):
+        _score(tmp_path, 2026, w, make_week(tmp_path, 2026, w, kickoff=kick), dg, prereg=prereg)
+        _push_seal(tmp_path, f"2026w{w}")
+    kw = dict(source=LS.BranchSource(tmp_path / "branch"), prereg=prereg, root=tmp_path / "scoring",
+              reports_dir=tmp_path / "reports", n_boot=20, sensitivity=False)
+    return dg, kw
+
+
+def test_missed_marker_cannot_exclude_a_committed_week(tmp_path):
+    """QA-F28: a hand-pushed MISSED.json for a committed, sealed week never excludes it."""
+    dg, kw = _two_week_world(tmp_path)
+    (tmp_path / "branch" / "2026w11" / LS.MISSED_NAME).write_text('{"reason": "hand-pushed"}', encoding="utf-8")
+    # with the local sealed files in place: the week is scored and the marker is listed, not used
+    verdict, out = LS.final_evaluation(dim_game=dg, **kw)
+    text = out.read_text(encoding="utf-8")
+    assert "markers ignored for committed weeks, which are scored: 2026w11" in text
+    assert "Integrity findings that do not change the verdict" in text and "0 missed week(s)" in text
+    # the attack: the local sealed files moved away -> refused, never a 1-week-shorter verdict
+    sealed = tmp_path / "scoring" / LS.SEALED_DIR
+    for f in sealed.glob("2026w11.*"):
+        f.rename(tmp_path / f.name)
+    with pytest.raises(LS.ScoreRefused, match="never excluded as a miss"):
+        LS.final_evaluation(dim_game=dg, **kw)
+    # a genuine miss (no commitment, no seal on the branch) is still excluded
+    import shutil
+
+    shutil.rmtree(tmp_path / "branch" / "2026w11")
+    (tmp_path / "branch" / LS.SEALED_BRANCH_DIR / "2026w11.sha256").unlink()
+    (tmp_path / "branch" / "2026w11").mkdir()
+    (tmp_path / "branch" / "2026w11" / LS.MISSED_NAME).write_text('{"reason": "offline"}', encoding="utf-8")
+    verdict, out = LS.final_evaluation(dim_game=dg, **kw)
+    assert "1 missed week(s) ['2026w11'], 2 allowed" in out.read_text(encoding="utf-8")
+
+
+def test_final_checks_the_branch_record_against_what_was_scored(tmp_path):
+    """QA-F29: a commitment or summary on the branch record that differs from the scored one fails the final."""
+    dg, kw = _two_week_world(tmp_path)
+    verdict, out = LS.final_evaluation(dim_game=dg, **kw)
+    assert "2026w10 branch commitment | PASS" in out.read_text(encoding="utf-8")
+    c = tmp_path / "branch" / "2026w10" / LS.COMMITMENT_NAME
+    c.write_bytes(c.read_bytes() + b" ")
+    verdict, out = LS.final_evaluation(dim_game=dg, **kw)
+    assert verdict.startswith("Verdict: INVALID") and "the branch commitment differs from the scored one" in verdict
+    ref = {"ref": "origin/livetest-2026", "sha": "a" * 40, "ok": False, "fetched_at": "t", "detail": "differs"}
+    verdict, _ = LS.final_evaluation(dim_game=dg, branch_ref=ref, **kw)
+    assert "branch record: differs" in verdict
+
+
+def test_fetch_branch_ref_refuses_without_a_remote(tmp_path):
+    _g(tmp_path, "init", "-q")
+    with pytest.raises(LS.ScoreRefused, match="git fetch origin livetest-2026 failed"):
+        LS.fetch_branch_ref(tmp_path)
+
+
+def test_fetch_branch_ref_reads_the_remote_head(tmp_path):
+    remote, clone = tmp_path / "remote.git", tmp_path / "clone"
+    _g(tmp_path, "init", "-q", "--bare", str(remote))
+    _g(tmp_path, "init", "-q", str(clone))
+    _g(clone, "config", "user.email", "t@example.com")
+    _g(clone, "config", "user.name", "t")
+    _g(clone, "checkout", "-q", "-b", "livetest-2026")
+    (clone / "f.txt").write_text("x\n", encoding="utf-8")
+    _g(clone, "add", "f.txt")
+    _g(clone, "commit", "-q", "-m", "c")
+    _g(clone, "remote", "add", "origin", str(remote))
+    _g(clone, "push", "-q", "origin", "livetest-2026")
+    ref = LS.fetch_branch_ref(clone)
+    assert ref["ok"] and ref["sha"] == _g(clone, "rev-parse", "HEAD") and ref["ref"] == "origin/livetest-2026"
+
+
+@pytest.mark.parametrize("allowed", [0, None, "2", True, -1])
+def test_missed_weeks_allowed_is_read_exactly(tmp_path, allowed):
+    prereg = _prereg(tmp_path, missed_weeks={} if allowed is None else {"allowed": allowed})
+    checks = LS.livetest_integrity_checks(prereg, {}, [(2026, 10)], {(2026, 10): {}})
+    c = {x.name: x for x in checks}["missed weeks (miss rule)"]
+    assert not c.ok  # 0 allowed with one miss fails; missing, a string, a bool or a negative number fail as invalid
+    if allowed == 0:
+        assert "0 allowed" in c.detail
+    else:
+        assert "must be a non-negative integer" in c.detail
+    ok = LS.livetest_integrity_checks(_prereg(tmp_path, missed_weeks={"allowed": 0}), {}, [(2026, 10)], {})
+    assert {x.name: x for x in ok}["missed weeks (miss rule)"].ok
+
