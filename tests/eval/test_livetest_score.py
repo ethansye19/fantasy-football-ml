@@ -64,7 +64,7 @@ def dim_game(season: int, weeks, unfinished: dict | None = None) -> pl.DataFrame
 
 
 def make_week(tmp_path, season: int, week: int, *, kickoff: datetime = KICKOFF, pushed: datetime | None = None,
-              rehearsal: bool = False, tamper: str | None = None):
+              rehearsal: bool = False, tamper: str | None = None, code_commit: str = "0" * 40):
     """Local outputs, a branch directory entry and a push record for one week."""
     local = tmp_path / "data" / "livetest" / f"{season}w{week:02d}" / "pred"
     local.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def make_week(tmp_path, season: int, week: int, *, kickoff: datetime = KICKOFF, 
         "outputs": outputs, "pins": {"selection_sha256": "sel-crlf", "feature_version": "0.2.0",
                                      "feature_manifest_sha256": "fm"},
         "snapshots": {"processed_live_rows": {"dim_game": "20261112T000000Z"}},
-        "code": {"commit": "0" * 40, "clean": True},
+        "code": {"commit": code_commit, "clean": True},
     }
     payload["digest"] = {"algorithm": "sha256", "of": "canonical JSON of every other top-level field",
                          "value": LS.canonical_digest(payload)}
@@ -103,7 +103,10 @@ def make_week(tmp_path, season: int, week: int, *, kickoff: datetime = KICKOFF, 
     (branch / LS.COMMITMENT_NAME).write_bytes(raw_json)
     (branch / LS.SUMMARY_NAME).write_bytes((local / LS.SUMMARY_NAME).read_bytes())
     stamp = pushed if pushed is not None else kickoff - timedelta(hours=19)
+    wk = f"{season}w{week:02d}"
     record = {"season": season, "week": week, "commit_sha": "b" * 40, "commitment_sha256": LS.sha256_bytes(raw_json),
+              "files_committed": {f"{wk}/{LS.COMMITMENT_NAME}": LS.sha256_bytes(raw_json),
+                                  f"{wk}/{LS.SUMMARY_NAME}": LS.sha256_file(local / LS.SUMMARY_NAME)},
               "commitment_digest": payload["digest"]["value"], "external_timestamp": stamp.isoformat(),
               "external_timestamp_source": "GitHub repository activity API (server time of the push)",
               "github": {"push_activity": {"timestamp": stamp.isoformat(), "after": "b" * 40}}}
@@ -196,24 +199,62 @@ def test_refusals_digest_hash_push_and_rehearsal(tmp_path):
     assert rec.rehearsal and out.is_file()
 
 
-def test_weekly_report_is_information_only_and_parts_accumulate(tmp_path):
+METRIC_WORDS = ("MAE", "pinball", "coverage", "start/sit", "Spearman", "Verdict", "not passed", "beats", "pass ")
+
+
+def _assert_no_metrics(text: str) -> None:
+    """The weekly outputs carry hashes, timestamps and counts only: no decimal number, no metric word."""
+    import re
+
+    body = re.sub(r"\b\d+\.\d+\.\d+\b", " ", text)  # dotted versions such as 0.2.0 are not metrics
+    decimals = re.findall(r"\b\d+\.\d+\b", body)
+    assert decimals == [], decimals
+    for word in METRIC_WORDS:
+        assert word not in text, word
+
+
+def _push_seal(tmp_path, wk: str, tamper: bool = False) -> None:
+    """The runner's push of the sealed-file hashes to the branch (fake branch directory)."""
+    src = tmp_path / "scoring" / LS.SEALED_DIR / f"{wk}.sha256"
+    dst = tmp_path / "branch" / LS.SEALED_BRANCH_DIR / f"{wk}.sha256"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    text = src.read_text(encoding="utf-8")
+    dst.write_text(text.replace("a", "b", 1) if tamper else text, encoding="utf-8")
+
+
+def test_weekly_outputs_are_sealed_and_verification_only(tmp_path):
     dg = dim_game(2026, [10, 11])
     rec, out = _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10), dg)
     text = out.read_text(encoding="utf-8")
-    assert "Verdict:" not in text and "information only" in text
+    assert out.name == "2026w10_verification.md" and "verification only" in text
+    _assert_no_metrics(text)
     assert rec.refusals == [] and rec.files_verified == 2
     names = {c.name: c.ok for c in rec.checks}
     assert names["digest"] and names["pushed before the deadline (GitHub timestamp)"] and names["pin: selection.json"]
-    assert rec.deadline == KICKOFF.isoformat(timespec="seconds").replace("+00:00", "+00:00")
+    assert names["pushed blobs unchanged"]
+    assert rec.deadline == KICKOFF.isoformat(timespec="seconds")
     assert names["code commit"] is False  # the pre-registration has no frozen commit yet
+    sealed = tmp_path / "scoring" / LS.SEALED_DIR
     part = LS.part_path(tmp_path / "scoring", 2026, 10)
-    assert part.is_file() and json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text())["part_sha256"]
+    record = json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
+    seals = LS.read_seal((sealed / "2026w10.sha256").read_text(encoding="utf-8"))
+    assert part.is_file() and seals == {part.name: LS.sha256_file(part), "2026w10.json": LS.sha256_file(sealed / "2026w10.json")}
+    _assert_no_metrics((sealed / "2026w10.sha256").read_text(encoding="utf-8"))
+    # the metrics exist, sealed in the JSON only
+    m = record["sealed_metrics"]
+    assert len(m["week_lines"]) == 22 and len(m["cumulative_lines_500"]) == 22 and m["cumulative_lines_sensitivity"] is None
+    assert any(isinstance(v, float) for v in m["week_points"]["QB"]["chain_v2+cal"].values())
     frame = pl.read_parquet(part)
     assert set(frame["model"].unique()) >= {"chain_v2", "chain_v2+cal", "rolling_avg_4+cal"}
-    # week two sees week one: the window-so-far section lists both weeks
-    _, out2 = _score(tmp_path, 2026, 11, make_week(tmp_path, 2026, 11, kickoff=KICKOFF + timedelta(days=7)), dg)
-    text2 = out2.read_text(encoding="utf-8")
-    assert "2026w10, 2026w11" in text2 and "Verdict:" not in text2 and "(2 of 2;" in text2
+    # no report under reports/ carries metrics; the second week accumulates in the sealed JSON only
+    _, out2 = _score(tmp_path, 2026, 11, make_week(tmp_path, 2026, 11, kickoff=KICKOFF + timedelta(days=7)), dg,
+                     weekly_sensitivity=True, sensitivity_n_boot=60)
+    _assert_no_metrics(out2.read_text(encoding="utf-8"))
+    rec2 = json.loads(LS.record_path(tmp_path / "scoring", 2026, 11).read_text(encoding="utf-8"))
+    assert rec2["sealed_metrics"]["cumulative_weeks"] == [[2026, 10], [2026, 11]]
+    assert rec2["sealed_metrics"]["cumulative_lines_sensitivity"]["n_boot"] == 60
+    for f in (tmp_path / "reports").glob("*.md"):
+        _assert_no_metrics(f.read_text(encoding="utf-8"))
 
 
 def test_final_refused_until_complete_then_prints_one_verdict(tmp_path):
@@ -225,12 +266,16 @@ def test_final_refused_until_complete_then_prints_one_verdict(tmp_path):
     with pytest.raises(LS.ScoreRefused, match="refused until 2026w11 is final"):
         LS.final_evaluation(dim_game=dg_open, **kw)
     dg = dim_game(2026, [10, 11])
-    with pytest.raises(LS.ScoreRefused, match="neither scored nor marked MISSED"):
+    with pytest.raises(LS.ScoreRefused, match="neither sealed nor marked MISSED"):
         LS.final_evaluation(dim_game=dg, **kw)
     _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10), dg, prereg=prereg)
     # week 11 missed: one miss is excluded and the verdict is computed (INVALID here: no frozen commit)
     (tmp_path / "branch" / "2026w11").mkdir(parents=True, exist_ok=True)
     (tmp_path / "branch" / "2026w11" / LS.MISSED_NAME).write_text('{"reason": "offline"}', encoding="utf-8")
+    # the sealed hashes must be on the branch before the final reads anything
+    with pytest.raises(LS.ScoreRefused, match="sealed files do not match the branch record"):
+        LS.final_evaluation(dim_game=dg, **kw)
+    _push_seal(tmp_path, "2026w10")
     verdict, out = LS.final_evaluation(dim_game=dg, **kw)
     assert verdict.startswith("Verdict: INVALID") and "frozen commit" in verdict
     text = out.read_text(encoding="utf-8")
@@ -238,6 +283,73 @@ def test_final_refused_until_complete_then_prints_one_verdict(tmp_path):
     # a dry run can never produce the registry's exact line
     v2, _ = LS.final_evaluation(dim_game=dg, dry_run=True, **kw)
     assert v2.startswith("Dry-run verdict") and "Verdict: APPROVED" not in v2
+    # a tampered sealed file is refused, as is a tampered branch record
+    part = LS.part_path(tmp_path / "scoring", 2026, 10)
+    pl.read_parquet(part).head(5).write_parquet(part)
+    with pytest.raises(LS.ScoreRefused, match="sha256 differs from the branch record"):
+        LS.final_evaluation(dim_game=dg, **kw)
+
+
+def test_final_verdict_uses_the_binding_draws_only(tmp_path):
+    """The 5,000-draw check is report-only: a sensitivity result that fails every line changes nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _g(repo, "init", "-q")
+    _g(repo, "config", "user.email", "t@example.com")
+    _g(repo, "config", "user.name", "t")
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+    _g(repo, "add", "a.txt")
+    _g(repo, "commit", "-q", "-m", "X")
+    x = _g(repo, "rev-parse", "HEAD")
+    prereg = _prereg(tmp_path, commit=x)
+    dg = dim_game(2026, [10, 11])
+    for w, kick in ((10, KICKOFF), (11, KICKOFF + timedelta(days=7))):
+        _score(tmp_path, 2026, w, make_week(tmp_path, 2026, w, kickoff=kick, code_commit=x), dg, prereg=prereg,
+               repo_root=repo)
+        _push_seal(tmp_path, f"2026w{w}")
+    kw = dict(source=LS.BranchSource(tmp_path / "branch"), prereg=prereg, root=tmp_path / "scoring",
+              reports_dir=tmp_path / "reports", n_boot=40, repo_root=repo,
+              consensus=pl.concat([_consensus(2026, 10), _consensus(2026, 11)]))
+    base, out = LS.final_evaluation(dim_game=dg, sensitivity=False, **kw)
+    assert base in ("Verdict: APPROVED", "Verdict: NOT APPROVED"), base
+    frame, _ = LS.load_parts(tmp_path / "scoring", [(2026, 10), (2026, 11)])
+    binding = LS.score_frames(frame, kw["consensus"], n_boot=40)
+
+    def all_fail(frame_, consensus_):
+        sc = LS.score_frames(frame_, consensus_, n_boot=40)
+        sc.results = [LS.LineResult(r.line, False, "forced") for r in sc.results]
+        return sc
+
+    with_sens, out2 = LS.final_evaluation(dim_game=dg, sensitivity_fn=all_fail, **kw)
+    assert with_sens == base
+    text = out2.read_text(encoding="utf-8")
+    sealed = json.loads((tmp_path / "scoring" / LS.SEALED_DIR / "final_lines.json").read_text(encoding="utf-8"))
+    passed_binding = [r.passed for r in binding.results]
+    assert [ln["passed"] for ln in sealed["binding"]["lines"]] == passed_binding
+    assert sealed["sensitivity"]["n_boot"] == LS.SENSITIVITY_N_BOOT and len(sealed["sensitivity"]["differing"]) == sum(passed_binding)
+    assert "Lines whose PASS/FAIL would differ" in text and text.count("Verdict:") == 1
+    same, out3 = LS.final_evaluation(dim_game=dg, sensitivity_fn=lambda f, c: LS.score_frames(f, c, n_boot=40), **kw)
+    assert same == base and "No line differs" in out3.read_text(encoding="utf-8")
+
+
+def test_miss_rule_from_the_pre_registration(tmp_path):
+    dg = dim_game(2026, [10, 11, 12])
+    for w in (11, 12):
+        (tmp_path / "branch" / f"2026w{w}").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "branch" / f"2026w{w}" / LS.MISSED_NAME).write_text("{}", encoding="utf-8")
+    two = _prereg(tmp_path, window=[[2026, 10], [2026, 11], [2026, 12]], missed_weeks={"allowed": 2},
+                  miss_rule="two misses excluded, a third is INVALID")
+    _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10), dg, prereg=two)
+    _push_seal(tmp_path, "2026w10")
+    checks = LS.livetest_integrity_checks(two, LS.load_records(tmp_path / "scoring", [(2026, 10)]),
+                                          [(2026, 10), (2026, 11), (2026, 12)], {(2026, 11): {}, (2026, 12): {}})
+    by = {c.name: c for c in checks}
+    assert by["missed weeks (miss rule)"].ok and "2 allowed" in by["missed weeks (miss rule)"].detail
+    assert "two misses excluded" in by["missed weeks (miss rule)"].detail
+    three = _prereg(tmp_path, window=[[2026, 10], [2026, 11], [2026, 12], [2026, 13]], missed_weeks={"allowed": 2})
+    checks = LS.livetest_integrity_checks(three, {}, [(2026, 11), (2026, 12), (2026, 13)],
+                                          {(2026, 11): {}, (2026, 12): {}, (2026, 13): {}})
+    assert not {c.name: c for c in checks}["missed weeks (miss rule)"].ok
 
 
 def test_final_second_miss_is_invalid_and_checks_cover_each_week(tmp_path):
@@ -247,9 +359,10 @@ def test_final_second_miss_is_invalid_and_checks_cover_each_week(tmp_path):
         (tmp_path / "branch" / f"2026w{w}").mkdir(parents=True, exist_ok=True)
         (tmp_path / "branch" / f"2026w{w}" / LS.MISSED_NAME).write_text("{}", encoding="utf-8")
     _score(tmp_path, 2026, 10, make_week(tmp_path, 2026, 10), dg, prereg=prereg)
+    _push_seal(tmp_path, "2026w10")
     verdict, _ = LS.final_evaluation(source=LS.BranchSource(tmp_path / "branch"), dim_game=dg, prereg=prereg,
                                      root=tmp_path / "scoring", reports_dir=tmp_path / "reports", n_boot=40)
-    assert "INVALID" in verdict and "missed weeks (D-106)" in verdict
+    assert "INVALID" in verdict and "missed weeks (miss rule)" in verdict
     records = LS.load_records(tmp_path / "scoring", [(2026, 10)])
     checks = LS.livetest_integrity_checks(prereg, records, [(2026, 10), (2026, 11), (2026, 12)],
                                           {(2026, 11): {}, (2026, 12): {}})

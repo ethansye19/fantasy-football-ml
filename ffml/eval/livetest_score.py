@@ -96,6 +96,12 @@ VERSION_RE = re.compile(r"^chain_v2-primary-c(\d{4})w(\d{2})-\d{8}T\d{6}Z$")
 #: the fallback window (D-110) when the pre-registration JSON carries no explicit ``window``
 DEFAULT_WINDOW: tuple[tuple[int, int], ...] = (*((2026, w) for w in range(10, 19)), *((2027, w) for w in range(1, 10)))
 WEEK_RE = re.compile(r"^(\d{4})w(\d{1,2})$")
+#: sealed interim results (D-111): weekly metrics go here, never into a report before the final
+SEALED_DIR = "sealed"
+#: where the runner pushes each week's sealed-file hashes on the branch: <SEALED_BRANCH_DIR>/<week>.sha256
+SEALED_BRANCH_DIR = "scoring"
+#: report-only sensitivity check (D-111): the binding rule stays 500 draws, seed 0
+SENSITIVITY_N_BOOT = 5000
 
 
 class ScoreRefused(RuntimeError):
@@ -585,6 +591,25 @@ def verify_week(
         check("code commit", rel.ok, rel.detail)
     else:
         check("code commit", False, "the pre-registration has no frozen commit yet")
+    # the pushed blobs are immutable: the push record's hashes equal the branch copies read now
+    committed = dict(pr.get("files_committed") or {})
+    blobs = {f"{week_key(c.season, c.week)}/{COMMITMENT_NAME}": c.sha256}
+    if branch_summary is not None:
+        blobs[f"{week_key(c.season, c.week)}/{SUMMARY_NAME}"] = sha256_bytes(branch_summary)
+    if committed:
+        bad = [rel_ for rel_, sha in committed.items() if rel_ in blobs and blobs[rel_] != sha]
+        check("pushed blobs unchanged", not bad,
+              f"{len([r for r in committed if r in blobs])} pushed files hash as at push time" if not bad
+              else f"changed since the push: {bad}")
+    stored = (((prereg or {}).get("history_sources") or {}).get("stored_parts") or {})
+    if stored.get("digest"):
+        recs = [src_ for src_ in c.history_sources() if str(src_.get("origin", "")).startswith("stored")]
+        lines = sorted(f"{r['path']} {r['sha256']}" for r in recs)
+        got = sha256_bytes("\n".join(lines).encode("utf-8"))
+        ok_n = stored.get("count") is None or len(recs) == int(stored["count"])
+        check("stored parts digest", got == stored["digest"] and ok_n,
+              f"{len(recs)} stored parts, digest {got[:12]}" + ("" if got == stored["digest"] else
+                                                                 f" (pre-registered {str(stored['digest'])[:12]})"))
     if prereg:
         check_pins(rec, prereg, repo_root)
     return rec, raw_path, summary_bytes
@@ -833,22 +858,69 @@ def scoring_root() -> Path:
 
 
 def part_path(root: Path, season: int, week: int) -> Path:
-    return root / "parts" / f"{season}_w{week:02d}.parquet"
+    return root / SEALED_DIR / f"{week_key(season, week)}.parquet"
 
 
 def record_path(root: Path, season: int, week: int) -> Path:
-    return root / "weeks" / f"{week_key(season, week)}.json"
+    return root / SEALED_DIR / f"{week_key(season, week)}.json"
 
 
-def write_week(root: Path, rec: WeekRecord, frame: pl.DataFrame, extra: Mapping[str, Any]) -> None:
+def seal_path(root: Path, season: int, week: int) -> Path:
+    return root / SEALED_DIR / f"{week_key(season, week)}.sha256"
+
+
+def read_seal(text: str) -> dict[str, str]:
+    """``{file name: sha256}`` from a ``.sha256`` file (``<sha256>  <name>`` per line)."""
+    out = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            out[parts[-1]] = parts[0]
+    return out
+
+
+def verify_seals(source: BranchSource, root: Path, weeks: Iterable[tuple[int, int]]) -> list[Check]:
+    """Every sealed file of every scored week hashes as the branch copy of its ``.sha256`` says."""
+    checks: list[Check] = []
+    for s_, w_ in weeks:
+        wk = week_key(s_, w_)
+        raw = source.read(f"{SEALED_BRANCH_DIR}/{wk}.sha256")
+        if raw is None:
+            checks.append(Check(f"{wk} sealed hashes", False, f"{SEALED_BRANCH_DIR}/{wk}.sha256 is not on the branch"))
+            continue
+        want = read_seal(raw.decode("utf-8"))
+        local = seal_path(root, s_, w_)
+        local_list = read_seal(local.read_text(encoding="utf-8")) if local.is_file() else {}
+        problems = []
+        if not want:
+            problems.append("branch file lists no hashes")
+        if local_list and local_list != want:
+            problems.append("local .sha256 differs from the branch copy")
+        for name, sha in want.items():
+            f = root / SEALED_DIR / name
+            if not f.is_file():
+                problems.append(f"{name} missing")
+            elif sha256_file(f) != sha:
+                problems.append(f"{name} sha256 differs from the branch record")
+        checks.append(Check(f"{wk} sealed hashes", not problems,
+                            f"{len(want)} sealed files match the branch record" if not problems else "; ".join(problems)))
+    return checks
+
+
+def write_sealed(root: Path, rec: WeekRecord, frame: pl.DataFrame, extra: Mapping[str, Any],
+                 metrics: Mapping[str, Any]) -> dict[str, str]:
+    """Write the week's sealed parquet and JSON, then the ``.sha256`` list the runner pushes."""
     pp = part_path(root, rec.season, rec.week)
     pp.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(pp)
     rp = record_path(root, rec.season, rec.week)
-    rp.parent.mkdir(parents=True, exist_ok=True)
     payload = {**rec.as_dict(), **extra, "part": pp.name, "part_sha256": sha256_file(pp),
-               "scored_at": iso(datetime.now(UTC))}
+               "scored_at": iso(datetime.now(UTC)), "sealed_metrics": dict(metrics)}
     rp.write_text(json.dumps(payload, indent=1, default=str), encoding="utf-8")
+    seals = {pp.name: sha256_file(pp), rp.name: sha256_file(rp)}
+    seal_path(root, rec.season, rec.week).write_text(
+        "".join(f"{sha}  {name}\n" for name, sha in seals.items()), encoding="utf-8")
+    return seals
 
 
 def load_parts(root: Path, weeks: Iterable[tuple[int, int]]) -> tuple[pl.DataFrame, list[tuple[int, int]]]:
@@ -923,8 +995,16 @@ def score_week(
     n_boot: int = H.SPEC_N_BOOT,
     dim_game_id: str | None = None,
     snapshot_ids: Mapping[str, Any] | None = None,
+    weekly_sensitivity: bool = False,
+    sensitivity_n_boot: int = SENSITIVITY_N_BOOT,
 ) -> tuple[WeekRecord, Path]:
-    """Verify, score and write one week. Raises :class:`ScoreRefused` on any refusal."""
+    """Verify, score into the sealed store and write the verification report (no metric leaves this function).
+
+    Raises :class:`ScoreRefused` on any refusal. The sealed JSON holds this
+    week's point metrics and line results and the cumulative 22-line results
+    over the weeks sealed so far (500 draws; also ``sensitivity_n_boot`` draws
+    when ``weekly_sensitivity``); nothing of it is rendered or printed.
+    """
     root = Path(root) if root is not None else scoring_root()
     reports_dir = Path(reports_dir) if reports_dir is not None else PROJECT_ROOT / "reports" / "livetest"
     c = load_commitment(source, season, week)
@@ -949,28 +1029,49 @@ def score_week(
         parts.append(baselines.filter((pl.col("season") == season) & (pl.col("week") == week)))
     week_all = pl.concat(parts, how="diagonal_relaxed")
     scored = score_frames(week_all, consensus, n_boot=n_boot)
-    # window so far (information only): earlier parts plus this week
     window = prereg_window(prereg.data if prereg else {})
     earlier, found = load_parts(root, [w for w in window if w != (season, week)])
-    so_far = pl.concat([f for f in (earlier, week_all.filter(pl.col("scoring") == SCORING) if "scoring" in week_all.columns else week_all) if not f.is_empty()], how="diagonal_relaxed")
-    cons_all = consensus
-    scored_so_far = score_frames(so_far, cons_all, n_boot=n_boot) if len(found) else None
+    this_ppr = week_all.filter(pl.col("scoring") == SCORING) if "scoring" in week_all.columns else week_all
+    so_far = pl.concat([f for f in (earlier, this_ppr) if not f.is_empty()], how="diagonal_relaxed")
+    cumulative = score_frames(so_far, consensus, n_boot=n_boot)
+    metrics: dict[str, Any] = {
+        "week_points": {pos: {m: dict(v) for m, v in scored.main.points.get(pos, {}).items()} for pos in POSITIONS},
+        "week_lines": [{"id": r.line.id, "passed": r.passed, "detail": r.detail} for r in scored.results],
+        "cumulative_weeks": sorted(found + [(season, week)]),
+        "cumulative_lines_500": [{"id": r.line.id, "passed": r.passed, "detail": r.detail} for r in cumulative.results],
+        "cumulative_lines_sensitivity": None,
+    }
+    if weekly_sensitivity:
+        sens = score_frames(so_far, consensus, n_boot=sensitivity_n_boot)
+        metrics["cumulative_lines_sensitivity"] = {"n_boot": sensitivity_n_boot, "lines": [
+            {"id": r.line.id, "passed": r.passed, "detail": r.detail} for r in sens.results]}
     extra = {"dim_game_snapshot": dim_game_id, "processed_snapshots": dict(snapshot_ids or {}),
              "rows": frame.height, "comparators": scored.comparators_present,
              "consensus": scored.consensus_present, "n_boot": n_boot, "scoring": SCORING,
              "window_weeks_scored": sorted(found + [(season, week)]), "window_total": len(window)}
-    write_week(root, rec, week_all, extra)
-    text = render_week(rec, scored, scored_so_far, extra, found)
+    seals = write_sealed(root, rec, week_all, extra, metrics)
+    text = render_verification(rec, extra, seals)
     assert "Verdict:" not in text
     reports_dir.mkdir(parents=True, exist_ok=True)
-    out = reports_dir / f"{week_key(season, week)}.md"
+    out = reports_dir / f"{week_key(season, week)}_verification.md"
     out.write_text(text, encoding="utf-8")
     return rec, out
 
 
-def _checks_table(checks: Sequence[Check]) -> str:
+#: checks whose detail may carry numbers that are not hashes, timestamps or counts (calibrator strings)
+_OPAQUE_CHECKS: tuple[str, ...] = ("calibrator:",)
+
+
+def _public_detail(c: Check) -> str:
+    if c.name.startswith(_OPAQUE_CHECKS):
+        return "equal to the pre-registration" if c.ok else "differs from the pre-registration"
+    return c.detail
+
+
+def _checks_table(checks: Sequence[Check], public: bool = False) -> str:
     return RB._md_table(["check", "result", "detail"],
-                        [[c.name, "PASS" if c.ok else "FAIL", c.detail] for c in checks])
+                        [[c.name, "PASS" if c.ok else "FAIL", _public_detail(c) if public else c.detail]
+                         for c in checks])
 
 
 def _lines_table(results: Sequence[LineResult]) -> str:
@@ -979,72 +1080,44 @@ def _lines_table(results: Sequence[LineResult]) -> str:
                          for r in results])
 
 
-def render_week(rec: WeekRecord, scored: Scored, so_far: Scored | None, extra: Mapping[str, Any],
-                earlier: Sequence[tuple[int, int]]) -> str:
+def render_verification(rec: WeekRecord, extra: Mapping[str, Any], seals: Mapping[str, str]) -> str:
+    """The weekly report: verification status only (D-111). No metric, line result or ranking."""
     L: list[str] = []
     a = L.append
     wk = week_key(rec.season, rec.week)
-    a(f"# Live test, {wk}: information only")
+    a(f"# Live test, {wk}: verification only")
     a("")
-    a("This weekly report never decides anything. The 22 pre-registered lines are applied once, over the whole "
-      "window, after 2027 week 9 (D-110); a single week's bootstrap has one cluster, so no interval below is "
-      "meaningful. Outputs are labeled not approved (D-099).")
+    a("Interim results are sealed until the final evaluation (D-111). This report states what was verified "
+      "and which sealed files were written; it carries no metric, line result or ranking, and no weekly report "
+      "ever prints a verdict line.")
     a("")
-    a("## Commitment and integrity")
+    a("## Commitment and timing")
     a("")
     a(RB._md_table(["item", "value"], [
         ["commitment sha256", rec.commitment_sha256], ["digest", rec.digest], ["branch commit", rec.branch_commit or "n/a"],
         ["code commit", rec.code_commit], ["model version", rec.model_version],
-        ["created at / first kickoff", f"{rec.created_at} / {rec.first_kickoff}"],
+        ["created at", rec.created_at], ["committed first kickoff", rec.first_kickoff],
+        ["dim_game first kickoff", rec.dim_game_first_kickoff], ["binding deadline", rec.deadline],
         ["GitHub push timestamp", f"{rec.external_timestamp} ({rec.external_source})"],
         ["games final in dim_game", f"{rec.games_final} of {rec.games} (snapshot {extra.get('dim_game_snapshot')})"],
-        ["files verified", str(rec.files_verified)], ["rows scored (all scorings)", str(extra.get("rows"))],
-        ["comparators present", ", ".join(scored.comparators_present) or "none (L01-L12 unavailable this week)"],
-        ["consensus present", "yes" if scored.consensus_present else "no (L13-L16 unavailable this week)"],
+        ["processed snapshots", "; ".join(f"{k} {v}" for k, v in (extra.get("processed_snapshots") or {}).items()) or "n/a"],
+        ["files verified", str(rec.files_verified)], ["rows sealed", str(extra.get("rows"))],
+        ["comparators present", ", ".join(extra.get("comparators") or []) or "none"],
+        ["consensus present", "yes" if extra.get("consensus") else "no"],
+        ["weeks sealed so far", ", ".join(week_key(s_, w_) for s_, w_ in extra.get("window_weeks_scored", []))
+         + f" ({len(extra.get('window_weeks_scored', []))} of {extra.get('window_total')})"],
     ]))
     a("")
-    a(_checks_table(rec.checks))
+    a("## Checks")
     a("")
-    a("## This week, PPR, calibrated chain_v2 (point values)")
+    a(_checks_table(rec.checks, public=True))
     a("")
-    rows = []
-    for pos in POSITIONS:
-        f = FOCUS + RB.CAL
-        if not scored.main.has(pos, f):
-            continue
-        v = scored.main.value
-        rows.append([pos, str(scored.main.n.get(pos, {}).get(f, "")), RB._num(v(pos, f, "mae")),
-                     RB._num(v(pos, f, "pinball_q10")), RB._num(v(pos, f, "pinball_q50")), RB._num(v(pos, f, "pinball_q90")),
-                     RB._num(v(pos, f, "coverage_tie_aware")), RB._num(v(pos, f, "coverage_80")),
-                     RB._num(v(pos, f, "start_sit_common")) if pos in RB.ACCEPT_POSITIONS else "n/a"])
-    a(RB._md_table(["position", "n", "MAE", "pinball q10", "pinball q50", "pinball q90", "tie-aware coverage",
-                    "closed coverage", "start/sit (common set)"], rows))
+    a("## Sealed files")
     a("")
-    if scored.comparators_present:
-        a("Chain minus comparator this week (point differences; negative favours the chain):")
-        a("")
-        rows = []
-        for pos in RB.ACCEPT_POSITIONS:
-            for comp in scored.comparators_present:
-                other = comp + RB.CAL
-                if scored.main.has(pos, other):
-                    rows.append([pos, f"`{comp}`"] + [RB._num(scored.main.delta(pos, FOCUS + RB.CAL, other, m).delta, 3, True)
-                                                      for m in H.BEATS_METRICS])
-        a(RB._md_table(["position", "comparator", "MAE", "pinball q10", "pinball q50", "pinball q90"], rows))
-        a("")
-    total = extra.get("window_total", 18)
-    a(f"## The 22 lines over the weeks scored so far ({len(earlier) + 1} of {total}; information only)")
+    a(RB._md_table(["file", "sha256"], [[name, sha] for name, sha in seals.items()]))
     a("")
-    if so_far is None:
-        a("First scored week: the lines are shown for this week alone (one cluster; no interval).")
-        a("")
-        a(_lines_table(scored.results))
-    else:
-        a("Weeks: " + ", ".join(week_key(s, w) for s, w in sorted([*earlier, (rec.season, rec.week)])) + ".")
-        a("")
-        a(_lines_table(so_far.results))
-    a("")
-    a("A line marked not passed here is not a failure of the test; the test has one evaluation, after 2027 week 9.")
+    a(f"The runner pushes `{wk}.sha256` to the branch under `{SEALED_BRANCH_DIR}/`; the final evaluation verifies "
+      "every sealed file against that record before reading it.")
     a("")
     return "\n".join(L) + "\n"
 
@@ -1062,7 +1135,8 @@ def rules_hash(rules: Mapping[str, Any]) -> str:
 
 def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int], Mapping[str, Any]],
                               window: Sequence[tuple[int, int]], misses: Mapping[tuple[int, int], Any], *,
-                              repo_root: Path = PROJECT_ROOT, changelog: Path | None = None) -> list[Check]:
+                              repo_root: Path = PROJECT_ROOT, changelog: Path | None = None,
+                              root: Path | None = None) -> list[Check]:
     """The pre-metric checks of the final evaluation (the live-test counterpart of ``integrity_checks``)."""
     data = prereg.data
     checks: list[Check] = []
@@ -1100,9 +1174,13 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
     unknown = [w for w in window if w not in records and w not in misses]
     checks.append(Check("window complete", not unknown,
                         f"{len(scored)} scored, {len(missed)} missed, {len(unknown)} unaccounted {unknown[:3]}"))
-    checks.append(Check("missed weeks (D-106)", len(missed) <= 1,
-                        f"{len(missed)} missed week(s) {[week_key(*w) for w in missed]}"
-                        + ("; one is excluded, the window is not extended" if len(missed) == 1 else "")))
+    allowed_misses = int(((data.get("missed_weeks") or {}).get("allowed")) or 1)
+    rule_text = str(data.get("miss_rule") or data.get("one_miss_rule") or "D-106")[:160]
+    checks.append(Check("missed weeks (miss rule)", len(missed) <= allowed_misses,
+                        f"{len(missed)} missed week(s) {[week_key(*w) for w in missed]}, {allowed_misses} allowed"
+                        + ("; excluded, the window is not extended" if 0 < len(missed) <= allowed_misses else
+                           "; more than allowed: INVALID" if len(missed) > allowed_misses else "")
+                        + f"; rule: {rule_text}"))
     overlap = [w for w in window if w in records and w in misses]
     checks.append(Check("no week both scored and missed", not overlap, f"{[week_key(*w) for w in overlap]}"))
     for (s, w), r in sorted(records.items()):
@@ -1120,10 +1198,31 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
                             f"commitment {str(r.get('commitment_sha256'))[:12]}, GitHub push {r.get('external_timestamp')}, "
                             f"kickoff {r.get('first_kickoff')}, {r.get('files_verified')} files"
                             + ("" if not failed else "; FAILED: " + "; ".join(f"{c['name']} ({c['detail']})" for c in failed[:4]))))
-        part = part_path(scoring_root(), s, w) if "part_dir" not in r else Path(r["part_dir"]) / r["part"]
+        part = part_path(Path(root) if root is not None else scoring_root(), s, w)
         if r.get("part_sha256") and part.is_file():
-            checks.append(Check(f"{wk} part", sha256_file(part) == r["part_sha256"], f"{part.name} sha256 unchanged since scoring"))
+            checks.append(Check(f"{wk} sealed part", sha256_file(part) == r["part_sha256"],
+                                f"{part.name} sha256 unchanged since scoring"))
     return checks
+
+
+def line_intervals(sc: Scored, line: H.PreregLine, digits: int = 3) -> str:
+    """Compact text of the interval(s) behind one line."""
+    f = FOCUS + RB.CAL
+    if line.kind == "beats_baseline":
+        other = f"{line.comparator}{RB.CAL}"
+        if not (sc.main.has(line.position, f) and sc.main.has(line.position, other)):
+            return "n/a"
+        return "; ".join(f"{RB.METRIC_LABEL[m]} [{RB._num(d.lo, digits, True)}, {RB._num(d.hi, digits, True)}]"
+                         for m in H.BEATS_METRICS for d in [sc.main.delta(line.position, f, other, m)])
+    if line.kind == "startsit_consensus":
+        if sc.cons is None or not sc.cons.has(line.position, f):
+            return "n/a"
+        d = sc.cons.delta(line.position, f, RB.CONSENSUS, "start_sit_common")
+        return f"[{RB._num(d.lo, digits, True)}, {RB._num(d.hi, digits, True)}]"
+    return RB._num(sc.main.value(line.position, f, "coverage_tie_aware"), digits)
+
+
+SensitivityFn = Callable[[pl.DataFrame, pl.DataFrame | None], Scored]
 
 
 def final_evaluation(
@@ -1138,8 +1237,19 @@ def final_evaluation(
     dry_run: bool = False,
     n_boot: int = H.SPEC_N_BOOT,
     now: datetime | None = None,
+    sensitivity: bool = True,
+    sensitivity_n_boot: int = SENSITIVITY_N_BOOT,
+    sensitivity_fn: SensitivityFn | None = None,
+    require_seals: bool = True,
 ) -> tuple[str, Path]:
-    """The one evaluation of the window. Returns the verdict line and the report path."""
+    """The one evaluation of the window. Returns the verdict line and the report path.
+
+    Refused until every window week is final and each is sealed or marked
+    MISSED, and when any sealed file does not hash as the branch record says.
+    The verdict uses the 500-draw, seed-0 intervals only; the
+    ``sensitivity_n_boot``-draw intervals are reported beside them and
+    stored, and any line whose PASS/FAIL would differ is listed.
+    """
     root = Path(root) if root is not None else scoring_root()
     reports_dir = Path(reports_dir) if reports_dir is not None else PROJECT_ROOT / "reports" / "livetest"
     window = prereg_window(prereg.data)
@@ -1148,35 +1258,81 @@ def final_evaluation(
     if not st_last.is_final:
         raise ScoreRefused(f"the final is refused until {week_key(*last)} is final in dim_game "
                            f"({st_last.final} of {st_last.games} games final)")
-    not_final = [week_key(s, w) for s, w in window if not week_status(dim_game, s, w).is_final]
+    not_final = [week_key(s_, w_) for s_, w_ in window if not week_status(dim_game, s_, w_).is_final]
     if not_final:
         raise ScoreRefused(f"weeks not final in dim_game: {not_final}")
     records = load_records(root, window)
     misses = {w: m for w in window if w not in records and (m := missed_marker(source, *w)) is not None}
     unknown = [week_key(*w) for w in window if w not in records and w not in misses]
     if unknown:
-        raise ScoreRefused(f"the final is refused: weeks neither scored nor marked MISSED: {unknown}")
-    checks = livetest_integrity_checks(prereg, records, window, misses, repo_root=repo_root)
+        raise ScoreRefused(f"the final is refused: weeks neither sealed nor marked MISSED: {unknown}")
+    scored_weeks = [w for w in window if w in records]
+    seal_checks = verify_seals(source, root, scored_weeks) if require_seals else []
+    bad_seals = [c for c in seal_checks if not c.ok]
+    if bad_seals:
+        raise ScoreRefused("sealed files do not match the branch record: "
+                           + "; ".join(f"{c.name}: {c.detail}" for c in bad_seals))
+    checks = livetest_integrity_checks(prereg, records, window, misses, repo_root=repo_root, root=root) + seal_checks
     results: list[LineResult] | None = None
     scored: Scored | None = None
+    sens: Scored | None = None
     if all(c.ok for c in checks):
-        frame, found = load_parts(root, [w for w in window if w in records])
+        frame, found = load_parts(root, scored_weeks)
         scored = score_frames(frame, consensus, n_boot=n_boot)
         results = scored.results
+        if sensitivity:
+            sens = sensitivity_fn(frame, consensus) if sensitivity_fn else score_frames(frame, consensus,
+                                                                                         n_boot=sensitivity_n_boot)
     verdict = H.verdict_text(checks, results, dry_run=dry_run)
     L: list[str] = [f"# Live test final evaluation ({week_key(*window[0])} to {week_key(*last)})", "",
                     f"Evaluated {iso(now or datetime.now(UTC))}. Pre-registration `{PREREG_DOC}` sha256 `{prereg.sha256[:16]}...`.",
-                    "", "## Integrity checks", "", _checks_table(checks), "", "## The 22 lines", ""]
+                    "", "## Integrity checks (including the sealed-file hashes against the branch record)", "",
+                    _checks_table(checks), "", "## The 22 lines (binding: 500 week-clustered paired draws, seed 0)", ""]
+    differing: list[dict[str, Any]] = []
     if results is not None and scored is not None:
-        L += [f"Weeks scored: {', '.join(week_key(s, w) for s, w in scored.weeks)}"
-              + (f"; excluded (D-106): {', '.join(week_key(*w) for w in misses)}" if misses else "") + ".", "",
+        L += [f"Weeks scored: {', '.join(week_key(s_, w_) for s_, w_ in scored.weeks)}"
+              + (f"; excluded (miss rule): {', '.join(week_key(*w) for w in misses)}" if misses else "") + ".", "",
               _lines_table(results), ""]
+        if sens is not None:
+            L += [f"## Report-only sensitivity check: {sensitivity_n_boot:,} draws (D-111)", "",
+                  "The binding verdict above uses the 500-draw intervals only. The same lines with "
+                  f"{sensitivity_n_boot:,} week-clustered paired draws (seed 0) are shown for disclosure; they "
+                  "cannot change a line's PASS/FAIL or the verdict.", ""]
+            rows = []
+            for r5, rs in zip(results, sens.results, strict=True):
+                differs = r5.passed != rs.passed
+                rows.append([r5.line.id, "PASS" if r5.passed else "FAIL", line_intervals(scored, r5.line),
+                             "PASS" if rs.passed else "FAIL", line_intervals(sens, rs.line), "yes" if differs else ""])
+                if differs:
+                    differing.append({"id": r5.line.id, "binding": r5.passed, "binding_intervals": line_intervals(scored, r5.line),
+                                      "sensitivity": rs.passed, "sensitivity_intervals": line_intervals(sens, rs.line)})
+            L += [RB._md_table(["line", "binding", "binding interval(s)", f"{sensitivity_n_boot:,}-draw",
+                                f"{sensitivity_n_boot:,}-draw interval(s)", "differs"], rows), ""]
+            if differing:
+                L += ["Lines whose PASS/FAIL would differ under the sensitivity check (disclosed; not binding):", ""]
+                L += [f"- {d['id']}: binding {'PASS' if d['binding'] else 'FAIL'} {d['binding_intervals']}; "
+                      f"{sensitivity_n_boot:,} draws {'PASS' if d['sensitivity'] else 'FAIL'} {d['sensitivity_intervals']}"
+                      for d in differing] + [""]
+            else:
+                L += ["No line differs between the binding and the sensitivity intervals.", ""]
     else:
         L += ["Not computed: an integrity check failed.", ""]
     L += ["## Verdict", "", verdict, ""]
     reports_dir.mkdir(parents=True, exist_ok=True)
     out = reports_dir / ("final_dry_run.md" if dry_run else "final.md")
     out.write_text("\n".join(L), encoding="utf-8")
+    sealed_out = root / SEALED_DIR / ("final_lines_dry_run.json" if dry_run else "final_lines.json")
+    sealed_out.parent.mkdir(parents=True, exist_ok=True)
+    sealed_out.write_text(json.dumps({
+        "evaluated_at": iso(now or datetime.now(UTC)), "verdict": verdict, "dry_run": dry_run,
+        "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks],
+        "binding": {"n_boot": n_boot, "lines": [{"id": r.line.id, "passed": r.passed, "detail": r.detail,
+                                                  "intervals": line_intervals(scored, r.line)} for r in results]} if results and scored else None,
+        "sensitivity": {"n_boot": sensitivity_n_boot, "lines": [{"id": r.line.id, "passed": r.passed, "detail": r.detail,
+                                                                 "intervals": line_intervals(sens, r.line)} for r in sens.results],
+                        "differing": differing} if sens is not None else None,
+        "unsealed_weeks": [week_key(*w) for w in scored_weeks],
+    }, indent=1, default=str), encoding="utf-8")
     return verdict, out
 
 
@@ -1205,6 +1361,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     ap.add_argument("--no-consensus", action="store_true")
     ap.add_argument("--allow-rehearsal", action="store_true", help="score a rehearsal commitment (information only)")
     ap.add_argument("--prereg", default=None)
+    ap.add_argument("--weekly-sensitivity", action="store_true",
+                    help="also seal the cumulative lines at the sensitivity draw count each week (slow)")
+    ap.add_argument("--no-sensitivity", action="store_true", help="with --final: skip the report-only check")
     args = ap.parse_args(argv)
     source = BranchSource(None if args.no_worktree else Path(args.worktree))
     prereg = load_prereg(args.prereg)
@@ -1215,7 +1374,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
         try:
             verdict, out = final_evaluation(source=source, dim_game=load_dim_game(), prereg=prereg,
                                             consensus=None if args.no_consensus else _all_consensus(prereg),
-                                            dry_run=args.dry_run)
+                                            dry_run=args.dry_run, sensitivity=not args.no_sensitivity)
         except ScoreRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 3
@@ -1245,13 +1404,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
         rec, out = score_week(season, week, source=source, dim_game=dim_game, push_record=push_record,
                               roots=[PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines,
                               consensus=consensus, prereg=prereg, allow_rehearsal=args.allow_rehearsal,
-                              dim_game_id=dim_game_snapshot_id(), snapshot_ids=processed_snapshot_ids())
+                              dim_game_id=dim_game_snapshot_id(), snapshot_ids=processed_snapshot_ids(),
+                              weekly_sensitivity=args.weekly_sensitivity)
     except ScoreRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     failed = [c.name for c in rec.checks if not c.ok]
-    print(f"scored {week_key(season, week)}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
-          + (f"; failed: {failed}" if failed else ""))
+    print(f"sealed {week_key(season, week)}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
+          + (f"; failed: {failed}" if failed else "") + "; no metric is printed before the final (D-111)")
     print(f"wrote {out}")
     return 0
 

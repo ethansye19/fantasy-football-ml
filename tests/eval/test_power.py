@@ -321,3 +321,23 @@ def test_simulate_rules_shapes(built):
     res = PW.simulate_rules(data, TEST_WINDOW, 4)
     assert res.passed[("A", "R1")].shape == (4, 28) and res.passed[("N0_vc", "R3")].shape == (4, 34)
     assert (res.weeks == 3).all()
+
+
+def test_drop_n_windows_exclude_distinct_weeks(built):
+    """drop_n (1476ac6): n weeks of the window, drawn without replacement, are excluded; drop_one still means 1."""
+    _, data = built
+    base = PW.Window("t", "t", WEEKS, (3, None, 2))
+    for n in (0, 1, 2):
+        w = PW.Window("tn", "t", WEEKS, (3, None, 2), drop_n=n)
+        for seed in range(6):
+            picks = PW.draw_window(data, w, np.random.default_rng(seed))
+            assert len(picks) == len(WEEKS) - n and len({p.week for p in picks}) == len(picks)
+    one = PW.Window("t1", "t", WEEKS, (3, None, 2), drop_one=True)
+    assert all(len(PW.draw_window(data, one, np.random.default_rng(s))) == len(WEEKS) - 1 for s in range(4))
+    # the slate and game draws before the drop are the same stream as the full window
+    full = PW.draw_window(data, base, np.random.default_rng(3))
+    dropped = PW.draw_window(data, PW.Window("t2", "t", WEEKS, (3, None, 2), drop_n=2), np.random.default_rng(3))
+    assert all(any(p.season == q.season and p.week == q.week for q in full) for p in dropped)
+    assert set(PW.MISS_WINDOWS) == {"ext18", "ext18_one_miss", "ext18_two_miss"}
+    assert PW.MISS_WINDOWS["ext18_two_miss"].drop_n == 2 and PW.WINDOW_SEED_INDEX["ext18_two_miss"] == 6
+
