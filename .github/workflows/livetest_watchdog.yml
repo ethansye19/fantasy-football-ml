@@ -45,6 +45,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # the script talks to the API with the env token; nothing needs git credentials
+          persist-credentials: false
       - name: Check the commitments branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

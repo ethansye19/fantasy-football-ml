@@ -67,19 +67,19 @@ jobs:
   # route must answer 503 no_approved_model from the built image.
   api-image:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       BASE: http://localhost:8000
       DUMMY_LEAGUE: 00000000-0000-0000-0000-000000000000
       NO_MODEL_MESSAGE: "No approved model. Projections are off until a model passes its pre-registered test."
     steps:
       - uses: actions/checkout@v4
-      - name: Build and start api + postgres
-        # Only the api service (postgres comes with it through depends_on); the
-        # web image is built in its own job once one exists (proposal P-CI-WEB).
+      - name: Build and start postgres, api and web
+        # postgres comes with api through depends_on; web waits for api to be healthy.
         run: |
-          mkdir -p data artifacts reports
-          docker compose up -d --build --wait --wait-timeout 240 api
+          mkdir -p data/predictions data/processed/dim_player data/processed/dim_team \
+                   data/processed/sleeper_players data/raw/schedules artifacts reports
+          docker compose up -d --build --wait --wait-timeout 420 api web
       - name: Health and approval state (production, no approved model)
         run: |
           set -euo pipefail
@@ -141,22 +141,88 @@ jobs:
           grep -qi '^x-content-type-options: nosniff' headers.txt
           grep -qi '^cache-control: no-store' headers.txt
           test "$(docker compose exec -T api id -u)" = "10001"
-      - name: Audit Python packages installed in the image (report only)
-        # Report only: Dockerfile.api installs from pyproject ranges, not from
-        # requirements.lock.txt, and the base image ships its own pip and
-        # setuptools (docs/SECURITY.md, finding QA-F09). The lock itself is
-        # audited, blocking, in the security job.
-        continue-on-error: true
+      - name: Web image renders, sends security headers, and the proxy carries the gate state
+        run: |
+          set -euo pipefail
+          WEB=http://localhost:3000
+          code="$(curl -s -o index.html -D web-headers.txt -w '%{http_code}' "$WEB/")"
+          cat web-headers.txt
+          test "$code" = "200"
+          grep -qi '^x-frame-options: DENY' web-headers.txt
+          grep -qi '^x-content-type-options: nosniff' web-headers.txt
+          grep -qi '^referrer-policy:' web-headers.txt
+          grep -qi "^content-security-policy: .*frame-ancestors 'none'" web-headers.txt
+          ! grep -qi '^x-powered-by:' web-headers.txt
+          for page in /about /projections; do
+            test "$(curl -s -o /dev/null -w '%{http_code}' "$WEB$page")" = "200"
+          done
+          # the same-origin proxy forwards to the API and passes the gate state through
+          curl -fsS "$WEB/api/meta/health" | jq -e '.status == "ok" and .environment == "production"'
+          code="$(curl -s -o body.json -D proxy-headers.txt -w '%{http_code}' "$WEB/api/projections")"
+          echo "proxy /api/projections -> $code $(cat body.json)"
+          test "$code" = "503"
+          jq -e --arg msg "$NO_MODEL_MESSAGE" \
+            '. == {"status": "no_approved_model", "message": $msg}' body.json > /dev/null
+          grep -qi '^x-ffml-approval: none' proxy-headers.txt
+          grep -qi '^cache-control: no-store' proxy-headers.txt
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$WEB/api/nope")" = "404"
+      - name: Audit Python packages installed in the image
+        # Blocking since QA-F09: the image installs from requirements.lock.txt and
+        # pins setuptools, so this must agree with the security job's audit of the lock.
         run: |
           docker compose exec -T api python -m pip freeze --all | grep -v '^ffml' > image-freeze.txt
           cat image-freeze.txt
           pipx run --spec pip-audit==2.10.1 pip-audit -r image-freeze.txt --no-deps --disable-pip --progress-spinner off
-      - name: API logs
+      - name: API and web logs
         if: always()
-        run: docker compose logs api
+        run: docker compose logs api web
       - name: Stop the stack
         if: always()
         run: docker compose down -v
+
+  # Web app checks (QA-4.2, finding QA-F20): lint, types, unit tests, production
+  # build, then the Playwright smoke suite against the contract mock in both
+  # modes (web/playwright.config.ts starts the mock and `next start` itself).
+  # Independent of the python job. The real-API suite (e2e:real) belongs to the
+  # Phase 6 end-to-end job together with the API image.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests (vitest)
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: Playwright smoke against the mock (production and private_test)
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Secrets scan of the full git history and dependency audits (QA-4.1,
   # docs/SECURITY.md). Pinned tool versions; the gitleaks binary is checked
