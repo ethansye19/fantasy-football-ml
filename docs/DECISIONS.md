@@ -115,6 +115,8 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-113 | 2026-11-06 | logged (routine, D-112) | API hardening defaults from QA-4.1: body limit 256 KiB; per-client rate limits by route family (429 + Retry-After); docs endpoints off in production; CSP/frame/referrer headers; compose binds 127.0.0.1 and mounts predictions, artifacts, reports, the three identity tables and raw schedules only, never restricted ECR directories; Dockerfile.api installs from the lock on a digest-pinned base |
 | D-114 | 2026-11-06 | logged (routine, D-112) | Web app conventions (D-UI-1 to D-UI-5): browser calls the API only through the app's own /api proxy (FFML_API_URL read per request, X-Forwarded-For passed on, 256 KiB body limit); league id in localStorage until D-011 sessions exist; approval wording and banners per D-099/D-101; web/mock is test-only; per-request nonce CSP without 'unsafe-inline' scripts, so every route renders dynamically |
 | D-115 | 2026-11-06 | accepted (owner) | Scorer fix before the freeze: a commit that only appends to the change log needs no entry of its own (non-merge, change log only, additions only); freeze waits for an end-to-end rehearsal on synthetic data and the Evaluator's independent review |
+| D-116 | 2026-11-06 | accepted (owner) | Pre-freeze scorer changes: merge the four reviewed fixes (stray markers flagged, a failed final fetch records no verdict and can be retried); pre-build logged-before-use check that blocks and alerts; bootstrap subset only if proven identical for 500 and 5,000 draws; Friday scoring with a fixed weekly data cutoff and the snapshot hash sealed; full rehearsal rerun before the freeze |
+| D-117 | 2026-11-06 | accepted (owner) | Delegation replaces D-112: the orchestrator asks no questions, chooses its recommended option, logs each decision and assumption here, and approves the freeze itself once the full rehearsal and the Evaluator's review pass; the owner is contacted only for password or laptop steps, publishing, making the repo public, or new costs |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -953,6 +955,87 @@ missed weeks, sealed results, a missing entry, a change-log-only commit),
 and the Evaluator reviews the fix and the rehearsal independently. The
 owner then sees X, the rehearsal evidence and the freeze trade-off, and
 approves the freeze.
+
+## D-116 Pre-freeze scorer and runner changes (owner, 2026-11-06)
+
+After QA's rehearsal (1f2baf9) and the Evaluator's review (455cd6d):
+
+**A. The four reviewed fixes are merged** (QA-F27 reports directory, QA-F28
+committed weeks never excluded, QA-F29 the final reads only the fetched
+GitHub ref, the exact miss allowance). A stray missed-week marker on a
+committed week is flagged, not INVALID. A failed GitHub fetch at the final
+stops without recording any verdict, so the final can be retried. The final
+report lists every flagged marker with its week and creation time.
+
+**B. Three further changes, each with the owner's condition:**
+1. *Logged before first use.* A pre-build check blocks the weekly build and
+   alerts the owner if a change since the last build to the code the build
+   runs lacks a change-log entry. A blocked build that is fixed before the
+   deadline is not a miss.
+2. *Bootstrap only the frames the 22 lines read.* Adopted only if the
+   Evaluator proves identical verdicts and sensitivity outputs against the
+   full computation, for both the binding 500-draw rule and the 5,000-draw
+   report.
+3. *Friday scoring.* Weekly scoring moves from Tuesday to Friday, with a
+   fixed weekly data cutoff; corrections after the cutoff are ignored; the
+   data snapshot hash is recorded with each sealed week.
+
+**C.** The full rehearsal suite is rerun, not only the affected scenarios,
+adding a blocked build, a stat correction after the cutoff, and a failed
+final fetch.
+
+## D-117 Delegation, replacing D-112 (owner, 2026-11-06)
+
+From now on the orchestrator does not ask the owner questions. It makes
+reasonable assumptions, chooses its recommended option, and logs each
+decision and assumption in this file. This includes approving the freeze
+once the full rehearsal and the Evaluator's review pass. Every rule already
+decided stays; no gate, threshold or frozen rule is weakened to make a
+deadline. The owner is contacted only for steps that need the owner's
+password or laptop (task registration, power settings, the logged-off dry
+run), and before publishing anything, making the repository public, or
+creating new costs. When the freeze is done, the owner gets a short summary
+with X and the rehearsal results.
+
+### Assumptions logged under D-117 for D-116 (orchestrator, 2026-11-06)
+
+- **A1, which changes the pre-build check covers.** The build runs from the
+  pinned worktree, so "a change since the last build" means any commit
+  between the last build's code commit and the commit the pinned worktree
+  holds now. Each such commit must have a change-log entry; a commit that
+  touches a frozen path also blocks the build (frozen paths need the owner's
+  ruling, D-111). Allowed-path changes on `main` that never reach the pinned
+  worktree (api/, web/, docs, scripts) are checked by the final's change-log
+  rule as before. The block retries with the runner's normal 30-minute loop
+  and alerts the owner; it becomes a miss only if no valid commitment is
+  pushed by the deadline.
+- **A2, the scorer's per-week check.** In addition, the final verifies for
+  every scored week that each commit between X and that week's build commit
+  was in the change log as it stood at that build commit (the Evaluator's
+  proposal), so a build cannot be logged after the fact.
+- **A3, the Friday data cutoff.** The weekly data cutoff is 12:00 UTC on the
+  first Friday at least 72 hours after the last kickoff of the week. The
+  scoring job refreshes data at or after the cutoff and scores against the
+  first processed snapshot taken at or after it; later snapshots are never
+  used for that week. The sealed week records the snapshot ids and a SHA-256
+  of the outcome rows used. The final recomputes only from sealed parts, so
+  later corrections cannot enter. The runner's weekly scoring task runs on
+  Fridays from 13:00 UTC with retries.
+- **A4, a failed final fetch.** "Stops without recording a verdict" means
+  the final exits with a retryable code, writes no `Verdict:` line and no
+  final report, and leaves the sealed files untouched.
+- **A5, marker creation time.** It is the GitHub commit time of the commit
+  that added the marker on `livetest-2026`, plus `created_at` inside the
+  marker if present.
+- **A6, the bootstrap-subset proof.** It must hold by construction (the
+  week-clustered draw matrix is the same whichever frames are included) and
+  be demonstrated by tests comparing every interval, line result, verdict
+  and sensitivity output to the full computation on the rehearsal worlds,
+  at 500 and at 5,000 draws. If either part fails, the full computation
+  stays and the runner's timeout is raised instead.
+- **A7, runner priority and timeout.** The weekly scorer runs at
+  above-normal priority with a 360-minute timeout (scripts/, no effect on
+  any verdict).
 
 ## Owner answers received 2026-11-01
 
