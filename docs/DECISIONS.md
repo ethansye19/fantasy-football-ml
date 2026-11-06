@@ -112,6 +112,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-110 | 2026-11-05 | recorded | D-105 selects no candidate (best good-model pass 0.614 < 0.70); fallback applies: unchanged 22 rules over 2026 w10-18 + 2027 w1-9; no approved model for the rest of 2026; no provisional approval tier |
 | D-111 | 2026-11-05 | accepted (owner) | Corrected live-test pre-registration approved: verdict about 2027-11-09, app on no approved model until then; replay-proven compatibility fixes only; two misses allowed; sealed interim results; v3 outside frozen paths; 56% good-model pass rate stated plainly; report-only 5,000-draw sensitivity check; 500-draw seed-0 bootstrap the only binding rule |
 | D-112 | 2026-11-05 | accepted (owner) | Delegation: the orchestrator decides routine, reversible implementation choices and logs them; it stops for the owner only before verdict-affecting changes, freezes and registrations, publishing or exposure, permissions, credentials or costs, each time with a recommendation and the main trade-off |
+| D-113 | 2026-11-06 | logged (routine, D-112) | API hardening defaults from QA-4.1: body limit 256 KiB; per-client rate limits by route family (429 + Retry-After); docs endpoints off in production; CSP/frame/referrer headers; compose binds 127.0.0.1 and mounts predictions, artifacts, reports, the three identity tables and raw schedules only, never restricted ECR directories; Dockerfile.api installs from the lock on a digest-pinned base |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -901,6 +902,23 @@ registering the scheduled task, or any other hard-to-undo step; publishing
 projections or approval claims, making the repository public, or exposing
 restricted data; expanding permissions, handling credentials, or creating
 new costs. Each stop comes with a recommendation and the main trade-off.
+
+## D-113 API hardening defaults (routine, logged under D-112; 2026-11-06)
+
+Backend fixes for the QA-4.1 findings, all reversible configuration choices:
+`FFML_BODY_MAX_BYTES` 256 KiB (413 above); rate limits per client and route
+family (sleeper 10/min burst 5, write 30/10, heavy 30/10, read 120/30, meta
+300/60; 429 with Retry-After; `FFML_TRUSTED_PROXIES`); `/docs`, `/redoc`
+and `/openapi.json` off in production unless `FFML_DOCS_ENABLED`; CSP,
+X-Frame-Options and Referrer-Policy on every response; production refuses
+`*` or non-http(s) CORS origins; scoring weights must be finite within
++-100; Sleeper lookup usernames ASCII only; compose binds the API to
+127.0.0.1 and mounts only what serving reads (predictions, artifacts,
+reports, `dim_player`, `dim_team`, `sleeper_players`, raw schedules), never
+the restricted consensus directories; a root `.dockerignore` keeps `data/`
+and `artifacts/` out of build contexts; `Dockerfile.api` installs from
+`requirements.lock.txt` on a digest-pinned base. Authentication (QA-F14)
+stays a Gate 6 item; the API is single-user on localhost until then.
 
 ## Owner answers received 2026-11-01
 
