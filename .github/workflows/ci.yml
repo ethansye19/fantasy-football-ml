@@ -142,30 +142,45 @@ jobs:
           grep -qi '^cache-control: no-store' headers.txt
           test "$(docker compose exec -T api id -u)" = "10001"
       - name: Web image renders, sends security headers, and the proxy carries the gate state
+        # Every check names what is missing in an ::error:: annotation. The CSP is
+        # set per request by web/proxy.ts (nonce, QA-F16), so the image must
+        # contain that file (QA-F26).
         run: |
           set -euo pipefail
           WEB=http://localhost:3000
+          fail() { echo "::error title=web image smoke::$1"; exit 1; }
+          has() { grep -qiE "$2" "$1" || fail "$3 (no line matching '$2' in $1)"; }
           code="$(curl -s -o index.html -D web-headers.txt -w '%{http_code}' "$WEB/")"
           cat web-headers.txt
-          test "$code" = "200"
-          grep -qi '^x-frame-options: DENY' web-headers.txt
-          grep -qi '^x-content-type-options: nosniff' web-headers.txt
-          grep -qi '^referrer-policy:' web-headers.txt
-          grep -qi "^content-security-policy: .*frame-ancestors 'none'" web-headers.txt
-          ! grep -qi '^x-powered-by:' web-headers.txt
+          [ "$code" = "200" ] || fail "GET / answered $code, expected 200"
+          has web-headers.txt '^x-frame-options: DENY' "X-Frame-Options DENY missing on /"
+          has web-headers.txt '^x-content-type-options: nosniff' "nosniff missing on /"
+          has web-headers.txt '^referrer-policy:' "Referrer-Policy missing on /"
+          has web-headers.txt "^content-security-policy: .*frame-ancestors 'none'" \
+            "Content-Security-Policy with frame-ancestors 'none' missing on / (is web/proxy.ts in the image?)"
+          has web-headers.txt "^content-security-policy: .*script-src [^;]*'nonce-" \
+            "CSP script-src has no nonce on /"
+          if grep -qiE "^content-security-policy: .*script-src [^;]*'unsafe-inline'" web-headers.txt; then
+            fail "CSP script-src allows 'unsafe-inline' on /"
+          fi
+          if grep -qi '^x-powered-by:' web-headers.txt; then fail "X-Powered-By header present on /"; fi
           for page in /about /projections; do
-            test "$(curl -s -o /dev/null -w '%{http_code}' "$WEB$page")" = "200"
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$WEB$page")"
+            [ "$code" = "200" ] || fail "GET $page answered $code, expected 200"
           done
           # the same-origin proxy forwards to the API and passes the gate state through
-          curl -fsS "$WEB/api/meta/health" | jq -e '.status == "ok" and .environment == "production"'
+          curl -fsS "$WEB/api/meta/health" | jq -e '.status == "ok" and .environment == "production"' \
+            || fail "/api/meta/health through the web proxy is not ok/production"
           code="$(curl -s -o body.json -D proxy-headers.txt -w '%{http_code}' "$WEB/api/projections")"
           echo "proxy /api/projections -> $code $(cat body.json)"
-          test "$code" = "503"
+          [ "$code" = "503" ] || fail "/api/projections through the proxy answered $code, expected 503"
           jq -e --arg msg "$NO_MODEL_MESSAGE" \
-            '. == {"status": "no_approved_model", "message": $msg}' body.json > /dev/null
-          grep -qi '^x-ffml-approval: none' proxy-headers.txt
-          grep -qi '^cache-control: no-store' proxy-headers.txt
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$WEB/api/nope")" = "404"
+            '. == {"status": "no_approved_model", "message": $msg}' body.json > /dev/null \
+            || fail "/api/projections through the proxy is not the no_approved_model body"
+          has proxy-headers.txt '^x-ffml-approval: none' "X-FFML-Approval none not passed through the proxy"
+          has proxy-headers.txt '^cache-control: no-store' "Cache-Control no-store not passed through the proxy"
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$WEB/api/nope")"
+          [ "$code" = "404" ] || fail "/api/nope answered $code, expected 404"
       - name: Audit Python packages installed in the image
         # Blocking since QA-F09: the image installs from requirements.lock.txt and
         # pins setuptools, so this must agree with the security job's audit of the lock.
