@@ -10,8 +10,9 @@
 # seconds. Manual runs can override the branch and the clock (dry runs).
 #
 # Notes: a cron may start up to 15-60 minutes late at busy times, which the
-# windows allow for; GitHub disables scheduled workflows after 60 days without
-# a push to the repository.
+# windows allow for. GitHub documents disabling scheduled workflows in public
+# repositories after 60 days without activity; failure e-mails go only to the
+# user who last edited the cron line (QA-F25, docs/RUNBOOK.md section 11).
 name: livetest watchdog
 
 on:
