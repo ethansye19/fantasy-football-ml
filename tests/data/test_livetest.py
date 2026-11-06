@@ -208,7 +208,11 @@ def env(tmp_path, monkeypatch, tmp_settings):
     git("commit", "--quiet", "-m", "main: unreviewed work that must never be pushed", cwd=e.main)
     git("remote", "add", "origin", str(e.remote), cwd=e.main)
     prereg = tmp_path / "preregistration.json"  # the fields the runner reads from the real pre-registration
-    prereg.write_text(json.dumps({"missed_weeks": {"allowed": 2}, "miss_rule": "D-106 as revisited (D-111)"}))
+    prereg.write_text(json.dumps({
+        "missed_weeks": {"allowed": 2}, "miss_rule": "D-106 as revisited (D-111)",
+        "window": {"seasons": [2026, 2027], "weeks": {"2026": list(range(10, 19)), "2027": list(range(1, 10))}},
+    }))
+    e.prereg = prereg
     assert e.main_(["init", "--season", "2026", "--weeks", "10-18", "--main-repo", str(e.main),
                     "--commitments-worktree", str(e.worktree), "--preregistration", str(prereg)]) == 0
     return e
@@ -395,6 +399,71 @@ def test_third_miss_makes_the_test_invalid_two_are_allowed(env):
     assert "Misses: 3" in status and "INVALID (D-106, D-111: more than 2 misses)" in status
     assert "INVALID" in git("log", "-1", "--format=%s", "livetest-2026", cwd=env.remote)
     assert "INVALID" in [a for a in env.alerts() if a["kind"] == "missed_commitment"][-1]["message"]
+
+
+def test_miss_count_spans_the_window_across_the_2027_reinit(env, capsys):
+    """QA-F30: misses in 2026 w12 and w16 plus 2027 w03 are misses 1, 2 and 3; the third sets INVALID."""
+    from ffml.data.store import SnapshotStore
+
+    assert core.window_from(json.loads(env.prereg.read_text()))[8:10] == [(2026, 18), (2027, 1)]
+    games_2027 = pl.DataFrame({
+        "game_id": [f"2027_{w:02d}_A_B" for w in range(1, 10)],
+        "season": [2027] * 9,
+        "week": list(range(1, 10)),
+        "game_type": ["REG"] * 9,
+        "kickoff_utc": [datetime(2027, 9, 10, 0, 20, tzinfo=UTC) + timedelta(days=7 * (w - 1)) for w in range(1, 10)],
+        "status": ["scheduled"] * 9, "home_team": ["B"] * 9, "away_team": ["A"] * 9,
+    }).with_columns(pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32))
+    SnapshotStore(env.data / "processed").write_snapshot(
+        "dim_game", {2026: load_fixture(), 2027: games_2027.select(load_fixture().columns)})
+    K12 = datetime(2026, 11, 26, 1, 0, tzinfo=UTC)
+    K16 = datetime(2026, 12, 25, 1, 15, tzinfo=UTC)
+    K2027w03 = datetime(2027, 9, 24, 0, 20, tzinfo=UTC)
+    # weeks 10, 11, 13-15, 17, 18 committed on the branch; 12 and 16 missed
+    for week, k in ((10, K10), (11, datetime(2026, 11, 20, 1, 15, tzinfo=UTC)), (12, None),
+                    (13, datetime(2026, 12, 4, 1, 15, tzinfo=UTC)), (14, datetime(2026, 12, 11, 1, 15, tzinfo=UTC)),
+                    (15, datetime(2026, 12, 18, 1, 15, tzinfo=UTC)), (16, None),
+                    (17, datetime(2027, 1, 1, 1, 15, tzinfo=UTC))):
+        if k is not None:
+            assert env.main_(env.argv("run", k - timedelta(hours=9), week=week)) == runner.EXIT_OK
+        else:
+            nxt = K12 if week == 12 else K16
+            assert env.main_(env.argv("run", nxt + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    assert json.loads(env.remote_blob("2026w16/MISSED.json"))["miss_number"] == 2
+    # 2026w18 kicks off before the re-init; it is committed here (Saturday kickoff in the fixture)
+    assert env.main_(env.argv("run", datetime(2027, 1, 9, 12, 0, tzinfo=UTC), week=18)) == runner.EXIT_OK
+    # the 2027 re-init (QA-F30's scenario), then 2027 w01 and w02 committed, w03 missed
+    assert env.main_(["init", "--force", "--season", "2027", "--weeks", "1-9", "--main-repo", str(env.main),
+                      "--commitments-worktree", str(env.worktree), "--preregistration", str(env.prereg)]) == 0
+    for week in (1, 2):
+        k = datetime(2027, 9, 10, 0, 20, tzinfo=UTC) + timedelta(days=7 * (week - 1))
+        assert env.main_(env.argv("run", k - timedelta(hours=9), "--season", "2027", week=None)
+                         + ["--week", str(week)]) == runner.EXIT_OK
+    assert env.main_(env.argv("run", K2027w03 + timedelta(hours=1), week=None)) == runner.EXIT_OK
+    third = json.loads(env.remote_blob("2027w03/MISSED.json"))
+    assert third["miss_number"] == 3 and third["earlier_misses"] == ["2026w12", "2026w16"]
+    assert third["test_status"].startswith("INVALID: miss 3 of 2 allowed")
+    status_md = env.remote_blob("STATUS.md").decode()
+    assert "Misses: 3** (2026w12, 2026w16, 2027w03)" in status_md
+    assert "INVALID (D-106, D-111: more than 2 misses)" in status_md
+    assert "| 2026w10 |" in status_md and "| 2027w09 |" in status_md
+    assert "Window 2026w10 to 2027w09 (18 weeks)" in status_md
+    capsys.readouterr()
+    assert env.main_(env.argv("status", K2027w03 + timedelta(hours=2), week=None)) == runner.EXIT_OK
+    out = capsys.readouterr().out
+    assert "misses: 3 (2026w12, 2026w16, 2027w03); allowed 2; test state: INVALID" in out
+    assert "2026w12" in out and "2027w03" in out
+
+
+def test_a_2026w18_miss_is_marked_after_the_2027_reinit(env):
+    """QA-F30: no 2026-config run after the w18 kickoff; the first 2027-config run still marks it."""
+    assert env.main_(["init", "--force", "--season", "2027", "--weeks", "1-9", "--main-repo", str(env.main),
+                      "--commitments-worktree", str(env.worktree), "--preregistration", str(env.prereg)]) == 0
+    assert env.main_(env.argv("check", datetime(2027, 2, 1, tzinfo=UTC), week=None)) in (0, 1)
+    marked = [k for k in ("2026w10", "2026w11", "2026w18") if env.remote_blob(f"{k}/MISSED.json") is not None]
+    assert marked == ["2026w10", "2026w11", "2026w18"]
+    assert json.loads(env.remote_blob("2026w18/MISSED.json"))["miss_number"] == 9  # every 2026 week was missed
+    assert "INVALID" in json.loads(env.remote_blob("2026w18/MISSED.json"))["test_status"]
 
 
 def test_status_shows_misses_and_the_test_state(env, capsys):

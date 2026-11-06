@@ -363,6 +363,24 @@ def misses_allowed_from(prereg: Mapping[str, Any]) -> int:
     return allowed
 
 
+def window_from(prereg: Mapping[str, Any]) -> list[tuple[int, int]]:
+    """The pre-registered window as ordered ``(season, week)`` pairs (D-110: 2026 w10-18, 2027 w1-9)."""
+    block = prereg.get("window")
+    if not isinstance(block, Mapping) or not isinstance(block.get("weeks"), Mapping):
+        raise ValueError("the pre-registration has no window.weeks")
+    weeks = block["weeks"]
+    seasons = block.get("seasons") or sorted(int(k) for k in weeks)
+    out: list[tuple[int, int]] = []
+    for season in seasons:
+        listed = weeks.get(str(season), weeks.get(season))
+        if not listed:
+            raise ValueError(f"window.weeks has no weeks for season {season}")
+        out.extend((int(season), int(w)) for w in sorted(int(x) for x in listed))
+    if len(set(out)) != len(out):
+        raise ValueError("window.weeks lists a week twice")
+    return out
+
+
 _SHA_LINE = re.compile(r"^([0-9a-fA-F]{64})(?:\s+\*?(.+?))?\s*$")
 
 

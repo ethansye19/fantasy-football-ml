@@ -673,3 +673,18 @@ Evidence:
   `allowed: 2`, `test_state: VALID`, pre-registration path resolved.
 - `livetest_schedule.ps1 -Weeks 10-18 -Season 2026` (dry run) lists
   `\ffml\livetest-weekly-score`; `Get-ScheduledTask -TaskPath \ffml\` = 0.
+
+## DE-5.7: QA-F30, the miss count spans the whole window (2026-11-05)
+
+The runner counted misses only in the configured season, so after the 2027
+re-init (`init --season 2027 --weeks 1-9 --force`) a third miss read "VALID:
+miss 1 of 2". The window is now read from the pre-registration's `window`
+(2026 w10-18, 2027 w1-9; `core.window_from`), and the miss number, the earlier
+misses, `STATUS.md` (one row per window week, "not scheduled yet" for 2027
+weeks before their schedule exists, header "Window 2026w10 to 2027w09
+(18 weeks)") and the `status` footer count across both seasons. The weeks
+`record_misses` marks are the due window weeks of both seasons, so a 2026w18
+miss is still marked by the first run after the re-init. Without a `window`
+the runner falls back to the configured season's weeks. Tests: QA's world D3
+(2026w12, 2026w16, 2027w03 missed: miss 3, INVALID, footer and STATUS.md),
+and a 2026w18 miss marked after the 2027 re-init.
