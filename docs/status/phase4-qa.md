@@ -250,3 +250,66 @@ middleware; finding statuses after the Backend's fixes.
 
 Commits (QA-4.2): 0f57c5a (CI and watchdog), bcbb683 (429 tests), plus the
 commit carrying this section and docs/SECURITY.md.
+
+---
+
+# Phase 4 / QA and Security Reviewer / QA-4.3
+Date: 2026-11-06
+Scope: the first CI run on GitHub (42137127944, head 85e6332): python,
+api-postgres, web and security green; `api-image` failed in the step "Web
+image renders, sends security headers, and the proxy carries the gate state".
+
+## Cause
+
+`GET /` on the web image answered 200 with `X-Content-Type-Options`,
+`Referrer-Policy`, `X-Frame-Options` and `Permissions-Policy`, but **no
+`Content-Security-Policy`**, so the CSP check failed. Since ed7ef6e
+(Frontend, QA-F16 fix) the CSP is a per-request nonce policy set by
+`web/proxy.ts` (Next.js 16 proxy, formerly middleware), and `next.config.ts`
+no longer sets a static one. The build stage of `Dockerfile.web` copies only
+`package.json`, `next.config.ts`, `tsconfig.json`, `postcss.config.mjs`,
+`app/`, `components/` and `lib/`, so `proxy.ts` never reaches `next build`
+and the image has no CSP at all. The `web` job builds from the full `web/`
+folder, which is why it passed. The assertion is correct: this is a real
+defect of the shipped image (QA-F26, Medium), not a workflow bug.
+
+## Done
+
+- `.github/workflows/ci.yml` (3a4c0db): the web smoke keeps every
+  assertion; each failure now prints an `::error::` annotation naming the
+  missing header or status, and two checks follow from the nonce CSP
+  (`script-src` carries a nonce; no `'unsafe-inline'` in `script-src`).
+  Checked locally against the headers of the failed run (fails, naming the
+  CSP and `web/proxy.ts`) and against the same headers with the proxy's CSP
+  (passes). actionlint: no findings.
+- `docs/SECURITY.md`: QA-F26 added; QA-F15 fixed (ed7ef6e); QA-F16 fixed in
+  source, missing from the image until QA-F26 is fixed.
+
+## Patch for the Frontend (Dockerfile.web is not a QA path)
+
+```diff
+--- a/Dockerfile.web
++++ b/Dockerfile.web
+@@ FROM node:26-alpine AS build
+ COPY --from=deps /app/node_modules ./node_modules
+ COPY web/package.json web/next.config.ts web/tsconfig.json web/postcss.config.mjs ./
++COPY web/proxy.ts ./
+ COPY web/app ./app
+ COPY web/components ./components
+ COPY web/lib ./lib
+```
+
+Alternative that cannot miss a future root file: `COPY web/ ./` in the
+build stage (the root `.dockerignore` already excludes `web/node_modules/`,
+`web/.next/` and the Playwright output).
+
+## Not done / blocked
+
+- `api-image` stays red until the patch above lands; no other workflow
+  change is needed for the failure seen. The steps after the CSP check
+  (`/about`, `/projections`, the proxy's health and 503 checks, `/api/nope`)
+  have not run on GitHub yet, so the next run may surface more.
+
+Commits (QA-4.3): 3a4c0db (workflow), plus the commit carrying this section
+and docs/SECURITY.md.
+
