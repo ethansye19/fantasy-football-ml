@@ -945,3 +945,213 @@ def test_comparator_rows_take_the_chain_outcomes(tmp_path):
     j = out.join(week.select("entity_id", "season", "week", "scoring", pl.col("actual").alias("a2")),
                  on=["entity_id", "season", "week", "scoring"])
     assert j.height == out.height and (j["actual"] == j["a2"]).all()
+
+
+# --------------------------------------------------------------------------- #
+# D-121: a game that never becomes final
+# --------------------------------------------------------------------------- #
+
+GAME2 = "2026_10_T04_T05"  # game index 2 of week 10 in the fixtures (teams T04 and T05)
+
+
+def _sid(t: datetime) -> str:
+    return t.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _snapshot(root, ds: str, sid: str, frames: dict) -> str:
+    """A snapshot with a chosen id (the store names snapshots by their write time); LATEST follows it."""
+    from ffml.data.store import SnapshotStore
+
+    store = SnapshotStore(root)
+    for key, frame in frames.items():
+        p = store.partition_path(ds, sid, key)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        frame.write_parquet(p)
+    (root / ds / "LATEST").write_text(sid, encoding="utf-8")
+    return sid
+
+
+def _refresh(root, t: datetime, dg: pl.DataFrame) -> None:
+    """One refresh at ``t``: dim_game first, then the other processed tables a minute later (as run_process does)."""
+    _snapshot(root, "dim_game", _sid(t), {2026: dg})
+    for ds in ("fact_player_game", "fact_dst_game"):
+        _snapshot(root, ds, _sid(t + timedelta(minutes=1)), {2026: pl.DataFrame({"season": [2026], "x": [1]})})
+
+
+def _with_teams(dg: pl.DataFrame) -> pl.DataFrame:
+    parts = pl.col("game_id").str.split("_")
+    return dg.with_columns(parts.list.get(2).alias("home_team"), parts.list.get(3).alias("away_team"))
+
+
+def _d121_world(tmp_path):
+    root = tmp_path / "processed"
+    roots = {"processed": root, "restricted": root / "restricted"}
+    dg_open = _with_teams(dim_game(2026, [10], unfinished={10: 2}))
+    dg_done = _with_teams(dim_game(2026, [10]))
+    cutoff = LS.data_cutoff(dg_open, 2026, 10)
+    return root, roots, dg_open, dg_done, cutoff, LS.exclusion_after(cutoff)
+
+
+def _score_planned(tmp_path, plan, prereg, consensus=None):
+    return LS.score_week(2026, 10, source=LS.BranchSource(tmp_path / "branch"), dim_game=plan.dim_game,
+                         push_record=make_week(tmp_path, 2026, 10), roots=[tmp_path], outcomes=fake_outcomes,
+                         baselines=_baselines(2026, 10),
+                         consensus=_consensus(2026, 10) if consensus is None else consensus, prereg=prereg,
+                         root=tmp_path / "scoring", reports_dir=tmp_path / "reports", n_boot=40,
+                         data_cutoff=plan.cutoff, data_snapshots=plan.pins, excluded_games=plan.excluded,
+                         pin_from=plan.pin_from)
+
+
+def test_d121_a_game_never_final_waits_14_days_then_is_excluded_and_listed(tmp_path):
+    root, roots, dg_open, _, cutoff, after = _d121_world(tmp_path)
+    assert after - cutoff == timedelta(days=14) and cutoff == datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    for t in (cutoff + timedelta(hours=1), cutoff + timedelta(days=7), after + timedelta(hours=1)):
+        _refresh(root, t, dg_open)
+
+    def plan(now):
+        return LS.plan_week(2026, 10, dg_open, now=now, roots=roots)
+
+    with pytest.raises(LS.RetryLater, match="data cutoff"):
+        plan(cutoff - timedelta(minutes=1))
+    for now in (cutoff + timedelta(hours=2), after - timedelta(minutes=1)):  # exit 4 until the cutoff plus 14 days
+        with pytest.raises(LS.RetryLater, match=r"not final in the pinned dim_game \(3 of 4 games\).*D-121"):
+            plan(now)
+    p = plan(after + timedelta(hours=2))
+    assert p.pin_from == after and p.excluded == (GAME2,)
+    assert p.pins == {"processed/dim_game": _sid(after + timedelta(hours=1)),
+                      "processed/fact_player_game": _sid(after + timedelta(hours=1, minutes=1)),
+                      "processed/fact_dst_game": _sid(after + timedelta(hours=1, minutes=1))}
+
+    prereg = _prereg(tmp_path, window=[[2026, 10]])
+    rec, out = _score_planned(tmp_path, p, prereg)
+    assert next(c for c in rec.checks if c.name == "week final").ok
+    scoring = tmp_path / "scoring"
+    sealed = pl.read_parquet(LS.part_path(scoring, 2026, 10))
+    assert sealed.height and sealed.filter(pl.col("game_id") == GAME2).height == 0
+    assert sealed.filter(pl.col("team").is_in(["T04", "T05"])).height == 0
+    assert {"chain_v2", "chain_v2+cal", "rolling_avg_4+cal"} <= set(sealed["model"].unique().to_list())
+    cons = pl.read_parquet(LS.consensus_part_path(scoring, 2026, 10))
+    assert cons.height and cons.filter(pl.col("team").is_in(["T04", "T05"])).height == 0
+    js = json.loads(LS.record_path(scoring, 2026, 10).read_text(encoding="utf-8"))
+    public = json.loads(LS.week_status_path(scoring, 2026, 10).read_text(encoding="utf-8"))
+    for doc in (js, public):
+        assert doc["excluded_games"] == [{"game_id": GAME2, "teams": ["T04", "T05"],
+                                          "status_in_pinned_dim_game": "scheduled", "reason": LS.EXCLUSION_REASON}]
+        assert doc["pin_from_utc"] == LS.iso(after) and doc["exclusion_after_utc"] == LS.iso(after)
+        assert doc["data_snapshots"] == p.pins
+    text = out.read_text(encoding="utf-8")
+    assert GAME2 in text and "D-121" in text
+    _assert_no_metrics(text)
+
+    # the final waits for the week until its cutoff plus 14 days, then lists the excluded game
+    _push_seal(tmp_path, "2026w10")
+    kw = dict(source=LS.BranchSource(tmp_path / "branch"), prereg=prereg, root=scoring,
+              reports_dir=tmp_path / "reports", n_boot=20, sensitivity=False)
+    with pytest.raises(LS.ScoreRefused, match="refused until 2026w10 is final"):
+        LS.final_evaluation(dim_game=dg_open, now=after - timedelta(hours=1), **kw)
+    verdict, fout = LS.final_evaluation(dim_game=dg_open, now=after + timedelta(days=1), **kw)
+    ftext = fout.read_text(encoding="utf-8")
+    assert "## Games excluded (D-121)" in ftext and GAME2 in ftext and ftext.count("Verdict:") == 1
+    lines = json.loads((scoring / LS.SEALED_DIR / "final_lines.json").read_text(encoding="utf-8"))
+    assert [g["game_id"] for g in lines["excluded_games"]] == [GAME2] and lines["excluded_games"][0]["week"] == "2026w10"
+    assert any(c["name"] == "2026w10 games excluded (D-121)" and c["ok"] for c in lines["checks"])
+
+
+def test_d121_a_game_final_before_the_14_days_is_scored_normally(tmp_path):
+    root, roots, dg_open, dg_done, cutoff, after = _d121_world(tmp_path)
+    t_final = cutoff + timedelta(days=3)
+    _refresh(root, cutoff + timedelta(hours=1), dg_open)
+    _refresh(root, t_final, dg_done)
+    _refresh(root, after + timedelta(hours=1), dg_done)
+    with pytest.raises(LS.RetryLater, match="not final in the pinned dim_game"):
+        LS.plan_week(2026, 10, dg_open, now=cutoff + timedelta(hours=2), roots=roots)
+    for now in (t_final + timedelta(hours=1), after + timedelta(hours=2)):  # the same pins whenever it is scored
+        p = LS.plan_week(2026, 10, dg_done, now=now, roots=roots)
+        assert p.pin_from == t_final and p.excluded == ()
+        assert p.pins == {"processed/dim_game": _sid(t_final),
+                          "processed/fact_player_game": _sid(t_final + timedelta(minutes=1)),
+                          "processed/fact_dst_game": _sid(t_final + timedelta(minutes=1))}
+    rec, _ = _score_planned(tmp_path, p, _prereg(tmp_path, window=[[2026, 10]]))
+    js = json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
+    assert js["excluded_games"] == [] and js["pin_from_utc"] == LS.iso(t_final)
+    sealed = pl.read_parquet(LS.part_path(tmp_path / "scoring", 2026, 10))
+    assert sealed.filter(pl.col("game_id") == GAME2).height > 0
+
+
+def test_d121_a_game_moved_to_a_later_week_is_not_excluded(tmp_path):
+    root, roots, dg_open, _, cutoff, after = _d121_world(tmp_path)
+    moved = dg_open.with_columns(
+        pl.when(pl.col("game_id") == GAME2).then(pl.lit(12)).otherwise(pl.col("week")).alias("week"),
+        pl.when(pl.col("game_id") == GAME2).then(pl.col("kickoff_utc") + pl.duration(days=14))
+        .otherwise(pl.col("kickoff_utc")).alias("kickoff_utc"))
+    assert LS.data_cutoff(moved, 2026, 10) == cutoff
+    t_move = cutoff + timedelta(days=2)
+    _refresh(root, cutoff + timedelta(hours=1), dg_open)  # still in week 10, not final
+    _refresh(root, t_move, moved)  # rescheduled into week 12: it leaves week 10
+    p = LS.plan_week(2026, 10, moved, now=after + timedelta(days=1), roots=roots)
+    assert p.excluded == () and p.pin_from == t_move and p.status.games == 3 and p.status.is_final
+    # moved before the cutoff: pinned at the cutoff, exactly as before D-121
+    root2 = tmp_path / "processed2"
+    _refresh(root2, cutoff + timedelta(hours=1), moved)
+    p2 = LS.plan_week(2026, 10, moved, now=cutoff + timedelta(hours=2),
+                      roots={"processed": root2, "restricted": root2 / "restricted"})
+    assert p2.excluded == () and p2.pin_from == cutoff
+
+
+def test_d121_rescore_reuses_the_pins_and_the_pin_point(tmp_path):
+    root, roots, dg_open, dg_done, cutoff, after = _d121_world(tmp_path)
+    _refresh(root, cutoff + timedelta(hours=1), dg_open)
+    _refresh(root, after + timedelta(hours=1), dg_open)
+    p = LS.plan_week(2026, 10, dg_open, now=after + timedelta(hours=2), roots=roots)
+    _score_planned(tmp_path, p, _prereg(tmp_path, window=[[2026, 10]]))
+    js = json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
+    # later the game is declared final and a newer refresh exists; a rescore keeps the recorded pins
+    _refresh(root, after + timedelta(days=3), dg_done)
+    q = LS.plan_week(2026, 10, dg_done, now=after + timedelta(days=4), roots=roots, record=js)
+    assert (q.pins, q.pin_from, q.excluded, q.cutoff) == (p.pins, p.pin_from, p.excluded, p.cutoff)
+    wp = LS.choose_week_pins(2026, 10, cutoff, now=after + timedelta(days=4), roots=roots, recorded=js)
+    assert wp == LS.WeekPins(p.pins, after)
+
+
+def test_d121_an_all_final_week_is_pinned_exactly_as_before(tmp_path):
+    root, roots, _, dg_done, cutoff, _ = _d121_world(tmp_path)
+    for t in (cutoff - timedelta(hours=1), cutoff + timedelta(hours=1), cutoff + timedelta(days=2)):
+        _refresh(root, t, dg_done)
+    p = LS.plan_week(2026, 10, dg_done, now=cutoff + timedelta(days=3), roots=roots)
+    assert p.pin_from == cutoff and p.excluded == () and p.pins == LS.choose_pins(cutoff, roots=roots)
+    rows = _rows(2026, 10, "chain_v2", 1)
+    assert LS.without_games(rows, p.excluded, (), 2026, 10) is rows
+
+
+def test_d121_without_games_by_game_id_team_and_dst():
+    rows = pl.concat([_rows(2026, 10, "m", 1), _rows(2026, 11, "m", 1)])
+    rows = rows.with_columns(pl.when((pl.col("team") == "T04") & (pl.col("position") == "WR"))
+                             .then(None).otherwise(pl.col("game_id")).alias("game_id"))  # rows without a game id
+    out = LS.without_games(rows, [GAME2], ["T04", "T05"], 2026, 10)
+    gone = rows.height - out.height
+    assert gone == rows.filter((pl.col("week") == 10) & pl.col("team").is_in(["T04", "T05"])).height
+    assert out.filter(pl.col("week") == 11).height == rows.filter(pl.col("week") == 11).height  # other weeks kept
+    assert out.filter((pl.col("week") == 10) & (pl.col("entity_id") == "T05")).height == 0  # the DST entity
+    bare = rows.drop("game_id", "team")
+    with pytest.raises(LS.ScoreRefused, match="neither game_id nor team"):
+        LS.without_games(bare, [GAME2], [], 2026, 10)
+    # D-121 never removes a whole week
+    st = LS.week_status(dim_game(2026, [10], unfinished={10: 0}).with_columns(pl.lit("scheduled").alias("status")),
+                        2026, 10)
+    with pytest.raises(LS.ScoreRefused, match="never a whole week"):
+        LS.games_to_exclude(st, datetime(2026, 12, 5, tzinfo=UTC), datetime(2026, 11, 20, 12, tzinfo=UTC))
+
+
+def test_d121_data_cutoff_prints_the_exclusion_point(tmp_path, monkeypatch, capsys):
+    from ffml.config import reset_settings_cache
+
+    _settings(monkeypatch, tmp_path)
+    try:
+        _write_processed(tmp_path, 2024, 5)
+        cutoff = LS.data_cutoff(LS.load_dim_game([2024]), 2024, 5)
+        assert LS.main(["--data-cutoff", "2024w05"]) == LS.EXIT_OK
+        printed = json.loads(capsys.readouterr().out.strip())
+        assert printed["data_cutoff_utc"] == LS.iso(cutoff)
+        assert printed["exclusion_after_utc"] == LS.iso(cutoff + timedelta(days=14)) and "D-121" in printed["exclusion_rule"]
+    finally:
+        reset_settings_cache()

@@ -14,7 +14,9 @@ Weekly scoring
    commitment lists (the raw rows ``player_summary_raw.parquet``), the
    runner's ``push_record.json`` (GitHub's push activity timestamp) and
    ``dim_game``.
-2. **Refuse** to score when any game of the week is not final in ``dim_game``,
+2. **Refuse** to score when any game of the week is not final in ``dim_game``
+   (D-121: a game still not final 14 days after the data cutoff is excluded
+   instead, its rows removed and listed),
    when the commitment's digest or any listed file hash does not match, when
    no external push timestamp exists or it is not before the committed first
    kickoff, or when the commitment is a rehearsal. Every other check (commit
@@ -42,7 +44,7 @@ Final
 =====
 
 ``--final`` is refused until every week of the pre-registered window is final
-in ``dim_game`` and each is either scored or carries ``MISSED.json`` on the
+in ``dim_game`` (or past its data cutoff plus 14 days, D-121) and each is either scored or carries ``MISSED.json`` on the
 branch. One missed week is excluded (D-106); a second makes the verdict
 ``INVALID``. The integrity checks mirror :func:`ffml.eval.report_holdout.integrity_checks`
 for the live test: the 22 lines' hash, bootstrap and seeds, the frozen commit
@@ -536,6 +538,7 @@ def verify_week(
     prereg: Mapping[str, Any] | None = None,
     repo_root: Path = PROJECT_ROOT,
     branch_commit: str | None = None,
+    excluded: Sequence[str] = (),
 ) -> tuple[WeekRecord, Path | None, bytes | None]:
     """All pre-metric checks for one week. Returns the record, the raw-rows file and the summary bytes.
 
@@ -557,9 +560,13 @@ def verify_week(
         if refuse and not ok:
             rec.refusals.append(f"{name}: {detail}")
 
-    check("week final", status.is_final,
+    excl = tuple(str(g) for g in excluded)
+    # D-121: a week is scored when every game is final, or without exactly the games still not final
+    final_ok = status.is_final if not excl else (status.final > 0 and set(excl) == set(status.unfinished))
+    check("week final", final_ok,
           f"{status.final} of {status.games} regular-season games final in dim_game"
-          + (f"; not final: {list(status.unfinished)[:6]}" if status.unfinished else ""), refuse=True)
+          + (f"; not final: {list(status.unfinished)[:6]}" if status.unfinished else "")
+          + (f"; excluded, {EXCLUSION_REASON}: {list(excl)}" if excl else ""), refuse=True)
     check("identity", c.season == status.season and c.week == status.week,
           f"commitment is {week_key(c.season, c.week)}", refuse=True)
     check("not a rehearsal or stub", (not rec.rehearsal and not rec.stub) or allow_rehearsal,
@@ -1002,6 +1009,9 @@ def outcomes_sha256(frame: pl.DataFrame) -> str:
 CUTOFF_LAG = timedelta(hours=72)
 CUTOFF_HOUR_UTC = 12
 FRIDAY = 4
+#: D-121: a game still not final this long after the week's data cutoff is excluded and the week scored without it
+EXCLUSION_LAG = timedelta(days=14)
+EXCLUSION_REASON = "not final 14 days after the week's data cutoff (D-121)"
 
 
 def data_cutoff(dim_game: pl.DataFrame, season: int, week: int) -> datetime | None:
@@ -1019,6 +1029,11 @@ def data_cutoff(dim_game: pl.DataFrame, season: int, week: int) -> datetime | No
     while day.weekday() != FRIDAY or day < earliest:
         day += timedelta(days=1)
     return day
+
+
+def exclusion_after(cutoff: datetime) -> datetime:
+    """D-121: from this point a game of the week that is still not final is excluded (the cutoff plus 14 days)."""
+    return cutoff + EXCLUSION_LAG
 
 
 #: the datasets weekly scoring reads, by store tier (processed, and the restricted consensus archive)
@@ -1074,6 +1089,160 @@ def choose_pins(cutoff: datetime, *, roots: Mapping[str, Path] | None = None,
     if missing:
         raise RetryLater(f"no snapshot at or after the data cutoff {iso(cutoff)} yet for {missing}")
     return pins
+
+
+@dataclass(frozen=True)
+class WeekPins:
+    """The snapshots a week is scored against and the point they were chosen from (D-116 A3, D-121)."""
+
+    pins: dict[str, str]
+    pin_from: datetime
+
+
+def choose_week_pins(season: int, week: int, cutoff: datetime, *, now: datetime,
+                     roots: Mapping[str, Path] | None = None, recorded: Mapping[str, Any] | None = None,
+                     datasets: Sequence[tuple[str, str]] = PINNED_DATASETS) -> WeekPins:
+    """The pin point of a week and its pins (D-116 A3 with D-121).
+
+    - A rescore reuses the pins and the pin point recorded in the week's sealed JSON.
+    - The first ``dim_game`` snapshot taken at or after the cutoff, before the cutoff plus
+      :data:`EXCLUSION_LAG` and not after ``now``, in which every game of the week is final.
+      When it is the first snapshot after the cutoff the pin point is the cutoff, so the pins are
+      exactly those of D-116. Otherwise
+      it is that snapshot's time; a refresh writes ``dim_game`` before the other tables, so every pin
+      comes from that refresh.
+    - Otherwise, once ``now`` has reached the cutoff plus the lag, that point. The games still not final
+      in its ``dim_game`` are excluded (:func:`games_to_exclude`).
+    - Before then, the cutoff. The week is not final in those pins and waits (exit 4).
+
+    Raises :class:`RetryLater` while a dataset has no snapshot at or after the pin point.
+    """
+    if recorded and recorded.get("data_snapshots"):
+        return WeekPins(dict(recorded["data_snapshots"]), parse_time(recorded.get("pin_from_utc")) or cutoff)
+    roots = dict(roots or store_roots())
+    after = exclusion_after(cutoff)
+    from ffml.data.store import SnapshotStore
+
+    store = SnapshotStore(roots["processed"])
+    ids = store.list_snapshots("dim_game") if (Path(roots["processed"]) / "dim_game").is_dir() else []
+    timed = sorted((t, sid) for sid in ids
+                   if (t := snapshot_time(sid)) is not None and cutoff <= t < after and t <= now)
+    for i, (t, sid) in enumerate(timed):
+        try:
+            games = store.read("dim_game", seasons=[season], snapshot_id=sid)
+        except FileNotFoundError:
+            continue
+        if week_status(games, season, week).is_final:
+            point = cutoff if i == 0 else t
+            return WeekPins(choose_pins(point, roots=roots, datasets=datasets), point)
+    point = after if now >= after else cutoff
+    return WeekPins(choose_pins(point, roots=roots, datasets=datasets), point)
+
+
+def games_to_exclude(status: WeekStatus, pin_from: datetime, cutoff: datetime) -> tuple[str, ...]:
+    """D-121: the ids of the games the week is scored without; ``()`` when every game is final.
+
+    Raises :class:`RetryLater` while a game is not final and the pin point is before the cutoff plus
+    :data:`EXCLUSION_LAG`, and :class:`ScoreRefused` when no game of the week is final at all.
+    """
+    wk = week_key(status.season, status.week)
+    if status.is_final:
+        return ()
+    after = exclusion_after(cutoff)
+    if pin_from < after:
+        raise RetryLater(f"{wk} is not final in the pinned dim_game ({status.final} of {status.games} games); a game "
+                         f"still not final at {iso(after)} is excluded and the week scored without it (D-121)")
+    if status.final == 0:
+        raise ScoreRefused(f"{wk}: no game of the week is final in the pinned dim_game at {iso(pin_from)}; D-121 "
+                           "excludes single games, never a whole week")
+    if len(status.unfinished) != status.games - status.final:
+        raise ScoreRefused(f"{wk}: the pinned dim_game lacks the game ids of the games not final")
+    return tuple(status.unfinished)
+
+
+@dataclass(frozen=True)
+class WeekPlan:
+    """What ``--week`` scores against: the cutoff, the pins, the pinned ``dim_game`` and the excluded games."""
+
+    cutoff: datetime
+    pins: dict[str, str]
+    pin_from: datetime
+    stores: dict[str, Any]
+    dim_game: pl.DataFrame
+    status: WeekStatus
+    excluded: tuple[str, ...]
+
+
+def plan_week(season: int, week: int, latest_dim_game: pl.DataFrame, *, now: datetime,
+              roots: Mapping[str, Path] | None = None, record: Mapping[str, Any] | None = None) -> WeekPlan:
+    """The scoring plan of ``--week`` (D-116 A3, D-121). ``record`` is the week's sealed JSON when it is rescored.
+
+    Raises :class:`RetryLater` (exit 4) before the cutoff, while a dataset has no snapshot at or after
+    the pin point, and while a game waits; :class:`ScoreRefused` (exit 3) for a week not in ``dim_game``.
+    """
+    wk = week_key(season, week)
+    record = dict(record or {})
+    rescore = bool(record.get("data_snapshots"))
+    cutoff = (parse_time(record.get("data_cutoff")) if rescore else None) or data_cutoff(latest_dim_game, season, week)
+    if cutoff is None:
+        raise ScoreRefused(f"{wk} has no regular-season game in dim_game")
+    if now < cutoff:
+        raise RetryLater(f"the data cutoff for {wk} is {iso(cutoff)}")
+    wp = choose_week_pins(season, week, cutoff, now=now, roots=roots, recorded=record if rescore else None)
+    stores = pinned_stores(wp.pins, roots)
+    dim_game = stores["processed"].read("dim_game", seasons=[season])
+    status = week_status(dim_game, season, week)
+    excluded = games_to_exclude(status, wp.pin_from, cutoff)
+    return WeekPlan(cutoff, dict(wp.pins), wp.pin_from, stores, dim_game, status, excluded)
+
+
+def excluded_teams(dim_game: pl.DataFrame, season: int, week: int, game_ids: Sequence[str]) -> tuple[str, ...]:
+    """The teams of the excluded games (``home_team`` and ``away_team`` when ``dim_game`` has them)."""
+    if not game_ids or "game_id" not in dim_game.columns:
+        return ()
+    g = dim_game.filter((pl.col("season") == season) & (pl.col("week") == week)
+                        & pl.col("game_id").cast(pl.String).is_in([str(x) for x in game_ids]))
+    teams = {str(t) for col in ("home_team", "away_team") if col in g.columns for t in g[col].to_list() if t}
+    return tuple(sorted(teams))
+
+
+def without_games(rows: pl.DataFrame | None, game_ids: Sequence[str], teams: Sequence[str], season: int,
+                  week: int) -> pl.DataFrame | None:
+    """``rows`` without the player, team and DST rows of the excluded games of one week (D-121).
+
+    A row goes when its ``game_id`` is excluded, or, within the week, when its team (or a DST entity)
+    played in an excluded game: every team plays at most one game a week.
+    """
+    if rows is None or rows.is_empty() or not game_ids:
+        return rows
+    ids, tm = [str(g) for g in game_ids], [str(t) for t in teams]
+    parts = []
+    if "game_id" in rows.columns:
+        parts.append(pl.col("game_id").cast(pl.String).is_in(ids))
+    if tm and "team" in rows.columns:
+        parts.append(pl.col("team").cast(pl.String).is_in(tm))
+    if tm and "entity_id" in rows.columns and "position" in rows.columns:
+        parts.append((pl.col("position") == "DST") & pl.col("entity_id").cast(pl.String).is_in(tm))
+    if not parts:
+        raise ScoreRefused("the rows carry neither game_id nor team, so the excluded games cannot be removed (D-121)")
+    hit = parts[0]
+    for p in parts[1:]:
+        hit = hit | p
+    if "season" in rows.columns and "week" in rows.columns:
+        hit = hit & (pl.col("season") == season) & (pl.col("week") == week)
+    return rows.filter(~hit.fill_null(False))
+
+
+def excluded_records(dim_game: pl.DataFrame, season: int, week: int, game_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """``excluded_games`` as recorded: the game id, its teams, its status in the pinned ``dim_game`` and the reason."""
+    out = []
+    for gid in game_ids:
+        g = dim_game.filter((pl.col("season") == season) & (pl.col("week") == week)
+                            & (pl.col("game_id").cast(pl.String) == str(gid)))
+        status = str(g["status"][0]) if "status" in g.columns and g.height else None
+        out.append({"game_id": str(gid), "teams": list(excluded_teams(dim_game, season, week, [gid])),
+                    "status_in_pinned_dim_game": status, "reason": EXCLUSION_REASON})
+    return out
 
 
 def pinned_stores(pins: Mapping[str, str], roots: Mapping[str, Path] | None = None) -> dict[str, Any]:
@@ -1307,6 +1476,9 @@ def write_week_status(root: Path, rec: WeekRecord, extra: Mapping[str, Any], sea
         "processed_snapshots": extra.get("processed_snapshots") or {},
         "data_cutoff_utc": extra.get("data_cutoff"),
         "data_snapshots": extra.get("data_snapshots") or {},
+        "pin_from_utc": extra.get("pin_from_utc"),
+        "exclusion_after_utc": extra.get("exclusion_after_utc"),
+        "excluded_games": list(extra.get("excluded_games") or []),
         "outcome_rows_sha256": extra.get("outcome_rows_sha256"),
         "commitment_sha256": rec.commitment_sha256,
         "sealed": dict(seals),
@@ -1393,6 +1565,8 @@ def score_week(
     sensitivity_n_boot: int = SENSITIVITY_N_BOOT,
     data_cutoff: datetime | None = None,
     data_snapshots: Mapping[str, Any] | None = None,
+    excluded_games: Sequence[str] = (),
+    pin_from: datetime | None = None,
 ) -> tuple[WeekRecord, Path]:
     """Verify, score into the sealed store and write the verification report (no metric leaves this function).
 
@@ -1411,6 +1585,7 @@ def score_week(
         allow_rehearsal=allow_rehearsal, expected_commit=_frozen_commit(prereg),
         prereg=prereg.data if prereg else None, repo_root=repo_root,
         branch_commit=source.commit_of(c.rel) if source.worktree is None or (Path(source.worktree) / ".git").exists() else None,
+        excluded=excluded_games,
     )
     if rec.refusals:
         raise ScoreRefused("; ".join(rec.refusals))
@@ -1419,14 +1594,20 @@ def score_week(
 
     cal_rows = pl.read_parquet(io.BytesIO(summary))
     raw_rows = pl.read_parquet(raw_path)
-    frame = week_frame(raw_rows, cal_rows, season, week, outcomes)
+    excluded = tuple(str(g) for g in excluded_games)
+    teams = excluded_teams(dim_game, season, week, excluded)
+    # D-121: the excluded games' player, team and DST rows leave the chain, the comparators and the consensus
+    frame = without_games(week_frame(raw_rows, cal_rows, season, week, outcomes), excluded, teams, season, week)
+    if frame is None or frame.is_empty():
+        raise ScoreRefused(f"no rows of {week_key(season, week)} remain after excluding {list(excluded)}")
     parts = [frame]
     if baselines is not None and not baselines.is_empty():
         # one set of outcomes for every model: the comparators' rows take the chain's outcome columns (D-116 A3)
-        parts.append(with_outcomes_of(baselines.filter((pl.col("season") == season) & (pl.col("week") == week)),
-                                      frame))
+        week_base = with_outcomes_of(baselines.filter((pl.col("season") == season) & (pl.col("week") == week)), frame)
+        parts.append(without_games(week_base, excluded, teams, season, week))
     week_all = pl.concat(parts, how="diagonal_relaxed")
-    week_cons = consensus.filter((pl.col("season") == season) & (pl.col("week") == week)) \
+    week_cons = without_games(consensus.filter((pl.col("season") == season) & (pl.col("week") == week)),
+                              excluded, teams, season, week) \
         if consensus is not None and not consensus.is_empty() else None
     scored = score_frames(week_all, week_cons, n_boot=n_boot)
     window = prereg_window(prereg.data if prereg else {})
@@ -1453,7 +1634,10 @@ def score_week(
              "consensus": scored.consensus_present, "n_boot": n_boot, "scoring": SCORING,
              "window_weeks_scored": sorted(found + [(season, week)]), "window_total": len(window),
              "data_cutoff": iso(data_cutoff), "data_snapshots": dict(data_snapshots or {}),
-             "outcome_rows_sha256": outcomes_sha256(frame), "bootstrap_frames": scored.bootstrap_frames}
+             "outcome_rows_sha256": outcomes_sha256(frame), "bootstrap_frames": scored.bootstrap_frames,
+             "pin_from_utc": iso(pin_from or data_cutoff),
+             "exclusion_after_utc": iso(exclusion_after(data_cutoff)) if data_cutoff else None,
+             "excluded_games": excluded_records(dim_game, season, week, excluded)}
     seals = write_sealed(root, rec, week_all, extra, metrics, consensus=week_cons)
     write_week_status(root, rec, extra, seals)
     text = render_verification(rec, extra, seals)
@@ -1509,7 +1693,11 @@ def render_verification(rec: WeekRecord, extra: Mapping[str, Any], seals: Mappin
         ["processed snapshots (LATEST at scoring)",
          "; ".join(f"{k} {v}" for k, v in (extra.get("processed_snapshots") or {}).items()) or "n/a"],
         ["data cutoff (D-116 A3)", extra.get("data_cutoff") or "n/a"],
-        ["snapshots scored against (first at or after the cutoff)",
+        ["exclusion point: the cutoff plus 14 days (D-121)", extra.get("exclusion_after_utc") or "n/a"],
+        ["pins taken from", extra.get("pin_from_utc") or "n/a"],
+        ["games excluded (D-121)", "; ".join(f"{g['game_id']} ({g['reason']})" for g in extra.get("excluded_games") or [])
+         or "none"],
+        ["snapshots scored against (first at or after the pin point)",
          "; ".join(f"{k} {v}" for k, v in (extra.get("data_snapshots") or {}).items()) or "n/a"],
         ["outcome rows sha256", extra.get("outcome_rows_sha256") or "n/a"],
         ["files verified", str(rec.files_verified)], ["rows sealed", str(extra.get("rows"))],
@@ -1614,6 +1802,14 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
                                 "every commit between X and the build commit was in the change log at the build "
                                 "commit" if not missing
                                 else f"not in the change log at the build commit: {[m[:12] for m in missing[:5]]}"))
+        ex = list(r.get("excluded_games") or [])
+        if ex:
+            pf, cut = parse_time(r.get("pin_from_utc")), parse_time(r.get("data_cutoff"))
+            ok_ex = pf is not None and cut is not None and pf >= exclusion_after(cut)
+            checks.append(Check(f"{wk} games excluded (D-121)", ok_ex,
+                                f"scored without {[g.get('game_id') for g in ex]}: pins from {r.get('pin_from_utc')}, "
+                                f"data cutoff {r.get('data_cutoff')}"
+                                + ("" if ok_ex else "; the pin point is before the cutoff plus 14 days")))
         checks.append(Check(f"{wk} commitment", not failed,
                             f"commitment {str(r.get('commitment_sha256'))[:12]}, GitHub push {r.get('external_timestamp')}, "
                             f"kickoff {r.get('first_kickoff')}, {r.get('files_verified')} files"
@@ -1718,11 +1914,21 @@ def final_evaluation(
     reports_dir = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     window = prereg_window(prereg.data)
     last = window[-1]
+    clock = now or utcnow()
+
+    def settled(s_: int, w_: int) -> bool:
+        """Final in dim_game, or past the cutoff plus 14 days, when its games still not final are excluded (D-121)."""
+        st = week_status(dim_game, s_, w_)
+        if st.is_final:
+            return True
+        c = data_cutoff(dim_game, s_, w_)
+        return st.games > 0 and c is not None and clock >= exclusion_after(c)
+
     st_last = week_status(dim_game, *last)
-    if not st_last.is_final:
+    if not settled(*last):
         raise ScoreRefused(f"the final is refused until {week_key(*last)} is final in dim_game "
                            f"({st_last.final} of {st_last.games} games final)")
-    not_final = [week_key(s_, w_) for s_, w_ in window if not week_status(dim_game, s_, w_).is_final]
+    not_final = [week_key(s_, w_) for s_, w_ in window if not settled(s_, w_)]
     if not_final:
         raise ScoreRefused(f"weeks not final in dim_game: {not_final}")
     records = load_records(root, window)
@@ -1803,6 +2009,15 @@ def final_evaluation(
                 L += ["No line differs between the binding and the sensitivity intervals.", ""]
     else:
         L += ["Not computed: an integrity check failed.", ""]
+    excluded_all = [{"week": week_key(*w), **g} for w in scored_weeks
+                    for g in (records.get(w) or {}).get("excluded_games") or []]
+    if excluded_all:
+        L += ["## Games excluded (D-121)", "",
+              "Games still not final 14 days after their week's data cutoff. Their player, team and DST rows were "
+              "left out of the chain, the comparators and the consensus for that week:", "",
+              RB._md_table(["week", "game", "teams", "status in the pinned dim_game", "reason"],
+                           [[g["week"], g.get("game_id"), ", ".join(g.get("teams") or []) or "n/a",
+                             g.get("status_in_pinned_dim_game") or "n/a", g.get("reason")] for g in excluded_all]), ""]
     if conflicts:
         L += ["## Integrity findings that do not change the verdict", "",
               "MISSED markers found for weeks that have a commitment or a sealed record. Those weeks were scored; "
@@ -1827,6 +2042,7 @@ def final_evaluation(
                         "differing": differing} if sens is not None else None,
         "unsealed_weeks": [week_key(*w) for w in scored_weeks],
         "flagged_markers": flagged,
+        "excluded_games": excluded_all,
     }, indent=1, default=str), encoding="utf-8")
     return verdict, out
 
@@ -1897,7 +2113,10 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
             g = g.filter(pl.col("game_type") == "REG")
         print(json.dumps({"week": week_key(season, week), "data_cutoff_utc": iso(cutoff),
                           "last_kickoff_utc": iso(parse_time(g["kickoff_utc"].max())),
-                          "rule": "12:00 UTC on the first Friday at least 72 h after the last kickoff (D-116 A3)"}))
+                          "rule": "12:00 UTC on the first Friday at least 72 h after the last kickoff (D-116 A3)",
+                          "exclusion_after_utc": iso(exclusion_after(cutoff)),
+                          "exclusion_rule": "a game still not final at exclusion_after_utc is excluded and the week "
+                                            "scored without it (D-121)"}))
         return EXIT_OK
 
     if args.final:
@@ -1926,26 +2145,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
         ap.error("--week, --final, --prebuild-check or --data-cutoff is required")
     season, week = parse_week(args.week)
     wk = week_key(season, week)
-    cutoff = data_cutoff(load_dim_game([season]), season, week)
-    if cutoff is None:
-        print(f"refused: {wk} has no regular-season game in dim_game", file=sys.stderr)
-        return EXIT_REFUSED
-    if utcnow() < cutoff:
-        print(f"retry later: the data cutoff for {wk} is {iso(cutoff)}", file=sys.stderr)
-        return EXIT_RETRY_LATER
-    recorded = (_week_record(season, week) or {}).get("data_snapshots") or None
     try:
-        pins = choose_pins(cutoff, recorded=recorded)
+        plan = plan_week(season, week, load_dim_game([season]), now=utcnow(), record=_week_record(season, week))
     except RetryLater as exc:
         print(f"retry later: {exc}", file=sys.stderr)
         return EXIT_RETRY_LATER
-    stores = pinned_stores(pins)
-    dim_game = stores["processed"].read("dim_game", seasons=[season])
-    status = week_status(dim_game, season, week)
-    if not status.is_final:
-        print(f"retry later: {wk} is not final in the pinned dim_game ({status.final} of {status.games} games)",
-              file=sys.stderr)
-        return EXIT_RETRY_LATER
+    except ScoreRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    pins, stores, dim_game, cutoff = plan.pins, plan.stores, plan.dim_game, plan.cutoff
     rec_path = Path(args.push_record) if args.push_record else default_push_record(season, week)
     push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
     source = BranchSource(None if args.no_worktree else Path(args.worktree))
@@ -1971,7 +2179,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
                               consensus=consensus, prereg=prereg, allow_rehearsal=args.allow_rehearsal,
                               outcomes=lambda raw, s_: harness_outcomes(raw, s_, stores["processed"]),
                               dim_game_id=pins.get("processed/dim_game"), snapshot_ids=processed_snapshot_ids(),
-                              weekly_sensitivity=args.weekly_sensitivity, data_cutoff=cutoff, data_snapshots=pins)
+                              weekly_sensitivity=args.weekly_sensitivity, data_cutoff=cutoff, data_snapshots=pins,
+                              excluded_games=plan.excluded, pin_from=plan.pin_from)
     except ScoreRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED

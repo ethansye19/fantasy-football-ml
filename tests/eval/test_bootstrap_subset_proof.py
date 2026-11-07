@@ -193,3 +193,26 @@ def test_subset_identical_on_rehearsal_worlds(world, n_boot):
         assert record["verdict_if_all_checks_pass"] == "Verdict: APPROVED"
     else:
         assert record["verdict_if_all_checks_pass"] == "Verdict: NOT APPROVED"
+
+
+def test_d121_changes_nothing_in_the_all_final_rehearsal_worlds():
+    """D-121 on QA's rehearsal worlds, where every game is final: no game is excluded, and the exclusion filter
+    leaves the chain, comparator and consensus rows exactly as they were, so the scorer's inputs, and with them
+    the verdicts recorded by the subset proof, are unchanged."""
+    from datetime import UTC, datetime
+
+    cutoff = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    for name in ("A_pass", "B_qb_narrow", "C_accuracy_tie"):
+        frame, cons = rehearsal_world(name)
+        games = frame.select("season", "week", "game_id").unique().with_columns(
+            pl.lit("REG").alias("game_type"), pl.lit("final").alias("status"))
+        weeks = sorted((int(s), int(w)) for s, w in frame.select("season", "week").unique().iter_rows())
+        assert len(weeks) == 18
+        for s, w in weeks:
+            st = LS.week_status(games, s, w)
+            assert st.is_final and LS.games_to_exclude(st, cutoff, cutoff) == ()
+        for part in (frame, cons):
+            out = part
+            for s, w in weeks:  # the filter itself, with an id that matches nothing, keeps every row as it was
+                out = LS.without_games(out, ("no_such_game",), (), s, w)
+            assert out.equals(part), name
