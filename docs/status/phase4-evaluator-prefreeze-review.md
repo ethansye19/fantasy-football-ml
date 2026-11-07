@@ -509,3 +509,184 @@ The gated proof, `FFML_SUBSET_PROOF=1 pytest tests/eval/test_bootstrap_subset_pr
 - all 5 passed (the last three cases in 5 h 32 min);
 - the evidence is in `data/reports/livetest_subset_proof.json` (local), with a copy committed as
   `reports/livetest_subset_proof_2026-11-07.json`. Both hold synthetic worlds only, with no player rows.
+
+## Freeze review (EV-4.8, D-117)
+
+Part 1, 2026-11-07. This reviews the pre-registration at d9c6808 (`docs/status/livetest-preregistration-2026.md`) against
+the code at the candidate X = 2872d13 (D-118). `git diff --name-only 2872d13 d9c6808 -- ffml scripts pyproject.toml`
+is empty, and X..d9c6808 touches only `docs/` and `tests/`, so the scorer and the runner at d9c6808 are the code at X.
+Part 2, the review of QA's full rehearsal at 2872d13, follows when it lands and ends this section with the freeze line.
+
+### Hashes and ancestry
+
+- **`rules_sha256` reproduces.** The canonical JSON of `rules` without the field
+  (`json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=False)`, UTF-8) hashes to
+  `8c4212e3d77614c7f34a923a2b5905b6aa05173e4439aaaace3d0f28a0ba7574`. That equals the stated value and the scorer's own
+  `rules_hash`.
+- **`lines_sha256` = `lines_spec_sha256()`** at X: `ea706e17578e6b5caa85eb9db3fbffa6758a6bc85dae2169a707b425b91de2ad`.
+- **`frozen_commit_must_include`.** All eight commits (1d0d2b6, 2872d13, 6e29122, a2f2af0, a30cd08, b22973f, bd3bf21,
+  d24a43a) are ancestors of 2872d13 (`git merge-base --is-ancestor`). No code reads this key; it is a one-time check
+  at the freeze, done here by hand.
+- **The scorer's pre-metric checks.** I ran `livetest_integrity_checks` on a copy of d9c6808 with `commit` filled as
+  2872d13. These pass:
+  - approval lines, rules hash, bootstrap and seeds;
+  - frozen commit, allowed paths;
+  - final evaluation commit (X..d9c6808 touches 7 allowed paths).
+
+  "Final evaluation change log" fails: three commits without an entry. See F2.
+
+### The D-116 / D-118 keys against the code
+
+| key | stated | code at X | result |
+| --- | --- | --- | --- |
+| `scoring.when`, `window.weekly_scoring` | the Friday job at or after the week's data cutoff, once every game is final; verification-only output plus sealed parts | `score-week` asks `--data-cutoff`, does nothing before it, and exits 4 (retry) while the week is not final in the pinned `dim_game`; the scorer prints no metric | match |
+| `data_cutoff` | 12:00 UTC on the first Friday at least 72 h after the week's last kickoff in `dim_game`; `--data-cutoff <week>`; `--week` exits 4 before it | `data_cutoff()`: REG games, max kickoff + 72 h, then the first Friday 12:00 UTC at or after that. The runner calls `--data-cutoff <key>` and reads `data_cutoff_utc`. Exit 4 matches the runner's `SCORER_NOT_YET` | match |
+| `snapshot_pins` | first snapshot at or after the cutoff; ids and `outcome_rows_sha256` sealed and in `scoring/weeks/<week>.json`; a rescore reuses them; the final reads only sealed parts, including the consensus; no pruning | `choose_pins` / `pinned_stores`. The ids and the outcome hash are in the sealed JSON (its hash is in the pushed `.sha256`) and in `data/livetest/scoring/weeks/<week>.json`. A rescore takes `data_snapshots` from the sealed JSON. The final reads `sealed/<week>.parquet` and `<week>_consensus.parquet`. No code calls `SnapshotStore.prune`, and the process step writes every table on each run | match (wording: F6) |
+| `prebuild_check` | `--prebuild-check --from <last build's code commit> --to <pinned HEAD>`; logged entry and no frozen path; exit 5 alerts and retries; a miss only at the deadline; the final's per-week A2 check | The runner passes exactly these (`last_build_commit`, `code_head`). Exit 5 or any failure blocks the build with a critical `prebuild_blocked` alert, retried every 30 minutes; the miss reason is "pre-build check blocked". The scorer checks coverage at `--to` (append-only change-log commits exempt) and frozen paths per commit (merges against each parent). The final checks A2 at each build commit other than X | match |
+| `final_fetch` | the fetched GitHub ref, checked against `ls-remote`; each scored week compared with its recorded hashes; exit 75 before computing or writing anything | `fetch_branch_ref` raises `FetchFailed` on a fetch failure, an `ls-remote` failure or a ref mismatch, and the CLI returns 75 before any computation. A mismatch in a week's hashes is an integrity failure | match (wording: F5) |
+| `committed_weeks` | a commitment or sealed record on the branch means the week is never excluded; a stray MISSED marker is listed with its week, commit time and `created_at` | The final never excludes such a week; `flagged_marker` gives week, commit, committer time (`%cI`), `created_at` and reason, in the report and in `sealed/final_lines.json` | match (wording: F7) |
+| `bootstrap_frames` | `lines`, identical by construction, shown at 500 and 5,000 draws | `BOOTSTRAP_LINE_FRAMES_ONLY = True`, `LINE_FRAME_LABELS`, the fall-back when universes differ, and `bootstrap_frames` in the sealed JSON. The evidence file is at X | match (consequence: F4) |
+| `expected_verdict` | about 2027-11-12, between about 2027-11-05 and 2027-11-19 | 2027 week 9's Monday game, about 2027-11-09 01:15 UTC, plus 72 h gives the cutoff Friday 2027-11-12 12:00 UTC | consistent |
+| exit codes | scorer 4, 5, 75; build-week 0-4 | scorer `EXIT_RETRY_LATER` 4, `EXIT_BLOCKED` 5, `EXIT_FETCH_RETRY` 75; runner `SCORER_NOT_YET` 4 and `PREBUILD_BLOCKED` 5; build-week codes as in `ffml/cli.py` and the runner's handling | match |
+
+**Demonstrated with a filled copy** (`--prereg`):
+- `--prebuild-check --from "" --to 2872d13` exits 0, with 0 commits.
+- `--from "" --to d9c6808` exits 5, listing 997fb22, 7d5749b and d9c6808 as uncovered.
+
+Without a filled `commit` anywhere (today), every call exits 5 ("no pre-registration with a filled commit"), as intended.
+
+**Nothing depends on 2026 week 10 or later.** Every mention of weeks 10-18 is one of:
+- the window;
+- the deadlines "as scheduled 2026-11-04", which are schedule, not outcomes;
+- the verdict dates.
+
+The stored history ends at 2026 week 7, and the walk-forward from week 8 is computed at build time. The latest fact
+recorded is the week 9 rehearsal build of 2026-11-04.
+
+### Findings
+
+**F1. The pinned worktree at X makes every weekly "code commit" check fail. Fix before the freeze (procedure and
+docs; no frozen code).**
+
+- *What happens.* RUNBOOK section 3 step 1 says "Use the commit that was pre-registered", and the pre-registration's
+  `build.code_worktree` says "a worktree pinned at the frozen commit". So the worktree sits at X. Its copy of the
+  pre-registration still has `"commit": "<frozen commit>"`, because the field is filled in a later commit.
+  - `score-week` runs `--week` there (`cwd` = the worktree, `PROJECT_ROOT` = the worktree), so `load_prereg()` reads
+    that copy. It is also the pre-D-119 text, with rules hash 08fcf211.
+  - `verify_week` then records "code commit: the pre-registration has no frozen commit yet" as a failed check for
+    every week. Confirmed: `_frozen_commit()` of the copy at 2872d13 is `None`.
+- *Why it matters.*
+  - The verdict is not affected, because the final drops the weekly result and recomputes the relation against X.
+  - But every weekly verification report and every public `weeks/<week>.json` would show a failed check.
+  - The only check of a build's code commit before the final would be inert for the whole window.
+  - Running the final from that worktree gives `Verdict: INVALID (frozen commit …)`. QA's
+    `test_final_from_the_pinned_worktree_at_x_is_invalid` asserts exactly that, and nothing in the runbook says
+    where the final must run.
+- *Coverage.* QA's main flow runs the runner unpinned from the clone's HEAD, a descendant with the field filled. It
+  never exercised the X-pinned setup. `repro_pinned` scores one week from the worktree at X but asserts only the exit
+  code and a clean worktree.
+- *Fix.* Pin the worktree at Y instead of X. Y is the append-only change-log commit made after the commit F that
+  fills `commit` (see F2). Use it for `livetest_setup_worktree.py --commit Y` and `init --expected-commit Y`.
+  - The pre-registration already allows this: "valid at the frozen commit X, or at a descendant Y". Y differs from X
+    only under `docs/`, `tests/` and `reports/`.
+  - `verify_code_pin` compares HEAD with `--expected-commit` only, and the build does not read the
+    pre-registration's commit.
+  - Commitments then record `code.commit` = Y. The weekly check passes (X to Y allowed). The pre-build check
+    `--from "" --to Y` passes once X..Y is logged. The final's A2 check reads the change log at Y.
+  - The weekly scorer then reads the frozen text of the pre-registration, and the final can run from either
+    checkout.
+  - Change `build.code_worktree` (not in `rules`; the hash is unchanged) and RUNBOOK section 3 steps 1-2 to say "the
+    change-log commit after the freeze commit". Add one line on where the final runs.
+- *Alternative.* Make the scorer resolve X through `main` for `--week` too, as `--prebuild-check` does. That changes
+  a frozen file, so it means a new X and a new full rehearsal six days before the first deadline. I do not recommend
+  it.
+
+**F2. Log every commit after X. Required at the freeze.**
+
+- The change log has no rows. X..HEAD already holds 997fb22, 7d5749b and d9c6808; this commit, QA's result commits,
+  any text fixes and F will follow.
+- The final's "final evaluation change log" check makes the test INVALID if any commit in X..HEAD has no entry. With
+  F1, the pre-build check also needs every commit in X..Y logged before the first build.
+- *Order:*
+  1. text fixes;
+  2. F (only the `commit` field);
+  3. one commit that only appends rows for every commit in X..F. That commit is Y, and is itself exempt.
+
+  If that commit touches anything else it is not exempt and needs its own entry.
+- Every later commit on main must be logged before the final.
+
+**F3. Stale "reads" statements contradict `snapshot_pins`. Fix before the freeze (outside `rules`; the hash is
+unchanged).**
+
+- `scoring.reads[2]` says "actuals from ffml.scoring.actuals on the latest processed data".
+- The prose "Reads" bullet says "on the processed snapshot current at scoring time".
+
+The scorer uses the pinned snapshots, and the final uses only sealed parts. Two more places are out of date:
+- the prose "When" bullet does not mention the cutoff (a pointer to the new D-116 section is enough);
+- the prose "Computes" bullet lists the sealed `.parquet` and `.json` but not `<week>_consensus.parquet`.
+
+**F4. `rules.comparators.rows_used` claims rows are "reported" that the frozen scorer never reports. Decide before
+the freeze (inside `rules`, so the hash changes).**
+
+- `rows_used` and the prose say "rolling_avg_3 and rolling_ew_035 reported". The final report has no per-model
+  table, so they were never reported.
+- With the subset on, their metrics (and `direct_lgbm`'s) are no longer computed: `week_points` in the sealed JSON
+  holds only the four line frames.
+- They still enter the alignment, the D-077 reference ranking and the pair counts, which are unchanged.
+- *Fix.* Reword, for example to "rolling_avg_3, rolling_ew_035 and direct_lgbm are run for the D-077 reference
+  ranking only; no metric of them is reported", and recompute `rules_sha256`. Or record it as a known deviation.
+  I recommend the reword.
+
+**F5. Wording (low): `scoring.final_fetch` and the prose "The final".** Change "if the fetch or the check fails it
+exits 75" to "if the fetch or the ls-remote check fails". A mismatch in a week's commitment or summary hash is an
+integrity failure (INVALID), not exit 75. `rules.verdict` already states this correctly.
+
+**F6. Wording (low): `scoring.snapshot_pins`.** Four changes:
+- The scorer also pins the restricted consensus archive (`restricted/fact_ecr_weekly`), not only processed datasets.
+- "Corrections after the cutoff are ignored" holds exactly for corrections after the pinned snapshot, the first one
+  at or after the cutoff; normally that is the Friday job's own refresh.
+- D-118's no-pruning rule (this key and the runbook) names processed snapshots. It should also name the restricted
+  consensus snapshots, which a rescore pins.
+- `scoring/weeks/<week>.json` is the local `data/livetest/scoring/weeks/<week>.json`, not a branch path.
+
+**F7. Wording (low): `scoring.committed_weeks`.** "The GitHub commit time" is the branch commit's committer timestamp
+(`%cI`), written by the committing machine and shown by GitHub. It is not a server-side push time. It is
+informational, since a flagged marker never changes the verdict. Say "the committer time of the branch commit that
+added it".
+
+### Residual risks (runner and runbook; allowed paths, fixable after the freeze with a log entry)
+
+- **R1. A Friday refresh that straddles 12:00 UTC.** The runner refreshes only when the LATEST `dim_game` snapshot is
+  before the cutoff, but the scorer pins four datasets. A refresh that straddles 12:00 UTC could leave `dim_game` at
+  or after the cutoff and another dataset before it. The scorer then exits 4 on every repetition, and no refresh
+  runs until the next build window. That is a delay of days, never a wrong result. Fix: refresh after an exit 4 for
+  "no snapshot at or after the cutoff". It is unlikely, because no scheduled refresh runs near Friday 12:00 UTC.
+- **R2. A game that never becomes final.** Such a game (for example the 2022 week 17 no contest) leaves its week
+  unscoreable. Because `pick_week_to_score` always takes the oldest unsealed week, automatic scoring of every later
+  week stops too; `score-week --season --week` still works by hand. This predates D-116. It needs an owner ruling if
+  it happens, and the runbook should say so.
+- **R3. The 2027 re-initialisation.** The runner holds one `test_season`. The runbook has no step for
+  `init --season 2027 --weeks 1-9` (the runner mentions the re-init under QA-F30). Write it before 2027 week 1.
+
+### Tests (fast only; QA's full rehearsal is running)
+
+These 7 tests passed in 18 s:
+- `tests/data/test_livetest.py::test_the_real_preregistration_sets_the_allowed_misses`
+- `tests/data/test_livetest.py::test_a_real_run_refuses_without_the_preregistration`
+- `tests/eval/test_report_holdout.py::test_prereg_lines_are_the_22_registered_lines`
+- `tests/eval/test_livetest_score.py::test_prereg_window_and_week_parsing`
+- `tests/eval/test_livetest_score.py::test_data_cutoff_rule`
+- `tests/eval/test_livetest_score.py::test_prebuild_check_logged_before_first_use_and_frozen_paths`
+- `tests/eval/test_bootstrap_subset_proof.py::test_line_frames_falls_back_when_universes_differ`
+
+The hash, ancestry, CLI and integrity-check evidence above was produced by direct calls into the code at d9c6808.
+
+### Part 1 result
+
+**The pre-registration matches the code at X on every D-116/D-118 key. Both hashes reproduce, and nothing depends on
+2026 week 10 or later.** It is not ready to freeze as it stands:
+- F1 and F2 must be done in the freeze procedure;
+- F3 and F4 must be fixed in the text;
+- F5-F7 are wording.
+
+None of them needs a change to frozen code, so X = 2872d13 can stand. The freeze line follows Part 2.
