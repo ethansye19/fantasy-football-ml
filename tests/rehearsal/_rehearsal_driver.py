@@ -7,13 +7,20 @@ writes goes to the world's synthetic directories.
 
 Injection points used here (documented in reports/livetest_final_rehearsal.md):
 
-* runner side: ``Deps`` with a simulated clock, a no-op alert, no live schedule,
-  and a simulated GitHub view (there is no GitHub in the rehearsal; the local
-  bare remote is named a GitHub repository through ``core.parse_github_remote``);
+* runner side: ``Deps`` with a simulated clock, a recording alert (nothing is
+  sent), no live schedule, a simulated GitHub view (there is no GitHub in the
+  rehearsal; the local bare remote is named a GitHub repository through
+  ``core.parse_github_remote``), and ``Deps.run`` wrapped so that (a) the
+  build command ``ffml livetest build-week`` writes a synthetic commitment with
+  the builder's helpers, and (b) every scorer command
+  (``-m ffml.eval.livetest_score``: ``--prebuild-check``, ``--data-cutoff``)
+  goes through the clone-asserting wrapper with the simulated clock; every
+  other command runs unchanged;
 * scorer side, weekly: ``score_week(..., n_boot=..., sensitivity_n_boot=...)``
-  with every other argument wired exactly as ``livetest_score.main`` wires it
-  (the weekly sealed metrics are never read by the final; the sealed parquet
-  part does not depend on the draw count);
+  with every other argument wired exactly as ``livetest_score.main`` wires
+  ``--week`` (data cutoff, pinned snapshots, pinned stores); the weekly sealed
+  metrics are never read by the final and the sealed parquet parts do not
+  depend on the draw count;
 * scorer side, final: ``final_evaluation(sensitivity_fn=...)`` only for the
   forced-disagreement check of the report-only sensitivity rule.
 """
@@ -75,6 +82,9 @@ class SimClock:
 
 CLOCK = SimClock()
 _ACTIVITY = {"n": 0, "before": None}
+ALERTS: list[dict] = []
+BUILDS: list[dict] = []
+SCORER_CALLS: list[dict] = []
 
 
 def fake_github_view(owner, repo, branch, sha, *, sleep=None, **_kw):
@@ -96,9 +106,39 @@ def fake_github_view(owner, repo, branch, sha, *, sleep=None, **_kw):
 core.parse_github_remote = lambda url: ("synthetic-owner", "ffml-rehearsal") if url else None
 
 
+def record_alert(kind, message, **kw):
+    ALERTS.append({"kind": kind, "message": message[:600], "severity": kw.get("severity"),
+                   "at": CLOCK().isoformat(timespec="seconds")})
+    return None
+
+
+def run_hook(cmd, *args, **kw):
+    """``Deps.run``: the build is synthetic; scorer commands go through the clone-asserting wrapper."""
+    cmd = [str(c) for c in cmd]
+    if len(cmd) >= 3 and cmd[1:3] == ["-m", "ffml.cli"] and "build-week" in cmd:
+        season, week = int(cmd[cmd.index("--season") + 1]), int(cmd[cmd.index("--week") + 1])
+        created = CLOCK.start + timedelta(minutes=5)  # a build takes five simulated minutes
+        path = W.build_commitment(WORLD, season, week, created)
+        CLOCK.set(created)
+        BUILDS.append({"week": W.week_key(season, week), "created_at": created.isoformat(),
+                       "commitment_sha256": W.sha256_file(path)})
+        return subprocess.CompletedProcess(cmd, 0, f"committed {path}\n", "")
+    if len(cmd) >= 3 and cmd[1:3] == ["-m", "ffml.eval.livetest_score"]:
+        env = dict(kw.get("env") or os.environ)
+        env["FFML_REHEARSAL_CLONE"] = str(CLONE)
+        env["FFML_REHEARSAL_NOW"] = CLOCK().isoformat()
+        kw["env"] = env
+        cmd = [cmd[0], "-c", W.SCORER_WRAPPER, *cmd[3:]]
+        proc = subprocess.run(cmd, *args, **kw)
+        SCORER_CALLS.append({"args": cmd[3:], "returncode": proc.returncode, "at": env["FFML_REHEARSAL_NOW"],
+                             "stdout": (proc.stdout or "")[-600:], "stderr": (proc.stderr or "")[-600:]})
+        return proc
+    return subprocess.run(cmd, *args, **kw)
+
+
 def deps() -> runner.Deps:
-    return runner.Deps(clock=CLOCK, alert=lambda *a, **k: None, github_view=fake_github_view,
-                       live_schedule=None, sleep=lambda s: None)
+    return runner.Deps(clock=CLOCK, alert=record_alert, github_view=fake_github_view, live_schedule=None,
+                       sleep=lambda s: None, run=run_hook)
 
 
 def runner_main(argv: list[str]) -> int:
@@ -107,6 +147,77 @@ def runner_main(argv: list[str]) -> int:
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+_TRUTH = {}
+
+
+def truth():
+    import polars as pl
+
+    if "t" not in _TRUTH:
+        _TRUTH["t"] = pl.read_parquet(get_settings().data_dir / "rehearsal_world" / "truth.parquet")
+    return _TRUTH["t"]
+
+
+def _t(text: str) -> datetime:
+    return datetime.fromisoformat(text)
+
+
+# --------------------------------------------------------------------------- #
+# The weekly scorer wired as ``livetest_score.main --week``
+# --------------------------------------------------------------------------- #
+
+
+def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_sensitivity: bool, now: datetime,
+                root: Path | None = None, reports_dir: Path | None = None, recorded=None):
+    """``livetest_score.main`` for ``--week``, step for step, with the draw counts as parameters."""
+    wk = W.week_key(season, week)
+    cutoff = LS.data_cutoff(LS.load_dim_game([season]), season, week)
+    if cutoff is None:
+        return {"exit": 3, "message": f"refused: {wk} has no regular-season game in dim_game"}
+    if now < cutoff:
+        return {"exit": 4, "message": f"retry later: the data cutoff for {wk} is {LS.iso(cutoff)}"}
+    if recorded is None:
+        recorded = (LS._week_record(season, week) or {}).get("data_snapshots") or None
+    try:
+        pins = LS.choose_pins(cutoff, recorded=recorded)
+    except LS.RetryLater as exc:
+        return {"exit": 4, "message": f"retry later: {exc}"}
+    stores = LS.pinned_stores(pins)
+    dim_game = stores["processed"].read("dim_game", seasons=[season])
+    status = LS.week_status(dim_game, season, week)
+    if not status.is_final:
+        return {"exit": 4, "message": f"retry later: {wk} is not final in the pinned dim_game"}
+    rec_path = LS.default_push_record(season, week)
+    push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
+    source = LS.BranchSource(Path(LS.DEFAULT_WORKTREE))
+    baselines = LS.ensure_comparators(season, week, dim_game, run=LS.COMPARATORS_RUN,
+                                      actuals_fn=lambda s_: LS.load_actuals(s_, stores["processed"]))
+    consensus = None
+    if stores.get("restricted") is not None:
+        consensus = LS.consensus_rows(season, week, store=stores["processed"], restricted_store=stores["restricted"])
+    kw = {} if root is None else {"root": root}
+    if reports_dir is not None:
+        kw["reports_dir"] = reports_dir
+    saved = LS.utcnow
+    LS.utcnow = lambda: now
+    try:
+        rec, out = LS.score_week(
+            season, week, source=source, dim_game=dim_game, push_record=push_record,
+            roots=[LS.PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines, consensus=consensus,
+            prereg=LS.load_prereg(None), allow_rehearsal=False,
+            outcomes=lambda raw, s_: LS.harness_outcomes(raw, s_, stores["processed"]),
+            dim_game_id=pins.get("processed/dim_game"), snapshot_ids=LS.processed_snapshot_ids(),
+            weekly_sensitivity=weekly_sensitivity, data_cutoff=cutoff, data_snapshots=pins, n_boot=n_boot,
+            sensitivity_n_boot=sens_n_boot, **kw)
+    finally:
+        LS.utcnow = saved
+    failed = [c.name for c in rec.checks if not c.ok]
+    return {"exit": 0, "checks": len(rec.checks), "failed": failed, "report": str(out), "pins": pins,
+            "data_cutoff": LS.iso(cutoff),
+            "message": f"sealed {wk}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
+                       + (f"; failed: {failed}" if failed else "")}
 
 
 # --------------------------------------------------------------------------- #
@@ -118,15 +229,19 @@ def cmd_probe(payload):
     from ffml.models import chain_v2
 
     s = get_settings()
+    dg = LS.load_dim_game([2026]) if (s.processed_dir / "dim_game" / "LATEST").exists() else None
+    cut = {W.week_key(2026, w): LS.iso(LS.data_cutoff(dg, 2026, w)) for w in range(10, 19)} if dg is not None else {}
     return {
         "ffml_file": str(_FFML), "runner_file": str(Path(runner.__file__).resolve()),
         "project_root": str(LS.PROJECT_ROOT), "default_worktree": str(LS.DEFAULT_WORKTREE),
         "runner_repo_root": str(core.REPO_ROOT), "runner_commitments_worktree": str(core.DEFAULT_COMMITMENTS_WORKTREE),
         "data_dir": str(s.data_dir), "artifacts_dir": str(s.artifacts_dir), "reports_dir": str(s.reports_dir),
+        "default_reports_dir": str(LS.default_reports_dir()),
         "holdout_unlock": bool(s.holdout_unlock), "first_season": s.first_season, "holdout_season": s.holdout_season,
-        "pins": chain_v2.check_pins(), "quantile_repr": chain_v2.QUANTILE_CALIBRATOR_REPR,
-        "isotonic_repr": chain_v2.ISOTONIC_CALIBRATOR_REPR, "sensitivity_n_boot": LS.SENSITIVITY_N_BOOT,
-        "spec_n_boot": LS.H.SPEC_N_BOOT, "python": sys.executable,
+        "pins": chain_v2.check_pins(), "sensitivity_n_boot": LS.SENSITIVITY_N_BOOT, "spec_n_boot": LS.H.SPEC_N_BOOT,
+        "bootstrap_line_frames_only": LS.BOOTSTRAP_LINE_FRAMES_ONLY, "python": sys.executable,
+        "scorer_cutoffs_2026": cut, "world_cutoffs_2026": {W.week_key(2026, w): W.data_cutoff(2026, w).isoformat()
+                                                          for w in range(10, 19)},
     }
 
 
@@ -134,87 +249,103 @@ def cmd_build(payload):
     return W.build_world(WORLD)
 
 
-def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_sensitivity: bool,
-                root: Path | None = None, reports_dir: Path | None = None):
-    """``livetest_score.main`` for ``--week``, line for line, with the draw counts as parameters."""
-    source = LS.BranchSource(Path(LS.DEFAULT_WORKTREE))
-    prereg = LS.load_prereg(None)
-    rec_path = LS.default_push_record(season, week)
-    push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
-    dim_game = LS.load_dim_game([season])
-    baselines = LS.ensure_comparators(season, week, dim_game, run=LS.COMPARATORS_RUN)
-    consensus = LS.consensus_rows(season, week)
-    kw = {} if root is None else {"root": root}
-    if reports_dir is not None:
-        kw["reports_dir"] = reports_dir
-    rec, out = LS.score_week(season, week, source=source, dim_game=dim_game, push_record=push_record,
-                             roots=[LS.PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines,
-                             consensus=consensus, prereg=prereg, allow_rehearsal=False,
-                             dim_game_id=LS.dim_game_snapshot_id(), snapshot_ids=LS.processed_snapshot_ids(),
-                             weekly_sensitivity=weekly_sensitivity, n_boot=n_boot, sensitivity_n_boot=sens_n_boot,
-                             **kw)
-    failed = [c.name for c in rec.checks if not c.ok]
-    return {"checks": len(rec.checks), "failed": failed, "report": str(out),
-            "message": f"sealed {W.week_key(season, week)}: {len(rec.checks) - len(failed)} of {len(rec.checks)} "
-                       f"checks pass" + (f"; failed: {failed}" if failed else "")}
-
-
 def cmd_weekly(payload):
-    """Run the week-by-week plan: runner init, build+push, misses, weekly scoring, seal."""
-    x = payload["x"]
+    """The season in simulated time: refreshes, runner builds and pushes, misses, weekly scoring, seals, git steps."""
+    labels: dict[str, str] = dict(payload.get("labels") or {})
     results = []
     for step in payload["steps"]:
         op = step["op"]
         t0 = time.perf_counter()
+        a0 = len(ALERTS)
+        s0 = len(SCORER_CALLS)
         res: dict = {"op": op, **{k: v for k, v in step.items() if k != "op"}}
         try:
             if op == "init":
-                CLOCK.set(datetime.fromisoformat(step["at"]))
+                CLOCK.set(_t(step["at"]))
                 argv = ["init", "--season", str(step["season"]), "--weeks", step["weeks"],
                         "--note", "QA rehearsal (synthetic)"] + (["--force"] if step.get("force") else [])
                 res["exit"] = runner_main(argv)
+            elif op == "refresh":
+                res["snapshots"] = W.write_snapshot_as_of(truth(), _t(step["at"]), SPEC)
+                res["exit"] = 0
             elif op == "push":
                 s, w = step["season"], step["week"]
-                CLOCK.set(W.created_time(s, w))
-                path = W.build_commitment(WORLD, s, w, x)
-                res["commitment_sha256"] = W.sha256_file(path)
-                CLOCK.set(W.push_time(s, w))
-                res["exit"] = runner_main(["run", "--season", str(s), "--week", str(w), "--skip-refresh",
-                                           "--no-live-schedule"])
+                attempts = []
+                for at in step.get("attempts") or [W.attempt_time(s, w).isoformat()]:
+                    CLOCK.set(_t(at))
+                    b0, al0 = len(BUILDS), len(ALERTS)
+                    code = runner_main(["run", "--season", str(s), "--week", str(w), "--skip-refresh",
+                                        "--no-live-schedule"])
+                    attempts.append({"at": at, "exit": code, "built": BUILDS[b0:], "alerts": ALERTS[al0:]})
+                    rec = read_json(get_settings().data_dir / "livetest" / "runner" / W.week_key(s, w) / "push_record.json")
+                    if code == 0 and rec:
+                        break
+                res["attempts"] = attempts
+                res["exit"] = attempts[-1]["exit"]
                 rec = read_json(get_settings().data_dir / "livetest" / "runner" / W.week_key(s, w) / "push_record.json")
                 res["push_record"] = {k: (rec or {}).get(k) for k in ("commit_sha", "external_timestamp",
                                                                         "external_timestamp_source", "on_time")}
                 verify = read_json(get_settings().data_dir / "livetest" / "runner" / W.week_key(s, w) / "verify.json")
                 res["post_push_verify_ok"] = (verify or {}).get("ok")
                 res["ffml_livetest_verify_rc"] = ((verify or {}).get("ffml_livetest_verify") or {}).get("returncode")
+                built = [b for a in attempts for b in a["built"]]
+                res["commitment_sha256"] = built[-1]["commitment_sha256"] if built else None
             elif op == "misses":
-                CLOCK.set(datetime.fromisoformat(step["at"]))
+                CLOCK.set(_t(step["at"]))
                 res["exit"] = runner_main(["run", "--skip-refresh", "--no-live-schedule"])
             elif op == "score-hook":
-                CLOCK.set(W.tuesday_after(step["season"], step["week"]))
-                res.update(weekly_hook(step["season"], step["week"], step.get("n_boot", 5),
-                                       step.get("sens_n_boot", 5), step.get("weekly_sensitivity", False)))
-                res["exit"] = 0
-            elif op == "score-cli":
-                CLOCK.set(W.tuesday_after(step["season"], step["week"]))
+                now = _t(step["at"])
+                CLOCK.set(now)
+                res.update(weekly_hook(step["season"], step["week"], step.get("n_boot", 5), step.get("sens_n_boot", 5),
+                                       step.get("weekly_sensitivity", False), now))
+            elif op in ("score-cli", "cli"):
+                now = _t(step["at"])
+                CLOCK.set(now)
+                args = step.get("args") or ["--week", W.week_key(step["season"], step["week"])]
                 before = W.tree_listing(get_settings().data_dir)
-                rep_before = W.tree_listing(CLONE / "reports")
+                rep_before = W.tree_listing(WORLD.settings_reports_dir)
                 art_before = W.tree_listing(get_settings().artifacts_dir)
-                p = subprocess.run([sys.executable, "-c", W.SCORER_WRAPPER, "--week", W.week_key(step["season"],
-                                    step["week"]), *step.get("args", [])], cwd=CLONE, env=dict(os.environ),
+                clone_before = W.tree_listing(CLONE / "reports")
+                env = dict(os.environ)
+                env["FFML_REHEARSAL_NOW"] = now.isoformat()
+                p = subprocess.run([sys.executable, "-c", W.SCORER_WRAPPER, *args], cwd=CLONE, env=env,
                                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=7200)
                 after = W.tree_listing(get_settings().data_dir)
-                rep_after = W.tree_listing(CLONE / "reports")
+                rep_after = W.tree_listing(WORLD.settings_reports_dir)
                 art_after = W.tree_listing(get_settings().artifacts_dir)
+                clone_after = W.tree_listing(CLONE / "reports")
                 res.update(exit=p.returncode, stdout=p.stdout[-3000:], stderr=p.stderr[-3000:],
                            data_written=sorted(k for k in after if before.get(k) != after[k]),
                            reports_written=sorted(k for k in rep_after if rep_before.get(k) != rep_after[k]),
                            artifacts_written=sorted(k for k in art_after if art_before.get(k) != art_after[k]),
-                           settings_reports=sorted(W.tree_listing(WORLD.settings_reports_dir)))
+                           clone_reports_written=sorted(k for k in clone_after if clone_before.get(k) != clone_after[k]))
+                if step.get("expect_exit") is not None and p.returncode == step["expect_exit"]:
+                    res["exit_as_expected"] = True
             elif op == "seal":
-                CLOCK.set(W.tuesday_after(step["season"], step["week"]) + timedelta(minutes=30))
+                CLOCK.set(_t(step["at"]))
                 res["exit"] = runner_main(["seal", "--season", str(step["season"]), "--week", str(step["week"]),
                                            "--no-live-schedule"])
+            elif op == "git-commit":
+                at = _t(step["at"])
+                p = CLONE / step["path"]
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(step.get("content", '"""Synthetic post-freeze change (QA rehearsal)."""\n'), encoding="utf-8")
+                labels[step["label"] + ":parent"] = W.git(CLONE, "rev-parse", "HEAD")
+                labels[step["label"]] = W.commit_paths(CLONE, [step["path"]], step.get("message", step["label"]), at)
+                res.update(exit=0, sha=labels[step["label"]])
+            elif op == "git-log":
+                at = _t(step["at"])
+                sha = labels[step["label"]]
+                W.append_changelog(CLONE, [W.changelog_row(sha, step.get("paths", "see commit"),
+                                                           step.get("reason", "rehearsal change"),
+                                                           first_week=step.get("first_week", ""),
+                                                           date=at.date().isoformat())])
+                labels["log:" + step["label"]] = W.commit_paths(CLONE, [W.CHANGELOG_DOC],
+                                                                f"Change log: entry for {step['label']}", at)
+                res.update(exit=0, sha=labels["log:" + step["label"]])
+            elif op == "git-reset":
+                W.git(CLONE, "reset", "-q", "--hard", labels[step["to"]])
+                res.update(exit=0, head=W.git(CLONE, "rev-parse", "HEAD"))
             else:
                 raise ValueError(f"unknown step {op!r}")
         except SystemExit as exc:  # argparse errors
@@ -223,15 +354,17 @@ def cmd_weekly(payload):
             res["exit"] = "error"
             res["error"] = f"{type(exc).__name__}: {exc}"
             res["traceback"] = traceback.format_exc()[-3000:]
+        res["alerts"] = ALERTS[a0:]
+        res["scorer_calls"] = SCORER_CALLS[s0:]
         res["seconds"] = round(time.perf_counter() - t0, 1)
         results.append(res)
         if res.get("exit") not in (0, None) and step.get("required", True):
             break
-    return {"steps": results}
+    return {"steps": results, "labels": labels}
 
 
 def cmd_final_forced(payload):
-    """The final with a sensitivity check forced to disagree on every line (report-only rule)."""
+    """The final (as ``main --final`` wires it) with a sensitivity check forced to disagree on every line."""
     mode = payload["mode"]
     prereg = LS.load_prereg(None)
 
@@ -240,62 +373,41 @@ def cmd_final_forced(payload):
         sc.results = [LS.LineResult(r.line, mode == "all-pass", f"forced {mode} by the rehearsal") for r in sc.results]
         return sc
 
-    verdict, out = LS.final_evaluation(source=LS.BranchSource(Path(LS.DEFAULT_WORKTREE)), dim_game=LS.load_dim_game(),
-                                       prereg=prereg, consensus=LS._all_consensus(prereg), sensitivity=True,
-                                       sensitivity_fn=forced)
+    branch_ref = LS.fetch_branch_ref()
+    verdict, out = LS.final_evaluation(source=LS.BranchSource(None, ref=branch_ref["ref"]), dim_game=LS.load_dim_game(),
+                                       prereg=prereg, branch_ref=branch_ref, sensitivity=True, sensitivity_fn=forced)
     sealed = read_json(LS.scoring_root() / LS.SEALED_DIR / "final_lines.json")
     return {"verdict": verdict, "final_md": out.read_text(encoding="utf-8"), "final_lines": sealed}
 
 
 def cmd_hook_part(payload):
-    """Score one week with the hook into a scratch root; the part's sha256 (equivalence with the CLI part)."""
+    """Score one week with the hook into a scratch root, reusing the week's recorded pins; part hashes."""
     scratch = Path(payload["root"])
-    res = weekly_hook(payload["season"], payload["week"], 5, 5, False, root=scratch, reports_dir=scratch / "reports")
-    part = LS.part_path(scratch, payload["season"], payload["week"])
-    return {**res, "part_sha256": W.sha256_file(part)}
-
-
-def cmd_repro_worktree_trust(payload):
-    """Consistent local tampering of a sealed part plus the commitments worktree's uncommitted copy of the record."""
-    import polars as pl
-
     s, w = payload["season"], payload["week"]
-    wk = W.week_key(s, w)
-    root = LS.scoring_root()
-    part, rec_json, local_seal = LS.part_path(root, s, w), LS.record_path(root, s, w), LS.seal_path(root, s, w)
-    branch_file = Path(LS.DEFAULT_WORKTREE) / LS.SEALED_BRANCH_DIR / f"{wk}.sha256"
-    backup = {p: p.read_bytes() for p in (part, rec_json, local_seal, branch_file)}
-    window = LS.prereg_window(LS.load_prereg(None).data)
+    recorded = payload.get("pins") or (LS._week_record(s, w) or {}).get("data_snapshots")
+    res = weekly_hook(s, w, 5, 5, False, _t(payload["at"]), root=scratch, reports_dir=scratch / "reports",
+                      recorded=recorded)
+    part = LS.part_path(scratch, s, w)
+    cons = LS.consensus_part_path(scratch, s, w)
+    rec = read_json(LS.record_path(scratch, s, w)) or {}
+    return {**res, "part_sha256": W.sha256_file(part) if part.is_file() else None,
+            "consensus_part_sha256": W.sha256_file(cons) if cons.is_file() else None,
+            "outcome_rows_sha256": rec.get("outcome_rows_sha256"), "data_snapshots": rec.get("data_snapshots")}
+
+
+def cmd_latest_pins(payload):
+    """The LATEST snapshot id of every pinned dataset (the snapshot a rescore would read if it did not pin)."""
+    roots = LS.store_roots()
     out = {}
-    try:
-        frame = pl.read_parquet(part)
-        frame.with_columns((pl.col("actual") + 5.0).alias("actual")).write_parquet(part)  # every outcome changed
-        rec = json.loads(rec_json.read_text(encoding="utf-8"))
-        rec["part_sha256"] = W.sha256_file(part)
-        rec_json.write_text(json.dumps(rec, indent=1, default=str), encoding="utf-8")
-        text = f"{W.sha256_file(part)}  {part.name}\n{W.sha256_file(rec_json)}  {rec_json.name}\n"
-        local_seal.write_text(text, encoding="utf-8")
-        branch_file.write_text(text, encoding="utf-8")  # the worktree file only; nothing is committed
-        status = subprocess.run(["git", "-C", str(LS.DEFAULT_WORKTREE), "status", "--porcelain"], capture_output=True,
-                                text=True).stdout.strip()
-        wt = LS.verify_seals(LS.BranchSource(Path(LS.DEFAULT_WORKTREE)), root, [(s, w)])
-        ref = LS.verify_seals(LS.BranchSource(None), root, [(s, w)])
-        integ = LS.livetest_integrity_checks(LS.load_prereg(None), {(s, w): rec}, window, {}, root=root)
-        sealed_part = [c for c in integ if c.name == f"{wk} sealed part"]
-        out = {"worktree_status": status,
-               "worktree_mode": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in wt],
-               "no_worktree_mode": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in ref],
-               "sealed_part_check": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in sealed_part]}
-    finally:
-        for p, data in backup.items():
-            p.write_bytes(data)
-    out["restored_status"] = subprocess.run(["git", "-C", str(LS.DEFAULT_WORKTREE), "status", "--porcelain"],
-                                            capture_output=True, text=True).stdout.strip()
+    for tier, ds in LS.PINNED_DATASETS:
+        pointer = roots[tier] / ds / "LATEST"
+        if pointer.exists():
+            out[f"{tier}/{ds}"] = pointer.read_text(encoding="utf-8").strip()
     return out
 
 
 def cmd_repro_pinned_dirty(payload):
-    """The weekly scorer run from a worktree pinned at X, then the runner's own pin check."""
+    """The weekly scorer run from a worktree pinned at X, then the runner's own pin check (QA-F27)."""
     pinned = CLONE  # this driver runs with FFML_REHEARSAL_CLONE = the pinned worktree
     x = payload["x"]
     scratch = Path(payload["scratch"])
@@ -312,22 +424,31 @@ def cmd_repro_pinned_dirty(payload):
         except core.PinError as exc:
             return {"ok": False, "error": str(exc)}
 
-    out = {"status_before": status(), "pin_before": pin(), "project_root": str(LS.PROJECT_ROOT)}
-    res = weekly_hook(payload["season"], payload["week"], 5, 5, False, root=scratch)  # reports_dir: the default
+    out = {"status_before": status(), "pin_before": pin(), "project_root": str(LS.PROJECT_ROOT),
+           "default_reports_dir": str(LS.default_reports_dir())}
+    s, w = payload["season"], payload["week"]
+    res = weekly_hook(s, w, 5, 5, False, W.friday_scoring(s, w), root=scratch,
+                      recorded=(json.loads((Path(payload["sealed_dir"]) / f"{W.week_key(s, w)}.json")
+                                           .read_text(encoding="utf-8")).get("data_snapshots")))
     out.update(weekly=res, status_after=status(), pin_after=pin())
     return out
 
 
 def cmd_integrity(payload):
-    """The final's integrity checks for the current state, without metrics (for scenario tables)."""
+    """The final's pre-metric checks for the current state (as ``final_evaluation`` builds them), no metrics."""
     prereg = LS.load_prereg(None)
     window = LS.prereg_window(prereg.data)
     root = LS.scoring_root()
     records = LS.load_records(root, window)
-    source = LS.BranchSource(Path(LS.DEFAULT_WORKTREE))
-    misses = {w: m for w in window if w not in records and (m := LS.missed_marker(source, *w)) is not None}
+    source = LS.BranchSource(None)
+    on_branch = {w for w in window if source.read(f"{LS.week_key(*w)}/{LS.COMMITMENT_NAME}") is not None
+                 or source.read(f"{LS.SEALED_BRANCH_DIR}/{LS.week_key(*w)}.sha256") is not None}
+    markers = {w: m for w in window if (m := LS.missed_marker(source, *w)) is not None}
+    misses = {w: m for w, m in markers.items() if w not in on_branch and w not in records}
     checks = LS.livetest_integrity_checks(prereg, records, window, misses, root=root)
-    return {"checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks]}
+    checks += LS.branch_record_checks(source, records, [w for w in window if w in records], None)
+    return {"checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks],
+            "unsealed_on_branch": [LS.week_key(*w) for w in window if w in on_branch and w not in records]}
 
 
 def cmd_seals(payload):
@@ -342,28 +463,32 @@ def cmd_seals(payload):
 
 
 def cmd_dim_game_unfinished(payload):
-    """A new dim_game snapshot in which one game of the given week is not final (LATEST moves to it)."""
+    """A new dim_game snapshot (simulated id ``at``) in which one game of the given week is not final."""
     import polars as pl
 
-    from ffml.data.store import SnapshotStore
+    from ffml.data import store as ST
 
-    store = SnapshotStore(get_settings().processed_dir)
+    store = ST.SnapshotStore(get_settings().processed_dir)
     old = store.latest_id("dim_game")
     games = store.read("dim_game")
     s, w = payload["season"], payload["week"]
     target = games.filter((pl.col("season") == s) & (pl.col("week") == w))["game_id"].sort().to_list()[-1]
     games = games.with_columns(pl.when(pl.col("game_id") == target).then(pl.lit("scheduled"))
                                .otherwise(pl.col("status")).alias("status"))
-    new = store.write_snapshot("dim_game", {int(x): games.filter(pl.col("season") == x)
-                                            for x in sorted(games["season"].unique().to_list())},
-                               meta={"synthetic": True, "note": f"{target} not final"})
+    saved = ST._utc_now
+    ST._utc_now = lambda: _t(payload["at"])
+    try:
+        new = store.write_snapshot("dim_game", {int(x): games.filter(pl.col("season") == x)
+                                                for x in sorted(games["season"].unique().to_list())},
+                                   meta={"synthetic": True, "note": f"{target} not final"})
+    finally:
+        ST._utc_now = saved
     return {"old": old, "new": new, "game": target}
 
 
 COMMANDS = {"probe": cmd_probe, "build": cmd_build, "weekly": cmd_weekly, "final-forced": cmd_final_forced,
-            "hook-part": cmd_hook_part, "repro-worktree-trust": cmd_repro_worktree_trust,
-            "repro-pinned-dirty": cmd_repro_pinned_dirty, "integrity": cmd_integrity,
-            "dim-game-unfinished": cmd_dim_game_unfinished, "seals": cmd_seals}
+            "hook-part": cmd_hook_part, "latest-pins": cmd_latest_pins, "repro-pinned-dirty": cmd_repro_pinned_dirty,
+            "integrity": cmd_integrity, "dim-game-unfinished": cmd_dim_game_unfinished, "seals": cmd_seals}
 
 
 def main() -> int:

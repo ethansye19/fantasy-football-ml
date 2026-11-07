@@ -1,4 +1,4 @@
-"""Synthetic world for the end-to-end rehearsal of the live-test scorer (QA, D-115).
+"""Synthetic world for the end-to-end rehearsal of the live-test scorer (QA, D-115, D-116 C).
 
 Everything this module writes is invented: sixteen teams ``S01``..``S16``, their
 players, stat lines, schedules, consensus ranks, comparator projections and the
@@ -12,12 +12,16 @@ checkout (``data/`` and ``artifacts/`` inside the checkout, gitignored there)::
     <root>/clone/                       git clone of the main repository at the candidate X
     <root>/clone/data/                  FFML_DATA_DIR (synthetic stores, commitments, sealed parts)
     <root>/clone/artifacts/             FFML_ARTIFACTS_DIR (model artifacts, release marker)
-    <root>/settings-reports/            FFML_REPORTS_DIR (nothing should be written here)
+    <root>/settings-reports/            FFML_REPORTS_DIR (weekly verification reports and the final report)
     <root>/remote.git/                  bare repository: the fake ``origin`` holding livetest-2026
-    <root>/ffml-livetest-commitments/   the runner's commitments worktree (scorer default)
+    <root>/ffml-livetest-commitments/   the runner's commitments worktree
 
-The data builders run inside the clone's interpreter context (``_rehearsal_driver.py``),
-so ``ffml`` is always the clone's code.
+The processed and restricted stores follow a simulated calendar: snapshot ids
+are the simulated UTC time of each refresh (a pre-build refresh before every
+build and a Friday refresh just after each week's data cutoff), so the scorer's
+"first snapshot at or after the cutoff" rule (D-116 A3) runs on real snapshot
+directories. The data builders run inside the clone's interpreter context
+(``_rehearsal_driver.py``), so ``ffml`` is always the clone's code.
 """
 
 from __future__ import annotations
@@ -25,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import math
 import os
 import re
 import shutil
@@ -41,7 +44,7 @@ MAIN_REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "_rehearsal_driver.py"
 #: the candidate frozen commit X (override for a later candidate)
-FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "4c35fea")
+FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "2872d13")
 PREREG_DOC = "docs/status/livetest-preregistration-2026.md"
 CHANGELOG_DOC = "docs/status/livetest-changelog-2026.md"
 WINDOW: tuple[tuple[int, int], ...] = (*((2026, w) for w in range(10, 19)), *((2027, w) for w in range(1, 10)))
@@ -49,6 +52,11 @@ HISTORY_WEEKS: dict[int, tuple[int, ...]] = {2024: tuple(range(1, 19)), 2026: tu
                                              2027: tuple(range(1, 10))}
 #: synthetic commit identity and dates (deterministic shas for the commits the rehearsal makes)
 GIT_IDENTITY = ("FFML rehearsal (synthetic)", "rehearsal@invalid.example")
+#: the first processed snapshot of every world (before the window's first build)
+SNAPSHOT_T0 = datetime(2026, 11, 10, 0, 0, tzinfo=UTC)
+#: the 2027 schedule appears in dim_game only from this date (published in May)
+SCHEDULE_2027_PUBLISHED = datetime(2027, 5, 15, 0, 0, tzinfo=UTC)
+GAME_HOURS = 4  # a game is final in dim_game this long after its kickoff
 
 TEAMS: tuple[str, ...] = tuple(f"S{i:02d}" for i in range(1, 17))
 ROSTER: tuple[tuple[str, int], ...] = (("QB", 1), ("RB", 2), ("WR", 3), ("TE", 2), ("K", 1), ("DST", 1))
@@ -89,14 +97,22 @@ def first_kickoff(season: int, week: int) -> datetime:
 
 
 def game_kickoffs(season: int, week: int) -> list[datetime]:
-    """Eight games: the first at the week's first kickoff, the rest later (distinct times, not tentative)."""
+    """Eight games: Thursday night (the first kickoff), Sunday early, late and night, Monday night."""
     k = first_kickoff(season, week)
     if season == 2026 and week == 18:  # a Sunday-only week
-        offsets = [0, 0, 0, 205, 205, 205, 420, 420]
-    else:
-        offsets = [0, 3 * 1440 + 945, 3 * 1440 + 945, 3 * 1440 + 945, 3 * 1440 + 945, 3 * 1440 + 1150,
-                   3 * 1440 + 1400, 4 * 1440 + 1400]
+        offsets = [0, 0, 0, 205, 205, 205, 440, 440]
+    else:  # from Friday ~01:15 UTC: Sunday 17:00, Sunday 20:25, Monday 00:20, Tuesday 01:15 UTC
+        offsets = [0, 3825, 3825, 3825, 3825, 4030, 4265, 5760]
     return [k + timedelta(minutes=m) for m in offsets]
+
+
+def data_cutoff(season: int, week: int) -> datetime:
+    """12:00 UTC on the first Friday at least 72 hours after the week's last kickoff (D-116 A3)."""
+    earliest = max(game_kickoffs(season, week)) + timedelta(hours=72)
+    day = datetime(earliest.year, earliest.month, earliest.day, 12, tzinfo=UTC)
+    while day.weekday() != 4 or day < earliest:
+        day += timedelta(days=1)
+    return day
 
 
 def matchups(season: int, week: int) -> list[tuple[str, str]]:
@@ -109,17 +125,18 @@ def matchups(season: int, week: int) -> list[tuple[str, str]]:
     return [(ring[i], ring[n - 1 - i]) for i in range(n // 2)]
 
 
-def push_time(season: int, week: int) -> datetime:
-    """The runner's scheduled push: K - 24 h 05 min (D-109: first run at K - 24 h 15 min)."""
-    return first_kickoff(season, week) - timedelta(hours=24, minutes=5)
+def attempt_time(season: int, week: int) -> datetime:
+    """The runner's scheduled first run: K - 24 h 15 min (D-109). Builds take 5 simulated minutes."""
+    return first_kickoff(season, week) - timedelta(hours=24, minutes=15)
 
 
-def created_time(season: int, week: int) -> datetime:
-    return first_kickoff(season, week) - timedelta(hours=24, minutes=10)
+def friday_refresh(season: int, week: int) -> datetime:
+    return data_cutoff(season, week) + timedelta(minutes=30)
 
 
-def tuesday_after(season: int, week: int) -> datetime:
-    return first_kickoff(season, week) + timedelta(days=5, hours=14)
+def friday_scoring(season: int, week: int) -> datetime:
+    """The Friday scoring task runs from 13:00 UTC (D-116 A3)."""
+    return data_cutoff(season, week) + timedelta(hours=1)
 
 
 # --------------------------------------------------------------------------- #
@@ -138,9 +155,13 @@ class WorldSpec:
     qb_sigma_factor: float = 1.0
     #: (baseline, position) whose calibrated rows equal the chain's calibrated rows (that line fails)
     tie_baseline: tuple[str, str] | None = None
-    #: weeks scored with the real CLI (`python -m ffml.eval.livetest_score --week`) instead of the hook
+    #: weeks scored with the real CLI (`--week`) instead of the hook
     cli_weeks: list[tuple[int, int]] = field(default_factory=list)
     weekly_sensitivity: bool = True
+    #: stat corrections: preliminary values before each window week's cutoff, corrected 2027 values a week later
+    corrections: bool = False
+    #: the pre-build check scenario (blocked builds; see _rehearsal_scenarios.prebuild_events)
+    prebuild: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -189,8 +210,13 @@ class World:
         return self.data_dir / "livetest" / "scoring" / "sealed"
 
     @property
+    def weeks_dir(self) -> Path:
+        return self.data_dir / "livetest" / "scoring" / "weeks"
+
+    @property
     def weekly_reports_dir(self) -> Path:
-        return self.clone / "reports" / "livetest"
+        """Weekly verification reports and the final report: ``FFML_REPORTS_DIR/livetest`` since QA-F27."""
+        return self.settings_reports_dir / "livetest"
 
     @property
     def evidence(self) -> Path:
@@ -330,7 +356,7 @@ def all_weeks() -> list[tuple[int, int]]:
 
 
 def truth_frame(spec: WorldSpec):
-    """One row per entity and game week: skill, matchup, true median, spread and the outcome points."""
+    """One row per entity and game week: skill, matchup, true median, spread, outcome and stat-correction deltas."""
     import numpy as np
     import polars as pl
 
@@ -361,7 +387,8 @@ def truth_frame(spec: WorldSpec):
     u = rng.random(n)
     # stratified PIT in the test window, per position: the calibrated chain's coverage is ~0.80 by design
     pos_arr = f["position"].to_numpy()
-    in_window = np.array([(s, w) in set(WINDOW) for s, w in zip(f["season"].to_list(), f["week"].to_list(), strict=True)])
+    window = set(WINDOW)
+    in_window = np.array([(s, w) in window for s, w in zip(f["season"].to_list(), f["week"].to_list(), strict=True)])
     for pos in SIGMA:
         idx = np.flatnonzero(in_window & (pos_arr == pos))
         perm = rng.permutation(idx.size)
@@ -373,19 +400,26 @@ def truth_frame(spec: WorldSpec):
     points = np.where(integer, np.maximum(np.rint(latent), 0.0), np.round(latent, 1))
     b_noise = {b: rng.normal(0.0, BASELINE_NOISE, n) for b in LINE_BASELINES}
     c_noise = rng.normal(0.0, CONSENSUS_NOISE, n)
+    # stat corrections (used only when spec.corrections): a preliminary value before the cutoff for 40% of
+    # window rows, and a corrected value one week after the cutoff for 30% of 2027 rows
+    step = np.where(integer, 1.0, 0.7)
+    prelim = np.where(in_window & (rng.random(n) < 0.4), step * rng.choice([-1.0, 1.0], n), 0.0)
+    is2027 = f["season"].to_numpy() == 2027
+    corr = np.where(in_window & is2027 & (rng.random(n) < 0.3), 2 * step * rng.choice([-1.0, 1.0], n), 0.0)
     f = f.with_columns(pl.Series("matchup", matchup), pl.Series("median", median), pl.Series("sigma", sigma),
-                       pl.Series("u", u), pl.Series("points", points),
+                       pl.Series("u", u), pl.Series("points", points), pl.Series("prelim_delta", prelim),
+                       pl.Series("corr_delta", corr),
                        *[pl.Series(f"noise_{b}", v) for b, v in b_noise.items()], pl.Series("noise_consensus", c_noise))
     return f
 
 
-def stat_columns(truth):
+def stat_columns(truth, points_col: str = "points"):
     """Stat lines that score exactly ``points`` under PPR (ffml/scoring and the evaluator reference)."""
     import numpy as np
     import polars as pl
 
     pos = truth["position"].to_numpy()
-    y = truth["points"].to_numpy()
+    y = truth[points_col].to_numpy()
     n = len(y)
     z = np.zeros(n, dtype=np.int64)
     out = {c: z.copy() for c in ("pass_att", "completions", "pass_yds", "pass_td", "interceptions", "carries",
@@ -422,54 +456,73 @@ def stat_columns(truth):
     return pl.DataFrame({c: pl.Series(c, v, dtype=pl.Int32) for c, v in out.items()})
 
 
-def write_stores(world: World, truth) -> dict[str, str]:
-    """dim_game, fact_player_game, fact_dst_game, dim_player and the restricted consensus archive."""
+def _week_times() -> dict[tuple[int, int], tuple[datetime, datetime]]:
+    return {(s, w): (data_cutoff(s, w), data_cutoff(s, w) + timedelta(days=7)) for s, w in all_weeks()}
+
+
+def state_as_of(truth, when: datetime, spec: WorldSpec):
+    """``(dim_game, played rows with as-of points, consensus ranks)`` as a refresh at ``when`` would see them."""
+    import numpy as np
+    import polars as pl
+
+    times = _week_times()
+    games = []
+    for season, week in all_weeks():
+        if season == 2027 and when < SCHEDULE_2027_PUBLISHED:
+            continue
+        kicks = game_kickoffs(season, week)
+        for gi, (away, home) in enumerate(matchups(season, week)):
+            final = kicks[gi] + timedelta(hours=GAME_HOURS) <= when
+            games.append({"game_id": f"{season}_{week:02d}_{away}_{home}", "season": season, "week": week,
+                          "game_type": "REG", "away_team": away, "home_team": home, "kickoff_utc": kicks[gi],
+                          "status": "final" if final else "scheduled", "away_score": 20 if final else None,
+                          "home_score": 24 if final else None, "result": 4 if final else None})
+    dim_game = pl.DataFrame(games).with_columns(pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32),
+                                                pl.col("kickoff_utc").cast(pl.Datetime("us", "UTC")))
+    final_ids = set(dim_game.filter(pl.col("status") == "final")["game_id"].to_list())
+    played = truth.filter(pl.col("game_id").is_in(list(final_ids)))
+    pts = played["points"].to_numpy().copy()
+    if spec.corrections:
+        cut = np.array([times[(s, w)][0] <= when for s, w in zip(played["season"].to_list(), played["week"].to_list(), strict=True)])
+        corr = np.array([times[(s, w)][1] <= when for s, w in zip(played["season"].to_list(), played["week"].to_list(), strict=True)])
+        pts = np.where(~cut, pts + played["prelim_delta"].to_numpy(), pts)
+        pts = np.where(corr, pts + played["corr_delta"].to_numpy(), pts)
+        pts = np.maximum(pts, 0.0)
+    played = played.with_columns(pl.Series("points_as_of", pts))
+    scraped = [(s, w) for s, w in all_weeks() if first_kickoff(s, w) - timedelta(hours=24) <= when
+               and not (s == 2027 and when < SCHEDULE_2027_PUBLISHED)]
+    ecr_base = truth.filter(pl.struct("season", "week").map_elements(
+        lambda r: (r["season"], r["week"]) in set(scraped), return_dtype=pl.Boolean))
+    return dim_game, played, ecr_base
+
+
+def write_snapshot_as_of(truth, when: datetime, spec: WorldSpec, processed_root: Path | None = None) -> dict[str, str]:
+    """A refresh at simulated time ``when``: one new snapshot of each dataset the scorer pins, ids = ``when``."""
     import numpy as np
     import polars as pl
 
     from ffml.config import get_settings
-    from ffml.data.store import SnapshotStore
+    from ffml.data import store as ST
 
-    settings = get_settings()
-    store = SnapshotStore(settings.processed_dir)
-    games = []
-    for season, week in all_weeks():
-        kicks = game_kickoffs(season, week)
-        for gi, (away, home) in enumerate(matchups(season, week)):
-            games.append({"game_id": f"{season}_{week:02d}_{away}_{home}", "season": season, "week": week,
-                          "game_type": "REG", "away_team": away, "home_team": home, "kickoff_utc": kicks[gi],
-                          "status": "final", "away_score": 20, "home_score": 24, "result": 4})
-    dim_game = pl.DataFrame(games).with_columns(pl.col("season").cast(pl.Int32), pl.col("week").cast(pl.Int32),
-                                                pl.col("kickoff_utc").cast(pl.Datetime("us", "UTC")))
-    stats = stat_columns(truth)
-    base = truth.select("entity_id", "position", "team", "opponent", "game_id", "season", "week", "kickoff_utc")
+    processed = Path(processed_root) if processed_root is not None else get_settings().processed_dir
+    dim_game, played, ecr_base = state_as_of(truth, when, spec)
+    stats = stat_columns(played, "points_as_of")
+    base = played.select("entity_id", "position", "team", "opponent", "game_id", "season", "week", "kickoff_utc")
     full = pl.concat([base, stats], how="horizontal")
     players = full.filter(pl.col("position") != "DST").rename({"entity_id": "player_id"}).with_columns(
         pl.lit("REG").alias("game_type"), pl.lit(True).alias("played"))
-    dst_pts = truth.filter(pl.col("position") == "DST")
-    dst = dst_pts.select(
+    dst = played.filter(pl.col("position") == "DST").select(
         "team", "season", "week", "game_id", "opponent", pl.lit("REG").alias("game_type"),
-        pl.col("points").cast(pl.Int32).alias("sacks"), *[pl.lit(0, dtype=pl.Int32).alias(c) for c in (
+        pl.col("points_as_of").cast(pl.Int32).alias("sacks"), *[pl.lit(0, dtype=pl.Int32).alias(c) for c in (
             "interceptions", "fumble_recoveries", "forced_fumbles", "def_td", "return_td", "safeties",
             "blocked_kicks")],
         pl.lit(24, dtype=pl.Int32).alias("points_allowed"), pl.lit(330.0).alias("yards_allowed"))
     dim_player = truth.filter(pl.col("position") != "DST").select(
         pl.col("entity_id").alias("player_id"), "position", "team").unique(maintain_order=True).with_columns(
         (pl.lit("Synthetic ") + pl.col("player_id")).alias("display_name"))
-
-    def by_season(frame):
-        return {int(s): frame.filter(pl.col("season") == s) for s in sorted(frame["season"].unique().to_list())}
-
-    ids = {
-        "dim_game": store.write_snapshot("dim_game", by_season(dim_game), meta={"synthetic": True}),
-        "fact_player_game": store.write_snapshot("fact_player_game", by_season(players), meta={"synthetic": True}),
-        "fact_dst_game": store.write_snapshot("fact_dst_game", by_season(dst), meta={"synthetic": True}),
-        "dim_player": store.write_snapshot("dim_player", {"all": dim_player}, meta={"synthetic": True}),
-    }
-    # restricted consensus archive (synthetic ranks): the consensus knows half of the matchup effect
-    score = (np.log(truth["skill"].to_numpy()) + 0.5 * np.log(truth["matchup"].to_numpy())
-             + truth["noise_consensus"].to_numpy())
-    ecr = truth.select("entity_id", "position", "team", "season", "week").with_columns(
+    score = (np.log(ecr_base["skill"].to_numpy()) + 0.5 * np.log(ecr_base["matchup"].to_numpy())
+             + ecr_base["noise_consensus"].to_numpy())
+    ecr = ecr_base.select("entity_id", "position", "team", "season", "week").with_columns(
         pl.Series("_score", score)).with_columns(
         pl.col("_score").rank("ordinal", descending=True).over(["season", "week", "position"]).cast(pl.Float64).alias("ecr"))
     scrape = {(s, w): (first_kickoff(s, w) - timedelta(days=1)).date().isoformat() for s, w in all_weeks()}
@@ -481,8 +534,25 @@ def write_stores(world: World, truth) -> dict[str, str]:
         pl.struct("season", "week").map_elements(lambda r: scrape[(r["season"], r["week"])],
                                                  return_dtype=pl.String).alias("scrape_date"),
     ).drop("_score", "entity_id")
-    rstore = SnapshotStore(settings.processed_dir / "restricted")
-    ids["fact_ecr_weekly"] = rstore.write_snapshot("fact_ecr_weekly", by_season(ecr), meta={"synthetic": True})
+
+    def by_season(frame):
+        return {int(s): frame.filter(pl.col("season") == s) for s in sorted(frame["season"].unique().to_list())}
+
+    saved = ST._utc_now
+    ST._utc_now = lambda: when.astimezone(UTC)
+    try:
+        store = ST.SnapshotStore(processed)
+        meta = {"synthetic": True, "as_of": when.isoformat()}
+        ids = {
+            "dim_game": store.write_snapshot("dim_game", by_season(dim_game), meta=meta),
+            "fact_player_game": store.write_snapshot("fact_player_game", by_season(players), meta=meta),
+            "fact_dst_game": store.write_snapshot("fact_dst_game", by_season(dst), meta=meta),
+            "dim_player": store.write_snapshot("dim_player", {"all": dim_player}, meta=meta),
+        }
+        rstore = ST.SnapshotStore(processed / "restricted")
+        ids["fact_ecr_weekly"] = rstore.write_snapshot("fact_ecr_weekly", by_season(ecr), meta=meta)
+    finally:
+        ST._utc_now = saved
     return ids
 
 
@@ -508,13 +578,19 @@ def prediction_frame(truth, model: str, center, sigma, *, extra: Mapping[str, An
     return pl.concat(frames)
 
 
+def _window_rows(truth):
+    import polars as pl
+
+    window = set(WINDOW)
+    return truth.filter(pl.struct("season", "week").map_elements(lambda r: (r["season"], r["week"]) in window,
+                                                                 return_dtype=pl.Boolean))
+
+
 def chain_frames(spec: WorldSpec, truth):
     """``(calibrated, raw)`` chain rows for every window week (the calibrated chain is the true distribution)."""
     import numpy as np
-    import polars as pl
 
-    w = truth.filter(pl.struct("season", "week").map_elements(lambda r: (r["season"], r["week"]) in set(WINDOW),
-                                                              return_dtype=pl.Boolean))
+    w = _window_rows(truth)
     center = np.log(w["median"].to_numpy())
     sigma = w["sigma"].to_numpy().copy()
     raw = prediction_frame(w, "chain_v1", center, sigma * RAW_SIGMA_FACTOR)
@@ -529,8 +605,7 @@ def baseline_frames(spec: WorldSpec, truth, cal):
     import numpy as np
     import polars as pl
 
-    w = truth.filter(pl.struct("season", "week").map_elements(lambda r: (r["season"], r["week"]) in set(WINDOW),
-                                                              return_dtype=pl.Boolean))
+    w = _window_rows(truth)
     frames = []
     for b in LINE_BASELINES:
         center = np.log(w["skill"].to_numpy()) + w[f"noise_{b}"].to_numpy()
@@ -548,16 +623,22 @@ def baseline_frames(spec: WorldSpec, truth, cal):
 
 
 def write_comparators_run(world: World, spec: WorldSpec, truth, cal) -> Path:
-    """data/backtests/livetest_comparators: predictions with the harness outcome columns attached."""
+    """data/backtests/livetest_comparators: predictions with harness outcome columns (from a scratch full store).
+
+    Since D-116 A3 the scorer replaces the comparators' outcome columns with the chain's pinned ones, so these
+    columns only make the run look like a real one.
+    """
     import polars as pl
 
+    from ffml.data.store import SnapshotStore
     from ffml.eval import livetest_score as LS
     from ffml.eval.harness import PREDICTIONS, backtests_root
 
+    scratch = world.root / "scratch-full-store"
+    write_snapshot_as_of(truth, datetime(2028, 1, 1, tzinfo=UTC), spec, processed_root=scratch)
+    store = SnapshotStore(scratch)
     rows = baseline_frames(spec, truth, cal)
-    parts = []
-    for season in sorted({s for s, _ in WINDOW}):
-        parts.append(LS.harness_outcomes(rows.filter(pl.col("season") == season), season))
+    parts = [LS.harness_outcomes(rows.filter(pl.col("season") == s), s, store) for s in sorted({s for s, _ in WINDOW})]
     frame = pl.concat(parts, how="diagonal_relaxed")
     run_dir = backtests_root() / LS.COMPARATORS_RUN
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -567,6 +648,7 @@ def write_comparators_run(world: World, spec: WorldSpec, truth, cal) -> Path:
         "models": sorted(frame["model"].unique().to_list()), "report_seasons": [2026, 2027],
         "note": "SYNTHETIC comparators for the QA rehearsal: the three line baselines only (raw and +cal)",
     }, indent=2) + "\n", encoding="utf-8")
+    rmtree_force(scratch)
     return run_dir
 
 
@@ -621,13 +703,13 @@ def write_release_marker() -> dict[str, Any]:
 
 
 def build_world(world: World) -> dict[str, Any]:
-    """Everything except the commitments (those are built week by week, before each push)."""
+    """Everything except the commitments (the runner builds those week by week, through the build hook)."""
     from ffml.config import get_settings
 
     spec = world.spec
     write_release_marker()
     truth = truth_frame(spec)
-    ids = write_stores(world, truth)
+    t0_ids = write_snapshot_as_of(truth, SNAPSHOT_T0, spec)
     w, cal, raw = chain_frames(spec, truth)
     run_dir = write_comparators_run(world, spec, truth, cal)
     digest = write_stored_parts()
@@ -636,11 +718,11 @@ def build_world(world: World) -> dict[str, Any]:
     cal.write_parquet(cache / "chain_cal.parquet")
     raw.write_parquet(cache / "chain_raw.parquet")
     truth.write_parquet(cache / "truth.parquet")
-    return {"snapshots": ids, "stored_digest": digest, "comparators_run": str(run_dir),
+    return {"snapshots_t0": t0_ids, "stored_digest": digest, "comparators_run": str(run_dir),
             "rows": {"truth": truth.height, "chain_cal": cal.height, "chain_raw": raw.height}}
 
 
-def build_commitment(world: World, season: int, week: int, x_commit: str) -> Path:
+def build_commitment(world: World, season: int, week: int, created: datetime) -> Path:
     """What ``ffml livetest build-week`` writes, with synthetic rows (the builder's own helpers)."""
     import polars as pl
 
@@ -650,14 +732,12 @@ def build_commitment(world: World, season: int, week: int, x_commit: str) -> Pat
     from ffml.sim import livetest as LV
 
     s = get_settings()
-    created = created_time(season, week)
     kickoff = first_kickoff(season, week)
     stamp = created.strftime("%Y%m%dT%H%M%SZ")
     version = f"chain_v2-primary-c{season}w{week:02d}-{stamp}"
     cache = s.data_dir / "rehearsal_world"
     cal = pl.read_parquet(cache / "chain_cal.parquet").filter((pl.col("season") == season) & (pl.col("week") == week))
     raw = pl.read_parquet(cache / "chain_raw.parquet").filter((pl.col("season") == season) & (pl.col("week") == week))
-    # model artifact and calibrator state
     artifact = LV.artifact_root() / version
     artifact.mkdir(parents=True, exist_ok=True)
     (artifact / "train_manifest.json").write_bytes(LV._json_bytes(
@@ -680,7 +760,6 @@ def build_commitment(world: World, season: int, week: int, x_commit: str) -> Pat
     (pred_dir / "_manifest.json").write_bytes(LV._json_bytes(
         {"run_id": run_id, "environment": "private_test", "approval_status": "not approved",
          "label": "not approved", "model_version": version, "rows": cal.height, "synthetic": True}))
-    # walk-forward cache: parts computed once, by the first build that needs them
     written = []
     for ws, ww in walkforward_weeks_before(season, week):
         p = LV.walkforward_dir() / "parts" / LV.RAW_KEY / f"{ws}_w{ww:02d}.parquet"
@@ -699,6 +778,7 @@ def build_commitment(world: World, season: int, week: int, x_commit: str) -> Pat
     pred_files = LV.file_records(LV.tree_files(pred_dir), "predictions")
     wf_files = LV.file_records(written, "walkforward_part")
     pins = chain_v2.check_pins()
+    code = LV.code_state()  # the commit the build runs (the runner's code_cwd: the clone's HEAD)
     payload = {
         "format": LV.COMMITMENT_FORMAT, "model": chain_v2.MODEL_NAME, "season": season, "week": week,
         "rehearsal": False, "environment": "private_test", "approval_status": "not approved",
@@ -722,11 +802,9 @@ def build_commitment(world: World, season: int, week: int, x_commit: str) -> Pat
                       "processed_at_start": {}},
         "seeds": {"seed": chain_v2.SEED, "week_seed": chain_v2.SEED + 100 * season + week},
         "n_sims": chain_v2.N_SIMS, "pins": pins,
-        "code": {"commit": x_commit, "short": x_commit[:7], "clean": True, "tracked_clean": True, "code_clean": True,
-                 "status": [], "code_changes": [], "commit_at_end": x_commit, "code_clean_at_end": True,
-                 "head_moved": False},
+        "code": {**code, "commit_at_end": code["commit"], "code_clean_at_end": code["code_clean"], "head_moved": False},
         "holdout_release": release_info(),
-        "build": {"seconds": 386.0, "peak_memory_mb": 4100.0, "timings": {}, "python": sys.version.split()[0],
+        "build": {"seconds": 300.0, "peak_memory_mb": 4100.0, "timings": {}, "python": sys.version.split()[0],
                   "synthetic": True},
     }
     path = LV.commitment_path(season, week)
@@ -742,15 +820,23 @@ def build_commitment(world: World, season: int, week: int, x_commit: str) -> Pat
 
 _COUNTER = itertools.count(1)
 
+#: ``python -m ffml.eval.livetest_score <args>`` from the clone: asserts ffml is the clone's, then runs ``main()``.
+#: ``FFML_REHEARSAL_NOW`` sets ``livetest_score.utcnow`` (the scorer's clock, which its docstring says tests
+#: replace) to the simulated time; nothing else is changed.
 SCORER_WRAPPER = (
-    "import os, pathlib, runpy, sys\n"
+    "import os, pathlib, sys\n"
+    "from datetime import datetime\n"
     "import ffml\n"
     "clone = pathlib.Path(os.environ['FFML_REHEARSAL_CLONE']).resolve()\n"
     "where = pathlib.Path(ffml.__file__).resolve()\n"
     "assert clone in where.parents, f'ffml imported from {where}, not from the clone {clone}'\n"
-    "print(f'REHEARSAL ffml from {where}', file=sys.stderr)\n"
-    "sys.argv = ['ffml.eval.livetest_score', *sys.argv[1:]]\n"
-    "runpy.run_module('ffml.eval.livetest_score', run_name='__main__', alter_sys=True)\n"
+    "import ffml.eval.livetest_score as LS\n"
+    "assert clone in pathlib.Path(LS.__file__).resolve().parents\n"
+    "now = os.environ.get('FFML_REHEARSAL_NOW')\n"
+    "if now:\n"
+    "    LS.utcnow = lambda: datetime.fromisoformat(now)\n"
+    "print(f'REHEARSAL ffml from {where}; clock {now or \"real\"}', file=sys.stderr)\n"
+    "sys.exit(LS.main(sys.argv[1:]))\n"
 )
 
 
@@ -777,17 +863,21 @@ def run(world: World, args: Sequence[str], *, cwd: Path | None = None, timeout: 
     return Proc(list(args), proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - t0)
 
 
-def scorer_cli(world: World, *cli_args: str, timeout: float = 7200) -> Proc:
-    """``python -m ffml.eval.livetest_score <args>`` from the clone, asserting first that ffml is the clone's."""
-    return run(world, [sys.executable, "-c", SCORER_WRAPPER, *cli_args], timeout=timeout)
+def scorer_cli(world: World, *cli_args: str, now: datetime | None = None, timeout: float = 7200,
+               cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Proc:
+    """The scorer's CLI from the clone (the wrapper asserts ffml is the clone's)."""
+    e = dict(env or world.env())
+    if now is not None:
+        e["FFML_REHEARSAL_NOW"] = now.isoformat()
+    return run(world, [sys.executable, "-c", SCORER_WRAPPER, *cli_args], timeout=timeout, cwd=cwd, env=e)
 
 
 def driver(world: World, command: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 7200,
            cwd: Path | None = None, env: Mapping[str, str] | None = None) -> tuple[Proc, dict[str, Any]]:
     """Run ``_rehearsal_driver.py <command>`` in the clone's context; returns the process and its JSON result."""
     out = world.evidence / f"driver_{next(_COUNTER):03d}_{command}.json"
-    p = run(world, [sys.executable, str(DRIVER), command, json.dumps(payload or {}), str(out)], timeout=timeout,
-            cwd=cwd, env=env)
+    p = run(world, [sys.executable, str(DRIVER), command, json.dumps(payload or {}, default=str), str(out)],
+            timeout=timeout, cwd=cwd, env=env)
     result = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
     return p, result
 
@@ -809,9 +899,10 @@ def metric_leaks(text: str) -> list[str]:
 
 
 def line_status(final_md: str) -> dict[str, str]:
-    """``{line id: 'pass' | 'not passed'}`` from the binding lines table of reports/livetest/final.md."""
+    """``{line id: 'pass' | 'not passed'}`` from the binding lines table of the final report."""
     out: dict[str, str] = {}
     section = final_md.split("## The 22 lines", 1)[-1].split("## Report-only", 1)[0].split("## Verdict", 1)[0]
+    section = section.split("## Integrity findings", 1)[0]
     for ln in section.splitlines():
         m = re.match(r"^\|\s*(L\d\d)\s*\|.*?\|\s*(pass|not passed)\s*\|", ln)
         if m:
@@ -831,6 +922,18 @@ def checks_table(final_md: str) -> list[tuple[str, str, str]]:
     return rows
 
 
+def flagged_table(final_md: str) -> list[list[str]]:
+    """Rows of the "Integrity findings that do not change the verdict" table (flagged MISSED markers)."""
+    if "## Integrity findings" not in final_md:
+        return []
+    section = final_md.split("## Integrity findings", 1)[1].split("## Verdict", 1)[0]
+    rows = []
+    for ln in section.splitlines():
+        if ln.startswith("|") and not ln.startswith("| week") and not ln.startswith("| ---"):
+            rows.append([c.strip() for c in ln.strip().strip("|").split("|")])
+    return rows
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -844,10 +947,6 @@ def tree_listing(root: Path) -> dict[str, str]:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=1, default=str) + "\n", encoding="utf-8")
-
-
-def math_isclose(a: float, b: float) -> bool:
-    return math.isclose(a, b, rel_tol=0, abs_tol=1e-12)
 
 
 def iter_weeks(spec: WorldSpec) -> Iterable[tuple[int, int, bool]]:
