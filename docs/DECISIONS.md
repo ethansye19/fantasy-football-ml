@@ -119,6 +119,8 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-117 | 2026-11-06 | accepted (owner) | Delegation replaces D-112: the orchestrator asks no questions, chooses its recommended option, logs each decision and assumption here, and approves the freeze itself once the full rehearsal and the Evaluator's review pass; the owner is contacted only for password or laptop steps, publishing, making the repo public, or new costs |
 | D-118 | 2026-11-07 | decided (orchestrator, D-117) | Bootstrap subset adopted (2872d13) after a zero-difference proof at 500 and 5,000 draws; candidate X = 2872d13; the freeze is approved only on a full rehearsal run at X; processed snapshots are never pruned during the window |
 | D-119 | 2026-11-07 | decided (orchestrator, D-117) | Pre-registration updated for D-116 and D-118 (Friday cutoff and snapshot pins, pre-build check, final fetch, committed weeks, bootstrap frames); the expected verdict date moves to about 2027-11-12, the Friday data cutoff after 2027 week 9 |
+| D-120 | 2026-11-07 | decided (orchestrator, D-117) | Freeze procedure: the commit field is filled in its own commit; one append-only change-log commit Y then logs every commit since X; the code worktree is pinned at Y, not X; the final runs from the main checkout |
+| D-121 | 2026-11-07 | decided (orchestrator, D-117) | A game that never becomes final: the week waits, and if a game is still not final 14 days after the week's data cutoff the week is scored without it (its rows excluded and listed), pinning the first snapshots at or after that point; later weeks are never held behind it |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1060,6 +1062,47 @@ plus the Evaluator's review. Assumption: `SnapshotStore.prune` has no caller
 outside its tests; processed snapshots pinned by sealed weeks must survive
 for rescoring, so no processed snapshot is pruned during the window
 (runbook rule).
+
+## D-120 Freeze procedure (orchestrator under D-117, 2026-11-07)
+
+From the Evaluator's freeze review part 1 (fb4a153, F1 and F2): the
+pre-registration copy in a worktree pinned at X still carries the
+placeholder commit field, so every weekly check of the build commit would
+show a failure there and a final run from it would be INVALID. Procedure:
+
+1. Commit every remaining text fix.
+2. Fill `commit` with X in its own commit (the fill commit).
+3. Make one commit that only appends change-log rows for every commit from
+   X to the fill commit inclusive. That commit is Y; it is exempt from
+   needing its own row (D-115).
+4. Pin the code worktree at Y (a descendant of X whose diff from X touches
+   only allowed paths; the pin check and the build accept it).
+5. The final always runs from the main checkout, never the pinned worktree.
+
+Afterwards every new commit on `main` gets a row in a later append-only
+change-log commit, before the next build that could use it.
+
+## D-121 A game that never becomes final (orchestrator under D-117, 2026-11-07)
+
+From the Evaluator's freeze review part 1 (R2): a game that never becomes
+final, such as the 2022 week 17 no-contest, would hold automatic scoring of
+its week, and of every later week, forever, so the final could never run.
+Rule, added before the freeze:
+
+- A week is scored once every game is final, as before.
+- If a game of the week is still not final 14 days after the week's data
+  cutoff, the week is scored without it. Its player, team and defense rows
+  are excluded, the excluded game ids are listed in the sealed record and in
+  the final report, and scoring pins the first snapshots taken at or after
+  that point (the cutoff plus 14 days).
+- A game the league reschedules into a later week leaves this week in the
+  schedule and does not trigger the rule.
+- The runner tries every due, unsealed week in order and never holds a later
+  week behind an earlier week that is still waiting.
+
+This adds a deterministic rule for an edge case that would otherwise have
+stopped the test. It relaxes nothing, and it changes no verdict in any
+scenario where every game is final.
 
 ## Owner answers received 2026-11-01
 
