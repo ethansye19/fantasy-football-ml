@@ -1153,5 +1153,14 @@ def test_d121_data_cutoff_prints_the_exclusion_point(tmp_path, monkeypatch, caps
         printed = json.loads(capsys.readouterr().out.strip())
         assert printed["data_cutoff_utc"] == LS.iso(cutoff)
         assert printed["exclusion_after_utc"] == LS.iso(cutoff + timedelta(days=14)) and "D-121" in printed["exclusion_rule"]
+        # D-123: the runner reads the pinned datasets from here instead of keeping its own list
+        pinned = printed["pinned_datasets"]
+        assert [d["key"] for d in pinned] == [f"{t}/{d}" for t, d in LS.PINNED_DATASETS]
+        processed = tmp_path / "data" / "processed"
+        roots = LS.store_roots()
+        for d in pinned:
+            assert (processed / d["path"]).resolve() == (roots[d["tier"]] / d["dataset"]).resolve()
+        assert [d["path"] for d in pinned] == ["dim_game", "fact_player_game", "fact_dst_game",
+                                               "restricted/fact_ecr_weekly"]
     finally:
         reset_settings_cache()

@@ -1048,6 +1048,15 @@ def store_roots() -> dict[str, Path]:
     return {"processed": processed, "restricted": processed / "restricted"}
 
 
+def pinned_dataset_list(roots: Mapping[str, Path] | None = None) -> list[dict[str, str]]:
+    """:data:`PINNED_DATASETS` for the runner (D-123): each pinned dataset's key (as in ``data_snapshots``),
+    tier, name and directory relative to the processed store, so no caller needs its own copy of the list."""
+    roots = dict(roots or store_roots())
+    base = Path(roots["processed"])
+    return [{"key": f"{tier}/{ds}", "tier": tier, "dataset": ds,
+             "path": (Path(roots[tier]) / ds).relative_to(base).as_posix()} for tier, ds in PINNED_DATASETS]
+
+
 def snapshot_time(snapshot_id: str) -> datetime | None:
     try:
         return datetime.strptime(snapshot_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
@@ -2115,6 +2124,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
                           "last_kickoff_utc": iso(parse_time(g["kickoff_utc"].max())),
                           "rule": "12:00 UTC on the first Friday at least 72 h after the last kickoff (D-116 A3)",
                           "exclusion_after_utc": iso(exclusion_after(cutoff)),
+                          "pinned_datasets": pinned_dataset_list(),
                           "exclusion_rule": "a game still not final at exclusion_after_utc is excluded and the week "
                                             "scored without it (D-121)"}))
         return EXIT_OK
