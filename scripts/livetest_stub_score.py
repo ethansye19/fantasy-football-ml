@@ -7,9 +7,10 @@ and A3), and nothing else:
         prints a JSON object {"ok", "from", "to", "uncovered", "frozen"};
         exit 0 = the build may run, exit 5 = blocked.
     livetest_stub_score.py --data-cutoff <season>w<WW>
-        prints a JSON object {"week", "data_cutoff_utc", "last_kickoff_utc", "rule"}:
-        12:00 UTC on the first Friday at least 72 hours after the week's last
-        kickoff in dim_game (A3); exit 0.
+        prints a JSON object {"week", "data_cutoff_utc", "exclusion_after_utc",
+        "last_kickoff_utc", "rule"}: 12:00 UTC on the first Friday at least 72 hours
+        after the week's last kickoff in dim_game (A3), and that plus 14 days
+        (D-121); exit 0.
     livetest_stub_score.py --week <season>w<WW> [--weekly-sensitivity]
         exit 0: writes data/livetest/scoring/sealed/<week>.sha256 (one placeholder
         part) and data/livetest/scoring/weeks/<week>.json with the dim_game and
@@ -21,7 +22,8 @@ Test hooks (environment): ``FFML_STUB_SCORE_CALLS`` append one JSON line per
 call; ``FFML_STUB_PREBUILD_EXIT`` (default 0), ``FFML_STUB_PREBUILD_UNCOVERED``
 and ``FFML_STUB_PREBUILD_FROZEN`` (comma-separated commits);
 ``FFML_STUB_CUTOFF`` (ISO, overrides the computed cutoff);
-``FFML_STUB_SCORE_EXIT`` (exit code for ``--week``, default 0).
+``FFML_STUB_SCORE_EXIT`` (exit code for ``--week``, default 0);
+``FFML_STUB_NOT_YET_WEEKS`` (comma-separated weeks for which ``--week`` exits 4).
 """
 
 from __future__ import annotations
@@ -95,11 +97,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         cutoff = core.parse_time(override) if override else data_cutoff(wk.last_kickoff_utc)
         print(json.dumps({"week": key, "data_cutoff_utc": core.iso(cutoff),
+                          "exclusion_after_utc": core.iso(cutoff + timedelta(days=14)),
                           "last_kickoff_utc": core.iso(wk.last_kickoff_utc) if wk else None,
                           "rule": "12:00 UTC on the first Friday at least 72 h after the last kickoff (A3)"}))
         return 0
 
     code = int(os.environ.get("FFML_STUB_SCORE_EXIT") or 0)
+    if key in _split("FFML_STUB_NOT_YET_WEEKS"):
+        code = 4
     if code:
         print(f"stub: exit {code}")
         return code

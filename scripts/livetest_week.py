@@ -117,6 +117,9 @@ SCORER_MODULE = "ffml.eval.livetest_score"
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000  # Windows; the scorer runs above normal priority (A7)
 PREBUILD_BLOCKED = 5  # scorer --prebuild-check exit code for "blocked"
 SCORER_NOT_YET = 4  # scorer exit code for "not yet, retry" (no alert)
+#: the datasets the scorer pins (ffml.eval.livetest_score.PINNED_DATASETS), as paths under data/processed
+PINNED_DATASETS: tuple[str, ...] = ("dim_game", "fact_player_game", "fact_dst_game", "restricted/fact_ecr_weekly")
+MAX_SCORE_REFRESHES = 2  # refreshes per week and pin point (R1: a straddling refresh is repeated once)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +169,7 @@ class Config:
     misses_allowed: int | None = None  # missed_weeks.allowed from the pre-registration (D-111: 2)
     misses_allowed_error: str | None = None
     window: list[tuple[int, int]] | None = None  # the pre-registered window, both seasons (QA-F30)
+    prereg_data: dict[str, Any] | None = None  # the loaded pre-registration (path policy, frozen commit X)
     scorer_timeout_minutes: float = 360.0  # A7
 
     def window_keys(self) -> list[str]:
@@ -618,6 +622,19 @@ def verify_pin(run: Run) -> None:
     except core.PinError as exc:
         raise run.abort(EXIT_BLOCKED, "pin", f"refused: {exc}", alert_kind="build_failure", key="pin") from None
     run.log.event("pin", "verified", **run.pin.to_dict())
+    prereg = cfg.prereg_data or {}
+    x = core.frozen_commit_from(prereg)
+    if x is None:
+        run.log.event("pin", "descendant check skipped",
+                      message="the pre-registration's commit field is not filled yet (before the freeze)")
+        return
+    try:
+        relation = core.verify_descends_from_frozen(
+            cfg.code_worktree, x, run.pin.commit, (prereg.get("allowed_paths") or {}).keys(),
+            prereg.get("frozen_paths") or [], runner=run.deps.run)
+    except core.PinError as exc:
+        raise run.abort(EXIT_BLOCKED, "pin", f"refused: {exc}", alert_kind="build_failure", key="pin") from None
+    run.log.event("pin", "descends from the frozen commit", **relation)
 
 
 def _tail(text: str | bytes | None, n: int = 1500) -> str:
@@ -1673,7 +1690,8 @@ def scorer_week_record(cfg: Config, wk: core.WeekKickoff) -> dict[str, Any]:
 
 
 def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff],
-              data_cutoff: datetime | None = None) -> int:
+              data_cutoff: datetime | None = None, exclusion_after: datetime | None = None,
+              not_final: list[str] | None = None) -> int:
     """Publish ``<week>/sealed_hashes.json`` from the local sealed file; idempotent; immutable."""
     cfg = run.cfg
     key = wk.key
@@ -1737,6 +1755,8 @@ def seal_week(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff],
                               "commit_sha": sha, "sealed_file_sha256": payload["sealed_file_sha256"],
                               "entries": entries, "push": push, "ok": push.get("ok"), "recorded_at": core.iso(run.now()),
                               "data_cutoff_utc": core.iso(data_cutoff) if data_cutoff else None,
+                              "exclusion_after_utc": core.iso(exclusion_after) if exclusion_after else None,
+                              "not_final_at_scoring": list(not_final or []),
                               "scorer": scorer_week_record(cfg, wk)}
     try:
         record["ls_remote_sha"] = repo.ls_remote()
@@ -1836,25 +1856,10 @@ def week_is_final(cfg: Config, wk: core.WeekKickoff) -> tuple[bool, list[str]]:
     return pending.height == 0, pending["game_id"].to_list()
 
 
-def pick_week_to_score(run: Run, plan: list[core.WeekKickoff], repo: core.CommitmentsRepo) -> core.WeekKickoff | None:
-    """The oldest test week that kicked off, has a commitment on the branch and no sealed hashes yet."""
-    cfg = run.cfg
-    now = run.now()
-    for w in plan:
-        if w.season != cfg.test_season or w.week not in cfg.weeks or w.first_kickoff_utc > now:
-            continue
-        if repo.remote_blob(f"{w.key}/{core.SEALED_NAME}") is not None:
-            continue
-        if repo.remote_blob(f"{w.key}/{core.MISSED_NAME}") is not None:
-            continue
-        if repo.remote_blob(f"{w.key}/{core.COMMITMENT_NAME}") is None:
-            continue
-        return w
-    return None
 
 
-def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> datetime | None:
-    """The week's data cutoff from ``--data-cutoff`` (A3); ``None`` when the scorer says "not yet" (exit 4)."""
+def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> tuple[datetime, datetime | None] | None:
+    """``(cutoff, exclusion_after)`` from ``--data-cutoff`` (A3, D-121); ``None`` on "not yet" (exit 4)."""
     code, out, err = run_scorer(run, ["--data-cutoff", wk.key], timeout_minutes=10)
     result = parse_json_output(out)
     run.log.event("score", "data cutoff", week=wk.key, returncode=code, result=result, stderr_tail=_tail(err, 400))
@@ -1879,65 +1884,108 @@ def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> datetime | None:
     if cutoff is None:
         raise run.abort(EXIT_RETRY, "score", f"{wk.key}: no data cutoff in the scorer's output {out[-200:]!r}",
                         alert_kind="scoring_failure", key=f"{wk.key}:cutoff")
-    return cutoff
+    exclusion_after = None
+    raw_exclusion = (result or {}).get("exclusion_after_utc")
+    if raw_exclusion:
+        try:
+            exclusion_after = core.parse_time(raw_exclusion)
+        except ValueError:
+            exclusion_after = None
+    run.log.event("score", "cutoff read", week=wk.key, data_cutoff=core.iso(cutoff),
+                  exclusion_after=core.iso(exclusion_after) if exclusion_after else None)
+    return cutoff, exclusion_after
 
 
-def snapshot_at_or_after(cfg: Config, cutoff: datetime) -> str | None:
-    """The LATEST dim_game snapshot id when it was taken at or after ``cutoff`` (ids are UTC stamps)."""
-    sid = core.dim_game_snapshot_id(cfg.data_dir)
-    if not sid:
-        return None
+def _snapshot_time(snapshot_id: str) -> datetime | None:
     try:
-        stamp = datetime.strptime(sid[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        return datetime.strptime(snapshot_id[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except ValueError:
         return None
-    return sid if stamp >= cutoff else None
 
 
-def score_week(run: Run) -> int:
-    """Friday job (A3): the week's data cutoff, a refresh at or after it, the scorer, then seal."""
+def pinned_coverage(cfg: Config, at: datetime) -> dict[str, str | None]:
+    """For each dataset the scorer pins, the first snapshot taken at or after ``at`` (``None``: none yet)."""
+    out: dict[str, str | None] = {}
+    for name in PINNED_DATASETS:
+        root = cfg.data_dir / "processed" / name
+        ids = sorted(p.name.split("=", 1)[1] for p in root.glob("snapshot=*") if p.is_dir()) if root.is_dir() else []
+        timed = sorted((t, sid) for sid in ids if (t := _snapshot_time(sid)) is not None)
+        out[name] = next((sid for t, sid in timed if t >= at), None)
+    return out
+
+
+
+
+def weeks_to_score(run: Run, plan: list[core.WeekKickoff], repo: core.CommitmentsRepo) -> list[core.WeekKickoff]:
+    """Every test week that kicked off, has a commitment on the branch, is not missed and not sealed, in order."""
     cfg = run.cfg
-    if cfg.rehearsal and not cfg.dry_run_branch:
-        raise run.abort(EXIT_REFUSED, "score", "score-week is not for rehearsals")
-    plan = load_plan(run, season_hint=cfg.season or cfg.test_season, live=False)
-    if cfg.test_season is None or not cfg.weeks:
-        raise run.abort(EXIT_REFUSED, "score", "the test window is not initialised; run `init` first")
-    repo = run.repo()
-    if remote_state(run, repo, create=True) is None:
-        raise run.abort(EXIT_RETRY, "score", "remote unreachable; will retry", alert_kind="scoring_failure", key="score")
-    wk = select_week(run, plan) if cfg.season is not None else pick_week_to_score(run, plan, repo)
-    if wk is None:
-        run.log.event("score", "nothing to do", message="every committed week that kicked off is sealed")
-        return EXIT_OK
+    now = run.now()
+    keys = set(cfg.window_keys())
+    out = []
+    for w in plan:
+        if keys and w.key not in keys:
+            continue
+        if not keys and (w.season != cfg.test_season or w.week not in cfg.weeks):
+            continue
+        if w.first_kickoff_utc > now:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.SEALED_NAME}") is not None:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.MISSED_NAME}") is not None:
+            continue
+        if repo.remote_blob(f"{w.key}/{core.COMMITMENT_NAME}") is None:
+            continue
+        out.append(w)
+    return out
+
+
+def score_one(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> int:
+    """One week: cutoff, refresh until every pinned dataset has a snapshot at the pin point, scorer, seal."""
+    cfg = run.cfg
     key = wk.key
-    if repo.remote_blob(f"{key}/{core.SEALED_NAME}") is not None:
-        run.log.event("score", "already sealed", week=key)
-        return EXIT_OK
-    cutoff = data_cutoff_for(run, wk)
-    if cutoff is None:
+    got = data_cutoff_for(run, wk)
+    if got is None:
         run.log.event("score", "not yet", week=key, message="the scorer's --data-cutoff exited 4; retry later")
         return EXIT_RETRY
-    if run.now() < cutoff:
+    cutoff, exclusion_after = got
+    now = run.now()
+    if now < cutoff:
         run.log.event("score", "before the data cutoff", week=key, data_cutoff=core.iso(cutoff),
                       message="nothing to do before the cutoff (A3)")
         return EXIT_OK
+    final, pending = week_is_final(cfg, wk)
+    past_exclusion = exclusion_after is not None and now >= exclusion_after
+    pin_point = exclusion_after if (not final and past_exclusion) else cutoff
     state = load_state(cfg, wk)
-    existing = snapshot_at_or_after(cfg, cutoff)
+    coverage = pinned_coverage(cfg, pin_point)
+    lacking = [name for name, sid in coverage.items() if sid is None]
+    refreshes = state.setdefault("score_refreshes", {})
     if cfg.skip_refresh:
-        run.log.event("score", "refresh skipped", message="--skip-refresh", data_cutoff=core.iso(cutoff))
-    elif existing:
-        run.log.event("score", "refresh not needed", snapshot=existing, data_cutoff=core.iso(cutoff),
-                      message="a dim_game snapshot taken at or after the cutoff exists")
+        run.log.event("score", "refresh skipped", message="--skip-refresh", pin_point=core.iso(pin_point))
+    elif not lacking:
+        run.log.event("score", "refresh not needed", pin_point=core.iso(pin_point), coverage=coverage,
+                      message="every pinned dataset has a snapshot taken at or after the pin point")
+    elif refreshes.get(core.iso(pin_point), 0) >= MAX_SCORE_REFRESHES:
+        run.log.event("score", "refresh limit reached", pin_point=core.iso(pin_point), lacking=lacking,
+                      message="the scorer decides with the snapshots there are")
     else:
+        run.log.event("score", "refresh needed", pin_point=core.iso(pin_point), lacking=lacking)
+        refreshes[core.iso(pin_point)] = refreshes.get(core.iso(pin_point), 0) + 1
+        save_state(cfg, wk, state)
         refresh = run_refresh(run, wk, state)
         if refresh["status"] == "failed":
             raise run.abort(EXIT_RETRY, "score", f"{key}: refresh failed before scoring; will retry",
                             alert_kind="refresh_failure", key=f"{key}:score")
-    final, pending = week_is_final(cfg, wk)
-    if not final:
-        run.log.event("score", "week not final yet", week=key, not_final=pending[:8])
-        run.log.event("summary", "exit", exit_code=EXIT_RETRY)
+        final, pending = week_is_final(cfg, wk)
+    if not final and not past_exclusion:
+        run.log.event("score", "week not final yet", week=key, not_final=pending[:8],
+                      exclusion_after=core.iso(exclusion_after) if exclusion_after else None,
+                      message="retried; after the exclusion point the week is scored without these games (D-121)")
         return EXIT_RETRY
+    if not final:
+        run.log.event("score", "scoring with games excluded", week=key, not_final=pending,
+                      exclusion_after=core.iso(exclusion_after),
+                      message="D-121: games still not final 14 days after the cutoff are excluded by the scorer")
     sealed_path = cfg.sealed_dir / f"{key}.sha256"
     if not sealed_path.exists():
         args = ["--week", key, "--weekly-sensitivity"]
@@ -1957,7 +2005,43 @@ def score_week(run: Run) -> int:
         if not sealed_path.exists():
             raise run.abort(EXIT_RETRY, "score", f"{key}: the scorer exited 0 but wrote no {sealed_path.name}; "
                             "nothing to seal", alert_kind="scoring_failure", key=f"{key}:score", severity="warning")
-    return seal_week(run, wk, plan, data_cutoff=cutoff)
+    return seal_week(run, wk, plan, data_cutoff=cutoff, exclusion_after=exclusion_after,
+                     not_final=pending if not final else [])
+
+
+def score_week(run: Run) -> int:
+    """Friday job (A3, D-121): every due, unsealed week in order; a waiting week never holds a later one."""
+    cfg = run.cfg
+    if cfg.rehearsal and not cfg.dry_run_branch:
+        raise run.abort(EXIT_REFUSED, "score", "score-week is not for rehearsals")
+    plan = load_plan(run, season_hint=cfg.season or cfg.test_season, live=False)
+    if cfg.test_season is None or not cfg.weeks:
+        raise run.abort(EXIT_REFUSED, "score", "the test window is not initialised; run `init` first")
+    repo = run.repo()
+    if remote_state(run, repo, create=True) is None:
+        raise run.abort(EXIT_RETRY, "score", "remote unreachable; will retry", alert_kind="scoring_failure", key="score")
+    if cfg.season is not None:
+        wk = select_week(run, plan)
+        if repo.remote_blob(f"{wk.key}/{core.SEALED_NAME}") is not None:
+            run.log.event("score", "already sealed", week=wk.key)
+            return EXIT_OK
+        weeks = [wk]
+    else:
+        weeks = weeks_to_score(run, plan, repo)
+    if not weeks:
+        run.log.event("score", "nothing to do", message="every committed week that kicked off is sealed")
+        return EXIT_OK
+    results: dict[str, int] = {}
+    for wk in weeks:
+        try:
+            results[wk.key] = score_one(run, wk, plan)
+        except Abort as exc:
+            results[wk.key] = exc.code
+    run.log.event("score", "weeks tried", results=results)
+    codes = set(results.values())
+    if EXIT_INTEGRITY in codes:
+        return EXIT_INTEGRITY
+    return EXIT_OK if codes <= {EXIT_OK} else EXIT_RETRY
 
 
 def cmd_score_week(cfg: Config, deps: Deps) -> int:
@@ -2154,6 +2238,7 @@ def make_config(args: argparse.Namespace) -> Config:
     if cfg.preregistration is not None:
         try:
             prereg_data = core.load_preregistration(cfg.preregistration)
+            cfg.prereg_data = prereg_data
             cfg.misses_allowed = core.misses_allowed_from(prereg_data)
             try:
                 cfg.window = core.window_from(prereg_data)

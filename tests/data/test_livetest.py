@@ -163,14 +163,21 @@ class Env:
             return []
         return [json.loads(line) for line in self.alert_log.read_text(encoding="utf-8").splitlines()]
 
-    def mark_final(self, through_week: int) -> None:
-        """A new dim_game snapshot with every game through ``through_week`` final (the scorer's precondition)."""
+    def mark_final(self, through_week: int, except_games: tuple[str, ...] = ()) -> None:
+        """A new dim_game snapshot with every game through ``through_week`` final, except ``except_games``."""
         from ffml.data.store import SnapshotStore
 
         frame = load_fixture().with_columns(
-            pl.when(pl.col("week") <= through_week).then(pl.lit("final")).otherwise(pl.col("status")).alias("status")
+            pl.when((pl.col("week") <= through_week) & ~pl.col("game_id").is_in(list(except_games)))
+            .then(pl.lit("final")).otherwise(pl.col("status")).alias("status")
         )
         SnapshotStore(self.data / "processed").write_snapshot("dim_game", {2026: frame})
+
+    def fake_snapshot(self, dataset: str, snapshot_id: str) -> None:
+        """An empty snapshot directory for the pinned-dataset coverage check (no LATEST is touched)."""
+        d = self.data / "processed" / dataset / f"snapshot={snapshot_id}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "_manifest.json").write_text("{}", encoding="utf-8")
 
     def sealed_file(self, week: int = 10) -> Path:
         return self.data / "livetest" / "scoring" / "sealed" / f"2026w{week:02d}.sha256"
@@ -594,9 +601,63 @@ def test_score_week_refreshes_only_without_a_snapshot_at_or_after_the_cutoff(env
     assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
     assert len(refreshes) == len(runner.REFRESH_STEPS)  # the newest snapshot predates the cutoff: refresh
     refreshes.clear()
-    monkeypatch.setenv("FFML_STUB_CUTOFF", "2026-11-01T12:00:00Z")  # a snapshot at or after it exists
+    for name in ("fact_player_game", "fact_dst_game", "restricted/fact_ecr_weekly"):
+        env.fake_snapshot(name, "20261102T000000Z")
+    monkeypatch.setenv("FFML_STUB_CUTOFF", "2026-11-01T12:00:00Z")  # every pinned dataset has one after it
     assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
     assert refreshes == [] and '"status": "refresh not needed"' in env.logs()
+    # R1: dim_game is past the cutoff but the other pinned datasets are not -> refresh, not a week's delay
+    monkeypatch.setenv("FFML_STUB_CUTOFF", "2026-11-03T12:00:00Z")
+    assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
+    assert len(refreshes) == len(runner.REFRESH_STEPS)
+    assert '"lacking": ["fact_player_game", "fact_dst_game", "restricted/fact_ecr_weekly"]' in env.logs()
+    # the scorer's own list of pinned datasets is the runner's
+    score = pytest.importorskip("ffml.eval.livetest_score")
+    theirs = tuple(n if tier == "processed" else f"restricted/{n}" for tier, n in score.PINNED_DATASETS)
+    assert theirs == runner.PINNED_DATASETS
+
+
+def _cutoff(week: int) -> datetime:
+    import livetest_stub_score as stub_score
+
+    return stub_score.data_cutoff(core.find_week(core.week_plan(load_fixture(), 2026), 2026, week).last_kickoff_utc)
+
+
+def test_score_week_never_holds_a_later_week_behind_a_waiting_one(env, monkeypatch):
+    """D-121: week 10 is still waiting (scorer exit 4); week 11 is scored and sealed in the same run."""
+    K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    assert env.main_(env.argv("run", K11 - timedelta(hours=9), week=11)) == runner.EXIT_OK
+    env.mark_final(11)
+    monkeypatch.setenv("FFML_STUB_NOT_YET_WEEKS", "2026w10")
+    now = _cutoff(11) + timedelta(hours=1)
+    assert env.main_(env.argv("score-week", now, "--skip-refresh", week=None)) == runner.EXIT_RETRY
+    assert env.remote_blob("2026w11/sealed_hashes.json") is not None
+    assert env.remote_blob("2026w10/sealed_hashes.json") is None
+    assert [c[1] for c in env.scorer_calls("--week")] == ["2026w10", "2026w11"]  # tried in order
+    assert env.alerts() == []  # waiting is not a failure
+    monkeypatch.delenv("FFML_STUB_NOT_YET_WEEKS")
+    assert env.main_(env.argv("score-week", now + timedelta(hours=2), "--skip-refresh", week=None)) == runner.EXIT_OK
+    assert env.remote_blob("2026w10/sealed_hashes.json") is not None
+
+
+def test_a_game_never_final_is_scored_after_the_exclusion_point(env):
+    """D-121: a game still not final 14 days after the cutoff no longer holds its week."""
+    stuck = load_fixture().filter(pl.col("week") == 10)["game_id"][3]
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    env.mark_final(10, except_games=(stuck,))
+    cutoff = _cutoff(10)
+    assert env.main_(env.argv("score-week", cutoff + timedelta(days=1), "--skip-refresh", week=None)) == runner.EXIT_RETRY
+    assert env.scorer_calls("--week") == [] and '"status": "week not final yet"' in env.logs()
+    assert core.iso(cutoff + timedelta(days=14)) in env.logs()  # exclusion_after_utc is logged
+    assert env.alerts() == []
+    after = cutoff + timedelta(days=14, hours=1)
+    assert env.main_(env.argv("score-week", after, "--skip-refresh", week=None)) == runner.EXIT_OK
+    assert env.scorer_calls("--week") == [["--week", "2026w10", "--weekly-sensitivity"]]
+    assert '"status": "scoring with games excluded"' in env.logs()
+    record = json.loads((env.data / "livetest" / "runner" / "2026w10" / "seal_record.json").read_text())
+    assert record["exclusion_after_utc"] == core.iso(cutoff + timedelta(days=14))
+    assert record["not_final_at_scoring"] == [stuck] and record["data_cutoff_utc"] == core.iso(cutoff)
 
 
 def test_the_scorer_runs_above_normal_priority_with_a_360_minute_timeout(env):
@@ -849,6 +910,57 @@ def test_pin_refuses_wrong_commit_dirty_tree_main_checkout_and_foreign_ffml(code
     git("-c", "core.autocrlf=false", "update-index", "--assume-unchanged", "ffml/__init__.py", cwd=wt)
     with pytest.raises(core.PinError, match="outside the worktree"):
         pin(wt, a, repo, require_editable=False)
+
+
+def test_pin_at_y_must_descend_from_x_through_allowed_paths(tmp_path, monkeypatch):
+    """D-120 / F1: the worktree is pinned at Y (the change-log commit after the fill commit), not at X."""
+    for name, value in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t",
+                        "GIT_COMMITTER_EMAIL": "t@e"}.items():
+        monkeypatch.setenv(name, value)
+    repo = tmp_path / "r"
+    (repo / "ffml" / "models").mkdir(parents=True)
+    (repo / "ffml" / "models" / "m.py").write_text("A = 1\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "prereg.md").write_text('"commit": "<frozen commit>"\n')
+    git("init", "--quiet", "-b", "main", cwd=repo)
+    git("add", ".", cwd=repo)
+    git("commit", "--quiet", "-m", "X", cwd=repo)
+    x = git("rev-parse", "HEAD", cwd=repo)
+    (repo / "docs" / "prereg.md").write_text(f'"commit": "{x}"\n')
+    git("commit", "--quiet", "-am", "fill the commit field", cwd=repo)
+    (repo / "docs" / "changelog.md").write_text("| row |\n")
+    git("add", ".", cwd=repo)
+    git("commit", "--quiet", "-m", "Y: change-log rows", cwd=repo)
+    y = git("rev-parse", "HEAD", cwd=repo)
+    allowed, frozen = ["docs/", "tests/"], ["ffml/models/"]
+    ok = core.verify_descends_from_frozen(repo, x[:12], y, allowed, frozen)
+    assert ok["relation"] == "descendant" and ok["paths"] == ["docs/changelog.md", "docs/prereg.md"]
+    assert core.verify_descends_from_frozen(repo, x, x, allowed, frozen)["relation"] == "same"
+    (repo / "ffml" / "models" / "m.py").write_text("A = 2\n")
+    git("commit", "--quiet", "-am", "a frozen change", cwd=repo)
+    bad = git("rev-parse", "HEAD", cwd=repo)
+    with pytest.raises(core.PinError, match="not allowed"):
+        core.verify_descends_from_frozen(repo, x, bad, allowed, frozen)
+    with pytest.raises(core.PinError, match="not a descendant"):
+        core.verify_descends_from_frozen(repo, y, x, allowed, frozen)
+    with pytest.raises(core.PinError, match="not known"):
+        core.verify_descends_from_frozen(repo, "f" * 40, y, allowed, frozen)
+    assert core.frozen_commit_from({"commit": x.upper()}) == x
+    assert core.frozen_commit_from({"commit": "<frozen commit>"}) is None
+
+
+def test_path_policy_matches_the_scorer():
+    score = pytest.importorskip("ffml.eval.livetest_score")
+    doc = Path(__file__).resolve().parents[2] / "docs" / "status" / "livetest-preregistration-2026.md"
+    if not doc.exists():
+        pytest.skip("pre-registration document not present")
+    prereg = core.load_preregistration(doc)
+    allowed, frozen = list(prereg["allowed_paths"]), prereg["frozen_paths"]
+    samples = ["ffml/data/ingest.py", "ffml/models/chain_v2.py", "ffml/eval/power.py", "ffml/cli.py", "scripts/x.py",
+               "tests/data/t.py", "tests/fixtures/features/feature_manifest_0.2.0.json", "docs/RUNBOOK.md",
+               "README.md", "PROMPT_1.md", ".gitignore", "web/app/page.tsx", "pyproject.toml", ".github/workflows/x.yml"]
+    for path in samples:
+        assert core.path_allowed(path, allowed, frozen) == score.path_allowed(path, allowed, frozen), path
 
 
 def test_requirements_comparison():

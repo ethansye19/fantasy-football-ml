@@ -1,7 +1,16 @@
-"""Create the code worktree pinned at the pre-registered commit, with its own venv.
+"""Create the code worktree pinned at Y, with its own venv (D-120).
 
-    python scripts/livetest_setup_worktree.py --commit <sha> [--path ../ffml-livetest-code]
+    python scripts/livetest_setup_worktree.py --commit <Y> [--frozen-commit <X>] [--path ../ffml-livetest-code]
         [--base-python "py -3.11"] [--dry-run]
+
+Y is the append-only change-log commit made after the commit that fills the
+pre-registration's ``commit`` field with X; it is not X itself (D-120, the
+Evaluator's F1). The worktree must sit at Y so that its copy of the
+pre-registration carries the filled commit. After the pin check, the script
+verifies that Y is X or a descendant of X whose diff from X touches only
+allowed paths; X comes from ``--frozen-commit`` or the main checkout's
+pre-registration. The final always runs from the main checkout, never from
+this worktree.
 
 Steps (each is skipped when already done, so the script can be re-run):
 
@@ -64,7 +73,10 @@ def venv_python(venv: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--commit", required=True, help="the pre-registered code commit")
+    parser.add_argument("--commit", required=True,
+                        help="Y: the append-only change-log commit after the fill commit (D-120), not X")
+    parser.add_argument("--frozen-commit", default=None,
+                        help="X (default: the commit field of the main checkout's pre-registration)")
     parser.add_argument("--path", type=Path, default=core.DEFAULT_CODE_WORKTREE)
     parser.add_argument("--repo", type=Path, default=core.REPO_ROOT, help="the main checkout")
     parser.add_argument("--base-python", default=None, help='interpreter for the venv, e.g. "py -3.11"')
@@ -114,6 +126,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     result = core.verify_code_pin(wt, sha, py, main_repo=repo, check_env=True)
     print(json.dumps(result.to_dict(), indent=2))
+    prereg = core.load_preregistration(repo / core.PREREGISTRATION_DOC)
+    x = args.frozen_commit or core.frozen_commit_from(prereg)
+    if x is None:
+        print("WARNING: the pre-registration's commit field is not filled; the descendant check (X..Y) is skipped")
+    else:
+        relation = core.verify_descends_from_frozen(
+            wt, x, sha, (prereg.get("allowed_paths") or {}).keys(), prereg.get("frozen_paths") or [])
+        print(json.dumps(relation, indent=2))
     print("\nRecord the pin for the runner (once the test design is signed off):")
     print(f'  .venv\\Scripts\\python scripts\\livetest_week.py init --season 2026 --weeks 10-18 '
           f'--code-worktree "{wt}" --python "{py}" --expected-commit {sha}')

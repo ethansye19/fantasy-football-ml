@@ -363,6 +363,61 @@ def misses_allowed_from(prereg: Mapping[str, Any]) -> int:
     return allowed
 
 
+def path_allowed(path: str, allowed: Iterable[str], frozen: Iterable[str]) -> bool:
+    """The pre-registration's path policy, as ``ffml.eval.livetest_score.path_allowed``.
+
+    A frozen entry (a file, or a directory ending in ``/``) wins over an allowed
+    one; any path not under an allowed entry is frozen.
+    """
+    p = path.replace("\\", "/")
+    if any(p == f or p.startswith(f.rstrip("/") + "/") for f in frozen):
+        return False
+    return any(p == a or (a.endswith("/") and p.startswith(a)) for a in allowed)
+
+
+def frozen_commit_from(prereg: Mapping[str, Any]) -> str | None:
+    """The pre-registration's ``commit`` field (X) when filled, else ``None`` (the placeholder)."""
+    value = prereg.get("commit")
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{7,40}", value.strip()):
+        return value.strip().lower()
+    return None
+
+
+def verify_descends_from_frozen(
+    worktree: Path | str, frozen_commit: str, pinned_commit: str, allowed: Iterable[str], frozen: Iterable[str],
+    *, runner: Runner = subprocess.run,
+) -> dict[str, Any]:
+    """Refuse unless the pinned commit Y is X or a descendant of X whose diff from X touches only allowed paths.
+
+    D-120: the code worktree is pinned at Y, the append-only change-log commit
+    after the commit that fills the pre-registration's ``commit`` field.
+    """
+    wt = Path(worktree)
+    x = _run(["git", "-C", str(wt), "rev-parse", "--verify", "--quiet", f"{frozen_commit}^{{commit}}"], runner=runner)
+    if x.returncode != 0 or not x.stdout.strip():
+        raise PinError(f"the frozen commit {frozen_commit} is not known in {wt}")
+    x_sha = x.stdout.strip()
+    y = _run(["git", "-C", str(wt), "rev-parse", "--verify", "--quiet", f"{pinned_commit}^{{commit}}"], runner=runner)
+    y_sha = y.stdout.strip()
+    if y.returncode != 0 or not y_sha:
+        raise PinError(f"the pinned commit {pinned_commit} is not known in {wt}")
+    if x_sha == y_sha:
+        return {"frozen_commit": x_sha, "pinned_commit": y_sha, "relation": "same", "paths": []}
+    anc = _run(["git", "-C", str(wt), "merge-base", "--is-ancestor", x_sha, y_sha], runner=runner)
+    if anc.returncode != 0:
+        raise PinError(f"the pinned commit {y_sha[:12]} is not a descendant of the frozen commit {x_sha[:12]}")
+    diff = _run(["git", "-C", str(wt), "diff", "--name-only", x_sha, y_sha], runner=runner)
+    if diff.returncode != 0:
+        raise PinError(f"git diff {x_sha[:12]} {y_sha[:12]} failed: {diff.stderr.strip()[-300:]}")
+    paths = [p.strip() for p in diff.stdout.splitlines() if p.strip()]
+    allowed, frozen = list(allowed), list(frozen)
+    bad = [p for p in paths if not path_allowed(p, allowed, frozen)]
+    if bad:
+        raise PinError(f"the pinned commit {y_sha[:12]} differs from the frozen commit {x_sha[:12]} on paths that "
+                       f"are not allowed: {bad[:8]}")
+    return {"frozen_commit": x_sha, "pinned_commit": y_sha, "relation": "descendant", "paths": paths}
+
+
 def window_from(prereg: Mapping[str, Any]) -> list[tuple[int, int]]:
     """The pre-registered window as ordered ``(season, week)`` pairs (D-110: 2026 w10-18, 2027 w1-9)."""
     block = prereg.get("window")
