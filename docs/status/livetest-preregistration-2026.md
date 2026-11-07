@@ -25,9 +25,12 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "commit": "<frozen commit>",
   "frozen_commit_must_include": [
     "1d0d2b6",
+    "2872d13",
     "6e29122",
     "a2f2af0",
+    "a30cd08",
     "b22973f",
+    "bd3bf21",
     "d24a43a"
   ],
   "commit_relation": "a build, a refresh and the scorer are valid at the frozen commit X, or at a descendant Y whose `git diff --name-only X Y` touches only paths under allowed_paths (any other path is frozen); a frozen-path change invalidates the test unless the owner rules otherwise; the scorer records X, Y and the diff for every week",
@@ -62,7 +65,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     },
     "weeks_total": 18,
     "verdict_after": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
-    "weekly_scoring": "after the week's games are final: a verification-only report plus sealed metric parts; no weekly output shows a metric or a Verdict line"
+    "weekly_scoring": "on the Friday job at or after the week's data cutoff: a verification-only report plus sealed metric parts; no weekly output shows a metric or a Verdict line"
   },
   "rules": {
     "design": "fallback (D-105 item 3, D-110): no candidate qualified (best good-model pass 0.614 < 0.70)",
@@ -71,9 +74,9 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "lines_source": "ffml.eval.report_holdout.prereg_lines (lines_spec_sha256)",
     "forms": "calibrated chain_v2 rows against each comparator's calibrated form on identical player-weeks; 95% week-clustered paired bootstrap (D-078); metric seed 0",
     "applied": "once, over every scored week of the window (18 weeks, or 17 with one excluded miss)",
-    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a third miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 9's games are final in dim_game",
+    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a third miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 9's games are final in dim_game; a failed GitHub fetch or ls-remote check at the final records no verdict (exit 75) and the final is retried (D-116)",
     "provisional_tier": "none (D-110); the app shows no approved model for the rest of 2026",
-    "rules_sha256": "08fcf2116a7ab297d79a65501390cef474b3db3cfc5e1467e7a6ec31cbbc0bfe",
+    "rules_sha256": "8c4212e3d77614c7f34a923a2b5905b6aa05173e4439aaaace3d0f28a0ba7574",
     "rules_sha256_definition": "SHA-256 of the canonical JSON of this rules object without the rules_sha256 key: json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8",
     "comparators": {
       "run": "ffml.eval.harness run of the config livetest_comparators (ffml/eval/backtest_configs.py): the five transparent baselines plus the direct challenger (information only), no chain; online v3 calibration warmed from 2021 exactly as the default config; seasons through 2027; purpose livetest_score; resumable parts; run incrementally at scoring time at the frozen commit",
@@ -269,7 +272,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "seed": 0,
   "metric_seed": 0,
   "scoring": {
-    "when": "weekly, only after every regular-season game of the week is final in dim_game; information only",
+    "when": "each week on the Friday job at or after the week's data cutoff, once every game of the week is final; the final after every window week is scored or missed (D-116)",
     "verdict": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
     "reads": [
       "livetest-2026:{season}w{WW}/commitment.json",
@@ -293,16 +296,22 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "sensitivity_check": {
       "what": "report-only: every bootstrap interval behind the 22 lines is recomputed with 5,000 week-clustered paired draws (seed 0) alongside the binding 500-draw interval",
       "binding": "the 500-draw, seed-0 bootstrap of D-078 is the only verdict rule; the 5,000-draw check can never change a line's PASS/FAIL or the verdict",
-      "disclosure": "any line whose 5,000-draw interval would give a different PASS/FAIL than the binding interval is listed in the final report with both intervals; the weekly sealed parts store both (the runner's Tuesday job calls the scorer with --weekly-sensitivity)",
+      "disclosure": "any line whose 5,000-draw interval would give a different PASS/FAIL than the binding interval is listed in the final report with both intervals; the weekly sealed parts store both (the runner's Friday job calls the scorer with --weekly-sensitivity)",
       "decision": "owner, 2026-11-05 (D-111)"
     },
-    "sealed_branch_path": "scoring/{season}w{WW}.sha256 on livetest-2026: the scorer's sealed file pushed verbatim by scripts/livetest_week.py seal (with {season}w{WW}/sealed_hashes.json as the runner's record); the final refuses unless every sealed file matches it"
+    "sealed_branch_path": "scoring/{season}w{WW}.sha256 on livetest-2026: the scorer's sealed file pushed verbatim by scripts/livetest_week.py seal (with {season}w{WW}/sealed_hashes.json as the runner's record); the final refuses unless every sealed file matches it",
+    "data_cutoff": "12:00 UTC on the first Friday at least 72 hours after the last kickoff of the week in dim_game (`python -m ffml.eval.livetest_score --data-cutoff <week>`); before it `--week` exits 4 (retry later)",
+    "snapshot_pins": "for each processed dataset it reads, weekly scoring uses the first snapshot taken at or after the cutoff; the snapshot ids and a SHA-256 of the outcome rows used (`outcome_rows_sha256`) are sealed with the week and recorded in scoring/weeks/<week>.json; a rescore reuses them; corrections after the cutoff are ignored; the final reads only sealed parts, including each week's sealed consensus rows; processed snapshots are never pruned during the window (D-118)",
+    "prebuild_check": "before every build the runner runs `--prebuild-check --from <last build's code commit> --to <pinned HEAD>`: every commit in between needs a change-log entry and none may touch a frozen path; a block (exit 5) alerts the owner and retries; it is a miss only if no valid commitment is pushed by the deadline; the final also checks, for every scored week, that each commit between X and that week's build commit was in the change log as it stood at the build commit (D-116 B1, A1, A2)",
+    "final_fetch": "`--final` reads the branch only from the fetched GitHub ref, checked against `git ls-remote`, and compares each scored week's commitment and summary with the hashes recorded at weekly scoring; if the fetch or the check fails it exits 75 before computing or writing anything: no Verdict line, no report, no sealed file (D-116 A, A4)",
+    "committed_weeks": "a week with a commitment or a sealed record on the branch is always scored and never excluded as a miss; a MISSED marker for such a week is flagged in the final report with its week, the GitHub commit time of the commit that added it and its created_at, and does not change the verdict (QA-F28, D-116 A, A5)",
+    "bootstrap_frames": "lines: only the frames the 22 lines read are bootstrapped; identical by construction (one week-clustered draw matrix) and shown identical to the full computation at 500 and 5,000 draws on the rehearsal worlds (reports/livetest_subset_proof_2026-11-07.json; D-116 B2, D-118)"
   },
   "path_policy": "any path not listed in allowed_paths is frozen (the scorer's path_allowed returns false for it); entries are prefixes (a directory entry ends with /); a frozen prefix takes precedence over an allowed one, so frozen_paths names the frozen set explicitly and never contains a prefix of an allowed entry (everything under ffml/ is frozen except ffml/data/, ffml/eval/power.py and ffml/eval/audits/)",
   "miss_rule": "D-106 as revisited by the owner on 2026-11-05: up to two missed weeks are excluded from scoring and the window is not extended; a third miss makes the test INVALID (not failed); a miss is a week with no valid commitment on livetest-2026 at its deadline, for a real technical failure or an offline machine, logged in {season}w{WW}/MISSED.json with the reason",
   "expected_verdict": {
     "when": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game",
-    "expected_date": "about 2027-11-09 (the Tuesday after 2027 week 9; the 2027 schedule is not published, so between about 2027-11-02 and 2027-11-16)",
+    "expected_date": "about 2027-11-12 (the Friday data cutoff after 2027 week 9; the 2027 schedule is not published, so between about 2027-11-05 and 2027-11-19)",
     "app_until_then": "the real app shows 'no approved model' with projections, start/sit, waivers, trades and rest-of-season rankings off, through the rest of 2026, the 2027 offseason and draft, and 2027 weeks 1-9 (D-099, D-110); v2 outputs exist only in private test, labeled not approved"
   },
   "sealed_interim": {
@@ -510,13 +519,44 @@ matching rules (`valid_for_game`, identical player-weeks); weeks without a
 consensus scrape are excluded from L13-L16 only, as week 18 was in
 validation, and the final report lists them.
 
+## Weekly scoring, the pre-build check and the final (D-116, D-118)
+
+- **Friday data cutoff.** Each week is scored on the runner's Friday job at
+  or after its data cutoff: 12:00 UTC on the first Friday at least 72 hours
+  after the week's last kickoff. Scoring uses, for each processed dataset it
+  reads, the first snapshot taken at or after the cutoff. The snapshot ids
+  and a SHA-256 of the outcome rows used are sealed with the week; a rescore
+  reuses them; stat corrections after the cutoff are ignored. The final reads
+  only sealed parts, including each week's sealed consensus rows. Processed
+  snapshots are never pruned during the window.
+- **Pre-build check.** Before every build the runner checks every commit
+  since the last build's code commit: each needs a change-log entry, and none
+  may touch a frozen path. A block alerts the owner and retries every 30
+  minutes; a block fixed before the deadline is not a miss. The final also
+  checks that each commit used by a week's build was in the change log as it
+  stood at that build.
+- **The final.** It reads the branch only from the fetched GitHub ref,
+  checked against `git ls-remote`, and compares every scored week with the
+  hashes recorded at weekly scoring. If the fetch or the check fails it stops
+  before computing anything and records no verdict (exit 75), so it can be
+  retried.
+- **Committed weeks.** A week with a commitment or a sealed record on the
+  branch is always scored and never excluded as a miss. A missed-week marker
+  for such a week is listed in the final report with its week, the time of
+  the commit that added it and its `created_at`, and does not change the
+  verdict.
+- **Bootstrap frames.** Only the frames the 22 lines read are bootstrapped.
+  This is identical by construction (one week-clustered draw matrix) and was
+  shown identical to the full computation at 500 and 5,000 draws
+  (reports/livetest_subset_proof_2026-11-07.json).
+
 ## Expected verdict date and the app until then
 
 The single verdict is computed after every window week is final, at the
 earliest after 2027 week 9's games are final in `dim_game`. The 2027
 schedule is not published; by recent seasons' calendars that is **about
-2027-11-09** (the Tuesday after 2027 week 9), and no earlier than about
-2027-11-02 nor later than about 2027-11-16. Until then the real app stays on
+2027-11-12** (the Friday data cutoff after 2027 week 9), and no earlier
+than about 2027-11-05 nor later than about 2027-11-19. Until then the real app stays on
 "no approved model": projections, start/sit, waivers, trades and
 rest-of-season rankings are off through the rest of 2026, the 2027 offseason
 and draft, and 2027 weeks 1-9 (D-099, D-110). chain_v2 outputs exist only in
@@ -579,7 +619,7 @@ paired draws (seed 0). The 500-draw, seed-0 bootstrap of D-078 remains the
 only binding verdict rule; the 5,000-draw check can never change a line's
 PASS/FAIL or the verdict. Any line whose 5,000-draw interval would give a
 different PASS/FAIL is listed in the final report with both intervals, and
-the weekly sealed parts store both (the runner's Tuesday job calls the
+the weekly sealed parts store both (the runner's Friday job calls the
 scorer with `--weekly-sensitivity`).
 
 ### How the estimate is made, and the reconciliation with the first report
