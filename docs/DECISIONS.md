@@ -121,6 +121,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-119 | 2026-11-07 | decided (orchestrator, D-117) | Pre-registration updated for D-116 and D-118 (Friday cutoff and snapshot pins, pre-build check, final fetch, committed weeks, bootstrap frames); the expected verdict date moves to about 2027-11-12, the Friday data cutoff after 2027 week 9 |
 | D-120 | 2026-11-07 | decided (orchestrator, D-117) | Freeze procedure: the commit field is filled in its own commit; one append-only change-log commit Y then logs every commit since X; the code worktree is pinned at Y, not X; the final runs from the main checkout |
 | D-121 | 2026-11-07 | decided (orchestrator, D-117) | A game that never becomes final: the week waits, and if a game is still not final 14 days after the week's data cutoff the week is scored without it (its rows excluded and listed), pinning the first snapshots at or after that point; later weeks are never held behind it |
+| D-122 | 2026-11-08 | decided (orchestrator, D-117) | Fix before the freeze, not in September 2027: an ingest skips a requested season only when it is newer than every published season and its file does not exist yet (warning, not a D-028 gap); every published season loads exactly as before |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1103,6 +1104,19 @@ Rule, added before the freeze:
 This adds a deterministic rule for an edge case that would otherwise have
 stopped the test. It relaxes nothing, and it changes no verdict in any
 scenario where every game is final.
+
+## D-122 Unpublished newest season (orchestrator under D-117, 2026-11-08)
+
+The Data Engineer found (DE-5.9) that a 2016-2027 ingest made before
+nflverse publishes a dataset's 2027 file fails that dataset as a D-028 gap,
+so the 2027 week 1 build would run on stale snapshots after three refresh
+attempts. Fixing it in September 2027 would need an `ffml/data/` change
+under the outside-change rule (D-111), so it is fixed now, before the
+freeze: a requested season is skipped with a warning only when it is newer
+than every season the source has published and its file does not exist
+yet. A missing file for any earlier season still fails as a gap. Ingest of
+every published season is unchanged, so no feature row changes; a test
+shows the seasons loaded for 2016-2026 are identical before and after.
 
 ## Owner answers received 2026-11-01
 
