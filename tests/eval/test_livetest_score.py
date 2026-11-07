@@ -239,7 +239,15 @@ def test_weekly_outputs_are_sealed_and_verification_only(tmp_path):
     part = LS.part_path(tmp_path / "scoring", 2026, 10)
     record = json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
     seals = LS.read_seal((sealed / "2026w10.sha256").read_text(encoding="utf-8"))
-    assert part.is_file() and seals == {part.name: LS.sha256_file(part), "2026w10.json": LS.sha256_file(sealed / "2026w10.json")}
+    cpart = LS.consensus_part_path(tmp_path / "scoring", 2026, 10)
+    assert part.is_file() and cpart.is_file() and seals == {
+        part.name: LS.sha256_file(part), cpart.name: LS.sha256_file(cpart),
+        "2026w10.json": LS.sha256_file(sealed / "2026w10.json")}
+    assert record["outcome_rows_sha256"] and record["consensus_part_sha256"] == LS.sha256_file(cpart)
+    status = json.loads(LS.week_status_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
+    assert status["outcome_rows_sha256"] == record["outcome_rows_sha256"] and status["sealed"] == seals
+    assert set(status) >= {"dim_game_snapshot", "processed_snapshots", "outcome_rows_sha256"}
+    _assert_no_metrics(json.dumps(status))
     _assert_no_metrics((sealed / "2026w10.sha256").read_text(encoding="utf-8"))
     # the metrics exist, sealed in the JSON only
     m = record["sealed_metrics"]
@@ -262,8 +270,7 @@ def test_final_refused_until_complete_then_prints_one_verdict(tmp_path):
     prereg = _prereg(tmp_path)
     dg_open = dim_game(2026, [10, 11], unfinished={11: 0})
     src = LS.BranchSource(tmp_path / "branch")
-    kw = dict(source=src, prereg=prereg, root=tmp_path / "scoring", reports_dir=tmp_path / "reports", n_boot=40,
-              consensus=pl.concat([_consensus(2026, 10), _consensus(2026, 11)]))
+    kw = dict(source=src, prereg=prereg, root=tmp_path / "scoring", reports_dir=tmp_path / "reports", n_boot=40)
     with pytest.raises(LS.ScoreRefused, match="refused until 2026w11 is final"):
         LS.final_evaluation(dim_game=dg_open, **kw)
     dg = dim_game(2026, [10, 11])
@@ -309,12 +316,12 @@ def test_final_verdict_uses_the_binding_draws_only(tmp_path):
                repo_root=repo)
         _push_seal(tmp_path, f"2026w{w}")
     kw = dict(source=LS.BranchSource(tmp_path / "branch"), prereg=prereg, root=tmp_path / "scoring",
-              reports_dir=tmp_path / "reports", n_boot=40, repo_root=repo,
-              consensus=pl.concat([_consensus(2026, 10), _consensus(2026, 11)]))
+              reports_dir=tmp_path / "reports", n_boot=40, repo_root=repo)
     base, out = LS.final_evaluation(dim_game=dg, sensitivity=False, **kw)
     assert base in ("Verdict: APPROVED", "Verdict: NOT APPROVED"), base
     frame, _ = LS.load_parts(tmp_path / "scoring", [(2026, 10), (2026, 11)])
-    binding = LS.score_frames(frame, kw["consensus"], n_boot=40)
+    binding = LS.score_frames(frame, LS.load_consensus_parts(tmp_path / "scoring", [(2026, 10), (2026, 11)]),
+                              n_boot=40)
 
     def all_fail(frame_, consensus_):
         sc = LS.score_frames(frame_, consensus_, n_boot=40)
@@ -416,40 +423,61 @@ def test_commit_relation_allowed_paths(tmp_path):
     assert not LS.commit_relation_allowed(y, x, tmp_path, allowed, frozen).ok  # not a descendant
 
 
+CHANGELOG_TEMPLATE = ("# log\n\n| Date (UTC) | Commit | Paths | Reason | Verification | Verified by | First week |\n"
+                      "| --- | --- | --- | --- | --- | --- | --- |\n")
+
+
+def _log_row(sha: str, path: str) -> str:
+    return f"| 2026-11-20 | `{sha[:9]}` | {path} | change | no effect on commitments | Evaluator | 2026w11 |\n"
+
+
+def _repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _g(repo, "init", "-q", "-b", "main")
+    _g(repo, "config", "user.email", "t@example.com")
+    _g(repo, "config", "user.name", "t")
+
+    def commit(files: dict, msg: str) -> str:
+        for rel, text in files.items():
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+            _g(repo, "add", rel)
+        _g(repo, "commit", "-q", "-m", msg)
+        return _g(repo, "rev-parse", "HEAD")
+
+    def append_log(rows: str, msg: str) -> str:
+        p = repo / LS.CHANGELOG_DOC
+        return commit({LS.CHANGELOG_DOC: p.read_text(encoding="utf-8") + rows}, msg)
+
+    return repo, commit, append_log
+
+
 def test_changelog_commits_and_descendant_coverage(tmp_path):
-    _g(tmp_path, "init", "-q")
-    _g(tmp_path, "config", "user.email", "t@example.com")
-    _g(tmp_path, "config", "user.name", "t")
-
-    def commit(rel, msg):
-        p = tmp_path / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(msg + "\n", encoding="utf-8")
-        _g(tmp_path, "add", rel)
-        _g(tmp_path, "commit", "-q", "-m", msg)
-        return _g(tmp_path, "rev-parse", "HEAD")
-
-    x = commit("ffml/models/a.py", "X")
-    y = commit("scripts/run.py", "logged change")
-    z = commit("scripts/other.py", "unlogged change")
-    text = ("# log\n\n| Date (UTC) | Commit | Paths | Reason | Verification | Verified by | First week |\n"
-            "| --- | --- | --- | --- | --- | --- | --- |\n"
-            f"| 2026-11-20 | `{y[:9]}` | scripts/run.py | runner fix | no effect on commitments | Evaluator | 2026w11 |\n")
-    logged = LS.changelog_commits(text)
+    """D-116 A2: each scored week's build commit must already hold the entries of every commit since X."""
+    repo, commit, append_log = _repo(tmp_path)
+    x = commit({"ffml/models/a.py": "X\n", LS.CHANGELOG_DOC: CHANGELOG_TEMPLATE}, "X")
+    y = commit({"scripts/run.py": "y\n"}, "allowed change")
+    log_y = append_log(_log_row(y, "scripts/run.py"), "log y")
+    z = commit({"scripts/other.py": "z\n"}, "unlogged change")
+    logged = LS.changelog_commits((repo / LS.CHANGELOG_DOC).read_text(encoding="utf-8"))
     assert logged == {y[:9]}
-    assert LS.uncovered_commits(x, x, tmp_path, logged) == [] and LS.uncovered_commits(x, y, tmp_path, logged) == []
-    assert LS.uncovered_commits(x, z, tmp_path, logged) == [z]
-    # the final's checks use the log: a week built at z fails coverage, one built at y passes
-    log_file = tmp_path / "changelog.md"
-    log_file.write_text(text, encoding="utf-8")
-    prereg = _prereg(tmp_path, commit=x, frozen_paths=["ffml/models/"], allowed_paths={"scripts/": "runner"})
-    records = {(2026, 10): {"code_commit": y, "checks": [], "commitment_sha256": "a" * 64, "files_verified": 2},
-               (2026, 11): {"code_commit": z, "checks": [], "commitment_sha256": "b" * 64, "files_verified": 2}}
-    checks = LS.livetest_integrity_checks(prereg, records, [(2026, 10), (2026, 11)], {}, repo_root=tmp_path,
-                                          changelog=log_file)
+    assert LS.uncovered_commits(x, x, repo, logged) == [] and LS.uncovered_commits(x, log_y, repo, logged) == []
+    assert LS.uncovered_commits(x, z, repo, logged) == [z]
+    assert LS.changelog_at(y, repo) == set() and LS.changelog_at(log_y, repo) == {y[:9]}
+    prereg = _prereg(tmp_path, commit=x, frozen_paths=["ffml/models/"], allowed_paths={"scripts/": "runner",
+                                                                                        "docs/": "docs"})
+    records = {(2026, 10): {"code_commit": log_y, "checks": [], "commitment_sha256": "a" * 64, "files_verified": 2},
+               (2026, 11): {"code_commit": y, "checks": [], "commitment_sha256": "b" * 64, "files_verified": 2},
+               (2026, 12): {"code_commit": z, "checks": [], "commitment_sha256": "c" * 64, "files_verified": 2}}
+    checks = LS.livetest_integrity_checks(prereg, records, [(2026, 10), (2026, 11), (2026, 12)], {}, repo_root=repo)
     by = {c.name: c for c in checks}
-    assert by["frozen commit"].ok and by["2026w10 change log"].ok and not by["2026w11 change log"].ok
-    assert by["2026w10 commitment"].ok and by["2026w11 commitment"].ok  # the path rule itself is satisfied at z
+    assert by["frozen commit"].ok and by["2026w10 change log"].ok
+    # built at y before its entry existed: logged after first use, even though HEAD's log covers y
+    assert not by["2026w11 change log"].ok and "not in the change log at the build commit" in by["2026w11 change log"].detail
+    assert not by["2026w12 change log"].ok
+    assert by["2026w11 commitment"].ok and by["2026w12 commitment"].ok  # the path rule itself is satisfied
 
 
 def test_prereg_window_and_week_parsing():
@@ -566,10 +594,16 @@ def _two_week_world(tmp_path):
 def test_missed_marker_cannot_exclude_a_committed_week(tmp_path):
     """QA-F28: a hand-pushed MISSED.json for a committed, sealed week never excludes it."""
     dg, kw = _two_week_world(tmp_path)
-    (tmp_path / "branch" / "2026w11" / LS.MISSED_NAME).write_text('{"reason": "hand-pushed"}', encoding="utf-8")
+    (tmp_path / "branch" / "2026w11" / LS.MISSED_NAME).write_text(
+        '{"reason": "hand-pushed", "created_at": "2026-11-21T09:00:00+00:00"}', encoding="utf-8")
     # with the local sealed files in place: the week is scored and the marker is listed, not used
     verdict, out = LS.final_evaluation(dim_game=dg, **kw)
     text = out.read_text(encoding="utf-8")
+    row = next(ln for ln in text.splitlines() if ln.startswith("| 2026w11 |"))
+    assert "2026-11-21T09:00:00+00:00" in row and "a commitment.json on the branch" in row
+    assert "a sealed-hash record on the branch" in row and "n/a (not a git ref)" in row
+    flagged = json.loads((tmp_path / "scoring" / LS.SEALED_DIR / "final_lines.json").read_text(encoding="utf-8"))
+    assert [f["week"] for f in flagged["flagged_markers"]] == ["2026w11"]
     assert "markers ignored for committed weeks, which are scored: 2026w11" in text
     assert "Integrity findings that do not change the verdict" in text and "0 missed week(s)" in text
     # the attack: the local sealed files moved away -> refused, never a 1-week-shorter verdict
@@ -638,3 +672,276 @@ def test_missed_weeks_allowed_is_read_exactly(tmp_path, allowed):
     ok = LS.livetest_integrity_checks(_prereg(tmp_path, missed_weeks={"allowed": 0}), {}, [(2026, 10)], {})
     assert {x.name: x for x in ok}["missed weeks (miss rule)"].ok
 
+
+# --------------------------------------------------------------------------- #
+# D-116 (EV-4.7): retryable fetch, flagged markers, pre-build check, Friday cutoff, pinned snapshots
+# --------------------------------------------------------------------------- #
+
+
+def _settings(monkeypatch, tmp_path):
+    from ffml.config import reset_settings_cache
+
+    monkeypatch.setenv("FFML_REPORTS_DIR", str(tmp_path / "settings-reports"))
+    monkeypatch.setenv("FFML_DATA_DIR", str(tmp_path / "data"))
+    reset_settings_cache()
+
+
+def test_final_fetch_failure_exits_75_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    """D-116 A4: a failed fetch or ls-remote check is retryable; no Verdict line, no report, no sealed file."""
+    from ffml.config import reset_settings_cache
+
+    _settings(monkeypatch, tmp_path)
+    try:
+        prereg_path = tmp_path / "prereg.md"
+        _prereg(tmp_path)
+        assert prereg_path.is_file()
+
+        def boom(*a, **k):
+            raise LS.FetchFailed("git fetch origin livetest-2026 failed: offline")
+
+        monkeypatch.setattr(LS, "fetch_branch_ref", boom)
+        rc = LS.main(["--final", "--prereg", str(prereg_path)])
+        out = capsys.readouterr()
+        assert rc == LS.EXIT_FETCH_RETRY == 75
+        assert "Verdict:" not in out.out + out.err and "retry later" in out.err
+        assert not (tmp_path / "settings-reports").exists() and not (tmp_path / "data").exists()
+    finally:
+        reset_settings_cache()
+
+
+def test_fetch_branch_ref_ls_remote_failure_is_retryable(tmp_path, monkeypatch):
+    orig = LS._run_git
+
+    def fake(root, *args):
+        if args and args[0] == "fetch":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args and args[0] == "ls-remote":
+            return subprocess.CompletedProcess(args, 128, "", "fatal: unable to access")
+        if args and args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+        return orig(root, *args)
+
+    monkeypatch.setattr(LS, "_run_git", fake)
+    with pytest.raises(LS.FetchFailed, match="does not equal the remote head"):
+        LS.fetch_branch_ref(tmp_path)
+
+
+def test_marker_commit_time_from_the_branch(tmp_path):
+    """D-116 A5: the GitHub commit time is the committer time of the branch commit that added the marker."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _g(repo, "init", "-q", "-b", "livetest-2026")
+    _g(repo, "config", "user.email", "t@example.com")
+    _g(repo, "config", "user.name", "t")
+    (repo / "2026w11").mkdir()
+    (repo / "2026w11" / LS.MISSED_NAME).write_text("{}", encoding="utf-8")
+    _g(repo, "add", ".")
+    env_date = "2026-11-21T09:30:00+00:00"
+    subprocess.run(["git", "commit", "-q", "-m", "missed"], cwd=repo, check=True, capture_output=True,
+                   env={**__import__("os").environ, "GIT_COMMITTER_DATE": env_date, "GIT_AUTHOR_DATE": env_date})
+    src = LS.BranchSource(None, repo_root=repo, ref="livetest-2026")
+    sha, when = src.added_by(f"2026w11/{LS.MISSED_NAME}")
+    assert sha == _g(repo, "rev-parse", "HEAD") and LS.parse_time(when) == LS.parse_time(env_date)
+    assert LS.BranchSource(tmp_path / "plain").added_by("x") is None
+
+
+def _prereg_text(commit: str) -> str:
+    data = {"commit": commit, "frozen_paths": ["ffml/models/"],
+            "allowed_paths": {"scripts/": "runner", "docs/": "documentation"}}
+    return "# prereg\n\n```json\n" + json.dumps(data, indent=1) + "\n```\n"
+
+
+def test_prebuild_check_logged_before_first_use_and_frozen_paths(tmp_path, capsys):
+    """D-116 B1 / A1: from..to logged at --to (append-only commits exempt), nothing on a frozen path."""
+    repo, commit, append_log = _repo(tmp_path)
+    x = commit({"ffml/models/a.py": "X\n", LS.CHANGELOG_DOC: CHANGELOG_TEMPLATE, LS.PREREG_DOC: _prereg_text("<frozen>")},
+               "X")
+    f = commit({LS.PREREG_DOC: _prereg_text(x)}, "F: fill the frozen commit")
+    l1 = append_log(_log_row(f, LS.PREREG_DOC), "L1: log F")
+    # the pinned worktree at X: its own copy has the placeholder, so X comes from main
+    res = LS.prebuild_check("", x, repo)
+    assert res["ok"] and res["x"] == x and res["commits"] == 0 and "from main" in res["detail"]
+    res = LS.prebuild_check(None, l1, repo)
+    assert res["ok"] and res["commits"] == 2  # F logged at L1; L1 only appends to the log
+    a = commit({"scripts/x.py": "a\n"}, "A: runner change, not logged")
+    res = LS.prebuild_check(l1, a, repo)
+    assert not res["ok"] and res["uncovered"] == [a] and res["frozen"] == []
+    l2 = append_log(_log_row(a, "scripts/x.py"), "L2: log A")
+    assert LS.prebuild_check(l1, l2, repo)["ok"]
+    b = commit({"ffml/models/b.py": "b\n"}, "B: frozen path")
+    l3 = append_log(_log_row(b, "ffml/models/b.py"), "L3: log B")
+    res = LS.prebuild_check(l2, l3, repo)
+    assert not res["ok"] and res["uncovered"] == [] and res["frozen"] == [{"commit": b, "paths": ["ffml/models/b.py"]}]
+    # an unlisted path is frozen too (path policy)
+    c = commit({"pyproject.toml": "c\n"}, "C: unlisted path")
+    res = LS.prebuild_check(l3, c, repo)
+    assert {h["commit"] for h in res["frozen"]} == {c} and c in res["uncovered"]
+    # bad input: blocked with a reason
+    assert not LS.prebuild_check(l3, "f" * 40, repo)["ok"]
+    assert "not an ancestor" in LS.prebuild_check(c, l3, repo)["detail"]
+    # the CLI prints the JSON and exits 5 when blocked, 0 when ok
+    assert LS.main(["--prebuild-check", "--from", l1, "--to", a, "--repo", str(repo)]) == LS.EXIT_BLOCKED == 5
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed["ok"] is False and printed["uncovered"] == [a] and set(printed) >= {"ok", "uncovered", "frozen", "detail"}
+    assert LS.main(["--prebuild-check", "--from", "", "--to", l2, "--repo", str(repo)]) == LS.EXIT_OK
+
+
+def test_data_cutoff_rule():
+    def dg(*kicks):
+        return pl.DataFrame({"season": [2026] * len(kicks), "week": [10] * len(kicks), "game_type": ["REG"] * len(kicks),
+                             "kickoff_utc": list(kicks)}, schema_overrides={"kickoff_utc": pl.Datetime("us", "UTC")})
+
+    mnf = datetime(2026, 11, 17, 1, 15, tzinfo=UTC)  # Monday night (US) = Tuesday 01:15 UTC
+    assert LS.data_cutoff(dg(KICKOFF, mnf), 2026, 10) == datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    # +72 h lands after Friday noon: the next Friday
+    assert LS.data_cutoff(dg(KICKOFF, datetime(2026, 11, 18, 0, 30, tzinfo=UTC)), 2026, 10) == \
+        datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+    # exactly 72 h before Friday noon still uses that Friday
+    assert LS.data_cutoff(dg(datetime(2026, 11, 17, 12, 0, tzinfo=UTC)), 2026, 10) == \
+        datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    assert LS.data_cutoff(dg(mnf), 2026, 11) is None
+
+
+def _write_processed(tmp_path, season, week, *, unfinished=False):
+    """A real processed store (snapshots written now) with one past week, for the CLI's pinned path."""
+    from ffml.data.store import SnapshotStore
+
+    store = SnapshotStore(tmp_path / "data" / "processed")
+    kick = datetime(season, 10, 5, 17, 0, tzinfo=UTC)
+    games = pl.DataFrame({"season": [season] * 2, "week": [week] * 2, "game_type": ["REG"] * 2,
+                          "game_id": [f"{season}_{week}_a", f"{season}_{week}_b"],
+                          "kickoff_utc": [kick, kick + timedelta(hours=3)],
+                          "status": ["final", "scheduled" if unfinished else "final"]},
+                         schema_overrides={"season": pl.Int32, "week": pl.Int32, "kickoff_utc": pl.Datetime("us", "UTC")})
+    ids = {"processed/dim_game": store.write_snapshot("dim_game", {season: games})}
+    for ds in ("fact_player_game", "fact_dst_game"):
+        ids[f"processed/{ds}"] = store.write_snapshot(ds, {season: pl.DataFrame({"season": [season], "x": [1]})})
+    return ids
+
+
+def test_week_exit_4_before_cutoff_without_snapshot_or_not_final(tmp_path, monkeypatch, capsys):
+    from ffml.config import reset_settings_cache
+
+    _settings(monkeypatch, tmp_path)
+    try:
+        season, week = 2024, 5
+        ids = _write_processed(tmp_path, season, week, unfinished=True)
+        cutoff = LS.data_cutoff(LS.load_dim_game([season]), season, week)
+        assert cutoff is not None and cutoff < LS.snapshot_time(ids["processed/dim_game"])
+        # before the cutoff
+        monkeypatch.setattr(LS, "utcnow", lambda: cutoff - timedelta(minutes=1))
+        assert LS.main(["--week", f"{season}w{week:02d}", "--prereg", str(tmp_path / "none.md")]) == LS.EXIT_RETRY_LATER
+        assert "retry later: the data cutoff" in capsys.readouterr().err
+        # after the cutoff, the pinned dim_game has a game not final
+        monkeypatch.setattr(LS, "utcnow", lambda: cutoff + timedelta(hours=1))
+        assert LS.main(["--week", f"{season}w{week:02d}"]) == LS.EXIT_RETRY_LATER
+        assert "not final in the pinned dim_game (1 of 2 games)" in capsys.readouterr().err
+        # --data-cutoff prints the runner's JSON; a week not in dim_game yet is "not yet" (4)
+        assert LS.main(["--data-cutoff", f"{season}w{week:02d}"]) == LS.EXIT_OK
+        printed = json.loads(capsys.readouterr().out.strip())
+        assert printed["data_cutoff_utc"] == LS.iso(cutoff) and printed["week"] == f"{season}w{week:02d}"
+        assert printed["last_kickoff_utc"] and "Friday" in printed["rule"]
+        assert LS.main(["--data-cutoff", f"{season}w{week + 1:02d}"]) == LS.EXIT_RETRY_LATER
+    finally:
+        reset_settings_cache()
+
+
+def test_week_exit_4_when_no_snapshot_at_or_after_the_cutoff(tmp_path, monkeypatch, capsys):
+    from ffml.config import reset_settings_cache
+
+    _settings(monkeypatch, tmp_path)
+    try:
+        _write_processed(tmp_path, 2024, 5)
+        cutoff = LS.data_cutoff(LS.load_dim_game([2024]), 2024, 5)
+        # pretend every snapshot predates the cutoff: no "first snapshot at or after" exists yet
+        monkeypatch.setattr(LS, "snapshot_time", lambda sid: cutoff - timedelta(days=1))
+        monkeypatch.setattr(LS, "utcnow", lambda: cutoff + timedelta(hours=1))
+        assert LS.main(["--week", "2024w05"]) == LS.EXIT_RETRY_LATER
+        assert "no snapshot at or after the data cutoff" in capsys.readouterr().err
+    finally:
+        reset_settings_cache()
+
+
+def test_choose_pins_first_at_or_after_cutoff_and_rescore_reuses_recorded(tmp_path):
+    root = tmp_path / "processed"
+    for ds, ids in (("dim_game", ["20261120T110000Z", "20261120T130000Z", "20261121T090000Z"]),
+                    ("fact_player_game", ["20261120T120000Z", "20261122T080000Z"]),
+                    ("fact_dst_game", ["20261120T130500Z"])):
+        for sid in ids:
+            (root / ds / f"snapshot={sid}").mkdir(parents=True)
+    roots = {"processed": root, "restricted": root / "restricted"}
+    cutoff = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    pins = LS.choose_pins(cutoff, roots=roots)
+    assert pins == {"processed/dim_game": "20261120T130000Z", "processed/fact_player_game": "20261120T120000Z",
+                    "processed/fact_dst_game": "20261120T130500Z"}  # the restricted tier is absent: left out
+    # a stat correction after the cutoff writes a newer snapshot; a rescore keeps the recorded pins
+    (root / "dim_game" / "snapshot=20261121T120000Z").mkdir()
+    assert LS.choose_pins(cutoff, roots=roots, recorded=pins) == pins
+    (root / "restricted" / "fact_ecr_weekly").mkdir(parents=True)
+    with pytest.raises(LS.RetryLater, match="restricted/fact_ecr_weekly"):
+        LS.choose_pins(cutoff, roots=roots)
+
+
+def test_pinned_store_reads_only_pinned_snapshots(tmp_path):
+    from ffml.data.store import SnapshotStore
+
+    store = SnapshotStore(tmp_path / "processed")
+    first = store.write_snapshot("dim_game", {2024: pl.DataFrame({"season": [2024], "v": [1]})})
+    import time as _t
+
+    _t.sleep(1.1)
+    store.write_snapshot("dim_game", {2024: pl.DataFrame({"season": [2024], "v": [2]})})  # a later correction
+    stores = LS.pinned_stores({"processed/dim_game": first}, roots={"processed": tmp_path / "processed"})
+    assert stores["processed"].read("dim_game")["v"].to_list() == [1] and stores["restricted"] is None
+    with pytest.raises(LS.ScoreRefused, match="no pinned snapshot"):
+        stores["processed"].read("fact_player_game")
+
+
+def test_final_uses_only_sealed_parts_after_a_correction(tmp_path, monkeypatch):
+    """D-116 A3: corrections after the cutoff never enter; the final reads no actuals and no fresh consensus."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _g(repo, "init", "-q")
+    _g(repo, "config", "user.email", "t@example.com")
+    _g(repo, "config", "user.name", "t")
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+    _g(repo, "add", "a.txt")
+    _g(repo, "commit", "-q", "-m", "X")
+    x = _g(repo, "rev-parse", "HEAD")
+    prereg = _prereg(tmp_path, commit=x)
+    dg = dim_game(2026, [10, 11])
+    for w, kick in ((10, KICKOFF), (11, KICKOFF + timedelta(days=7))):
+        _score(tmp_path, 2026, w, make_week(tmp_path, 2026, w, kickoff=kick, code_commit=x), dg, prereg=prereg,
+               repo_root=repo)
+        _push_seal(tmp_path, f"2026w{w}")
+    kw = dict(source=LS.BranchSource(tmp_path / "branch"), prereg=prereg, root=tmp_path / "scoring",
+              reports_dir=tmp_path / "reports", n_boot=30, repo_root=repo, sensitivity=False)
+    first, _ = LS.final_evaluation(dim_game=dg, **kw)
+    lines1 = json.loads((tmp_path / "scoring" / LS.SEALED_DIR / "final_lines.json").read_text(encoding="utf-8"))
+    rec = json.loads(LS.record_path(tmp_path / "scoring", 2026, 10).read_text(encoding="utf-8"))
+    assert first in ("Verdict: APPROVED", "Verdict: NOT APPROVED") and len(rec["outcome_rows_sha256"]) == 64
+    # a stat correction after the cutoff: every outcome and consensus source now gives other numbers (or fails)
+    def corrected(*a, **k):
+        raise AssertionError("the final read fresh data")
+
+    for name in ("harness_outcomes", "load_actuals", "consensus_rows", "_all_consensus", "ensure_comparators"):
+        monkeypatch.setattr(LS, name, corrected)
+    import ffml.scoring.actuals as actuals_mod
+
+    monkeypatch.setattr(actuals_mod, "actual_statlines", corrected)
+    second, _ = LS.final_evaluation(dim_game=dg, **kw)
+    lines2 = json.loads((tmp_path / "scoring" / LS.SEALED_DIR / "final_lines.json").read_text(encoding="utf-8"))
+    assert second == first and lines2["binding"] == lines1["binding"]
+    # and a rescore with corrected outcomes would seal a different outcomes hash, which the record makes visible
+    shifted = LS.outcomes_sha256(pl.read_parquet(LS.part_path(tmp_path / "scoring", 2026, 10))
+                                 .with_columns(pl.col("actual") + 0.1))
+    assert shifted != rec["outcome_rows_sha256"]
+
+
+def test_comparator_rows_take_the_chain_outcomes(tmp_path):
+    week = fake_outcomes(_rows(2026, 10, "chain_v2+cal", 1), 2026)
+    base = _baselines(2026, 10).with_columns(pl.col("actual") + 5.0)  # stale comparator outcomes
+    out = LS.with_outcomes_of(base, week)
+    j = out.join(week.select("entity_id", "season", "week", "scoring", pl.col("actual").alias("a2")),
+                 on=["entity_id", "season", "week", "scoring"])
+    assert j.height == out.height and (j["actual"] == j["a2"]).all()

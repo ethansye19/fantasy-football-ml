@@ -531,10 +531,13 @@ def _ecr_seasons_through(store: SnapshotStore, last: int) -> list[int]:
     return sorted(int(k) for k in keys if isinstance(k, int) and k <= last)
 
 
-def _read_actuals(seasons: Sequence[int], purpose: str) -> pl.DataFrame:
-    """Reference actual points for ``seasons``; calls the holdout guard before reading."""
+def _read_actuals(seasons: Sequence[int], purpose: str, store: SnapshotStore | None = None) -> pl.DataFrame:
+    """Reference actual points for ``seasons``; calls the holdout guard before reading.
+
+    ``store`` (default: the processed store at LATEST) lets a caller pin snapshots.
+    """
     assert_seasons_allowed(seasons, purpose)
-    store = SnapshotStore(get_settings().processed_dir)
+    store = store or SnapshotStore(get_settings().processed_dir)
     pg = store.read("fact_player_game", seasons=list(seasons))
     try:
         dst = store.read("fact_dst_game", seasons=list(seasons))
@@ -651,27 +654,33 @@ def reference_actuals(seasons: Sequence[int], purpose: str = "backtest") -> pl.D
 
 
 def consensus_with_diagnostics(
-    seasons: Iterable[int], scoring: str = "ppr", purpose: str = "backtest"
+    seasons: Iterable[int], scoring: str = "ppr", purpose: str = "backtest", *,
+    store: SnapshotStore | None = None, restricted_store: SnapshotStore | None = None,
 ) -> ConsensusResult:
-    """Read the restricted archive and build :class:`ConsensusResult` for ``seasons``."""
+    """Read the restricted archive and build :class:`ConsensusResult` for ``seasons``.
+
+    ``store`` and ``restricted_store`` (default: LATEST of the processed and
+    restricted stores) let the live-test scorer pin snapshots (D-116).
+    """
     if scoring not in SUPPORTED_SCORING:
         raise ValueError(f"consensus pages exist only for scoring in {SUPPORTED_SCORING}, got {scoring!r}")
     seasons = sorted({int(s) for s in seasons})
     if not seasons:
         raise ValueError("seasons is empty")
-    store = _restricted_store()
+    store_r = restricted_store or _restricted_store()
     # prior seasons feed the curve, so they pass the guard too (inside _read_actuals,
     # one guard call per build so an unlocked run writes one log line)
-    read_seasons = sorted(set(_ecr_seasons_through(store, max(seasons))) | set(seasons))
-    actuals = _read_actuals(read_seasons, purpose)
-    ecr = store.read(RESTRICTED_DATASET, seasons=read_seasons)
+    read_seasons = sorted(set(_ecr_seasons_through(store_r, max(seasons))) | set(seasons))
+    actuals = _read_actuals(read_seasons, purpose, store)
+    ecr = store_r.read(RESTRICTED_DATASET, seasons=read_seasons)
     result = build_consensus(ecr, actuals, seasons)
     log.info("consensus baseline built for %s: %d rows", seasons, result.predictions.height)
     return result
 
 
 def consensus_predictions(
-    seasons: Iterable[int], scoring: str = "ppr", purpose: str = "backtest"
+    seasons: Iterable[int], scoring: str = "ppr", purpose: str = "backtest", *,
+    store: SnapshotStore | None = None, restricted_store: SnapshotStore | None = None,
 ) -> pl.DataFrame:
     """Consensus baseline prediction frame (``model = "consensus_ecr"``) for ``seasons``.
 
@@ -679,7 +688,8 @@ def consensus_predictions(
     plus ``team``, ``game_id`` and ``rank_pred``. Held in memory; never
     write it into the repository outside ``data/`` (D-007).
     """
-    return consensus_with_diagnostics(seasons, scoring, purpose).predictions
+    return consensus_with_diagnostics(seasons, scoring, purpose, store=store,
+                                      restricted_store=restricted_store).predictions
 
 
 # --------------------------------------------------------------------------- #

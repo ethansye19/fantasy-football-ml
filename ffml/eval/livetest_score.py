@@ -67,13 +67,14 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from ffml.config import PROJECT_ROOT, ensure_utf8, get_settings
+from ffml.eval import metrics as M
 from ffml.eval import report_backtest as RB
 from ffml.eval import report_holdout as H
 from ffml.eval.report_holdout import Check, LineResult
@@ -106,6 +107,28 @@ SENSITIVITY_N_BOOT = 5000
 
 class ScoreRefused(RuntimeError):
     """The scorer refuses to run (week not final, integrity failure, window incomplete)."""
+
+
+class RetryLater(ScoreRefused):
+    """Not yet: before the week's data cutoff, the week not final, or no snapshot at or after the cutoff."""
+
+
+class FetchFailed(ScoreRefused):
+    """The final could not fetch the branch, or the fetched ref differs from the remote head (retryable)."""
+
+
+#: command-line exit codes (the runner relies on them; keep them stable)
+EXIT_OK = 0
+EXIT_USAGE = 2  # argparse errors, and --final without a pre-registration
+EXIT_REFUSED = 3  # an integrity refusal or another failure that a retry will not fix
+EXIT_RETRY_LATER = 4  # --week: before the data cutoff, the week not final, or no snapshot at or after the cutoff
+EXIT_BLOCKED = 5  # --prebuild-check: an unlogged commit or a frozen-path commit
+EXIT_FETCH_RETRY = 75  # --final: fetch or ls-remote failed; nothing written (EX_TEMPFAIL)
+
+
+def utcnow() -> datetime:
+    """The scorer's clock (tests replace it)."""
+    return datetime.now(UTC)
 
 
 # --------------------------------------------------------------------------- #
@@ -206,6 +229,14 @@ class BranchSource:
         out = _run_git(self.repo_root, "log", "--format=%H", "--diff-filter=A", self.ref, "--", rel)
         shas = out.stdout.split()
         return shas[-1] if out.returncode == 0 and shas else None
+
+    def added_by(self, rel: str) -> tuple[str, str] | None:
+        """``(sha, committer time ISO)`` of the branch commit that added ``rel`` (None outside a git ref)."""
+        if self.worktree is not None and not (Path(self.worktree) / ".git").exists():
+            return None
+        out = _run_git(self.repo_root, "log", "--format=%H %cI", "--diff-filter=A", self.ref, "--", rel)
+        rows = [r.split() for r in out.stdout.splitlines() if r.strip()] if out.returncode == 0 else []
+        return (rows[-1][0], rows[-1][1]) if rows and len(rows[-1]) == 2 else None
 
 
 @dataclass
@@ -679,8 +710,11 @@ def check_pins(rec: WeekRecord, prereg: Mapping[str, Any], root: Path) -> None:
 OutcomesFn = Callable[[pl.DataFrame, int], pl.DataFrame]
 
 
-def harness_outcomes(raw: pl.DataFrame, season: int) -> pl.DataFrame:  # pragma: no cover - reads data
-    """Outcome columns exactly as ``run_walk_forward`` combines them (then the deterministic PIT)."""
+def harness_outcomes(raw: pl.DataFrame, season: int, store: Any = None) -> pl.DataFrame:  # pragma: no cover - reads data
+    """Outcome columns exactly as ``run_walk_forward`` combines them (then the deterministic PIT).
+
+    ``store`` pins the processed snapshots read (D-116 A3); default LATEST.
+    """
     from ffml.eval.harness import (
         fill_bounds,
         join_outcomes,
@@ -693,7 +727,7 @@ def harness_outcomes(raw: pl.DataFrame, season: int) -> pl.DataFrame:  # pragma:
     from ffml.scoring.actuals import actual_statlines
 
     rules = resolve_scorings(("ppr", "half", "std"))
-    actuals = actual_statlines(range(int(get_settings().first_season), season + 1), PURPOSE)
+    actuals = actual_statlines(range(int(get_settings().first_season), season + 1), PURPOSE, store=store)
     outcomes = outcome_table(actuals, [season], rules)
     cutoffs = week_cutoffs(actuals.filter(pl.col("season") == season))
     joined = fill_bounds(join_outcomes(raw, outcomes, cutoffs), position_bounds(actuals, [season], rules))
@@ -796,10 +830,10 @@ def run_comparators(actuals: pl.DataFrame, run_id: str = COMPARATORS_RUN) -> Pat
                             calibration=cfg.calibration, actuals=actuals)
 
 
-def load_actuals(season: int) -> pl.DataFrame:  # pragma: no cover - reads data
+def load_actuals(season: int, store: Any = None) -> pl.DataFrame:  # pragma: no cover - reads data
     from ffml.scoring.actuals import actual_statlines
 
-    return actual_statlines(range(int(get_settings().first_season), season + 1), PURPOSE)
+    return actual_statlines(range(int(get_settings().first_season), season + 1), PURPOSE, store=store)
 
 
 def ensure_comparators(season: int, week: int, dim_game: pl.DataFrame, *, run: str | Path | None = None,
@@ -827,10 +861,12 @@ def ensure_comparators(season: int, week: int, dim_game: pl.DataFrame, *, run: s
     return baseline_rows(run_id, season, week)
 
 
-def consensus_rows(season: int, week: int) -> pl.DataFrame:  # pragma: no cover - restricted data
+def consensus_rows(season: int, week: int, store: Any = None,
+                   restricted_store: Any = None) -> pl.DataFrame:  # pragma: no cover - restricted data
     from ffml.eval.ecr_baseline import consensus_predictions
 
-    return consensus_predictions([season], SCORING, purpose=PURPOSE).filter(pl.col("week") == week)
+    return consensus_predictions([season], SCORING, purpose=PURPOSE, store=store,
+                                 restricted_store=restricted_store).filter(pl.col("week") == week)
 
 
 # --------------------------------------------------------------------------- #
@@ -849,11 +885,45 @@ class Scored:
     weeks: list[tuple[int, int]]
     comparators_present: list[str]
     consensus_present: bool
+    bootstrap_frames: str = "full"  # "lines" when only the frames the 22 lines read were bootstrapped (D-116 B2)
+
+
+#: D-116 B2 / A6: bootstrap only the line frames; off until the rehearsal-world proof at 500 and 5,000 draws is complete
+BOOTSTRAP_LINE_FRAMES_ONLY = False
+#: frames the 22 lines read from the main bootstrap: the calibrated chain and the three line baselines' calibrated forms
+LINE_FRAME_LABELS: tuple[str, ...] = (FOCUS + RB.CAL, *(b + RB.CAL for b in H.LINE_BASELINES))
+
+
+def cluster_universes(frames: Mapping[str, pl.DataFrame], positions: Sequence[str]) -> dict[str, list[tuple]]:
+    """Per position, the cluster universe ``run_bootstrap`` draws from for these frames (after ``prepare_frames``)."""
+    prepared = RB.prepare_frames(frames)
+    return {pos: M.cluster_universe([f.filter(pl.col("position") == pos) for f in prepared.values()])
+            for pos in positions}
+
+
+def line_frames(aligned: Mapping[str, pl.DataFrame], positions: Sequence[str]) -> tuple[dict[str, pl.DataFrame], str]:
+    """The line frames when bootstrapping them alone is identical by construction, else every frame.
+
+    ``run_bootstrap`` draws ``default_rng(seed).integers(0, K, (n_boot, K))``
+    for each position from the cluster universe of the frames it is given,
+    and computes each frame's metrics from that frame alone. The draws, and
+    therefore every replicate of the line frames, are unchanged by leaving
+    other frames out exactly when the universe of the line frames equals the
+    universe of all frames at every position. The aligned frames share their
+    keys, so this holds; it is checked here, and any difference falls back
+    to the full computation.
+    """
+    sub = {m: f for m, f in aligned.items() if m in LINE_FRAME_LABELS}
+    if not sub or len(sub) == len(aligned):
+        return dict(aligned), "full"
+    if cluster_universes(sub, positions) != cluster_universes(aligned, positions):
+        return dict(aligned), "full"
+    return sub, "lines"
 
 
 def score_frames(ppr: pl.DataFrame, consensus: pl.DataFrame | None, *, n_boot: int = H.SPEC_N_BOOT,
                  seed: int = H.SPEC_SEED, metric_seed: int = H.SPEC_METRIC_SEED,
-                 positions: Sequence[str] = POSITIONS) -> Scored:
+                 positions: Sequence[str] = POSITIONS, subset: bool = BOOTSTRAP_LINE_FRAMES_ONLY) -> Scored:
     """Exactly :func:`ffml.eval.report_holdout.compute_run`'s metric path on in-memory frames."""
     ppr = ppr.filter(pl.col("scoring") == SCORING) if "scoring" in ppr.columns else ppr
     present = set(ppr["model"].unique().to_list())
@@ -863,7 +933,8 @@ def score_frames(ppr: pl.DataFrame, consensus: pl.DataFrame | None, *, n_boot: i
     aligned, _, _ = RB.headline_frames(ppr, raw, present, ref)
     bounds = H.bounds_from_run(ppr)
     aligned = {m: RB.with_randomized_pit(f, bounds, metric_seed) for m, f in aligned.items()}
-    main = RB.run_bootstrap(aligned, positions, lineup=False, n_boot=n_boot, seed=seed)
+    boot_frames, used = (line_frames(aligned, positions) if subset else (aligned, "full"))
+    main = RB.run_bootstrap(boot_frames, positions, lineup=False, n_boot=n_boot, seed=seed)
     cons_boot = None
     if consensus is not None and not consensus.is_empty():
         cons_frames = RB.consensus_population(consensus, aligned, raw, ref)
@@ -874,12 +945,259 @@ def score_frames(ppr: pl.DataFrame, consensus: pl.DataFrame | None, *, n_boot: i
     results = H.evaluate_lines(main, cons_boot, FOCUS)
     weeks = sorted({(int(s), int(w)) for s, w in ppr.select("season", "week").unique().rows()})
     return Scored(main, cons_boot, models, results, ppr.height, RB.pair_counts(aligned), weeks,
-                  [b for b in H.LINE_BASELINES if b + RB.CAL in present], cons_boot is not None)
+                  [b for b in H.LINE_BASELINES if b + RB.CAL in present], cons_boot is not None, used)
 
 
 # --------------------------------------------------------------------------- #
 # Storage of parts and week records
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# D-116: outcomes, data cutoff, pinned snapshots, flagged markers, pre-build check
+# --------------------------------------------------------------------------- #
+
+#: outcome columns shared by every model of a scored week (the chain's, D-116 A3)
+OUTCOME_COLUMNS: tuple[str, ...] = ("actual", "active", "boom_actual", "bust_actual", "pos_min", "pos_max",
+                                    "week_cutoff")
+_OUTCOME_KEYS: tuple[str, ...] = ("entity_id", "season", "week", "scoring")
+
+
+def with_outcomes_of(rows: pl.DataFrame, frame: pl.DataFrame) -> pl.DataFrame:
+    """``rows`` (the comparators' week) with the outcome columns of the chain's rows in ``frame``.
+
+    Every model of a sealed week is then scored against one set of outcomes,
+    those built from the pinned snapshots. ``pred_cdf_at_actual`` is
+    recomputed from the new outcomes when possible (it is not behind any line).
+    """
+    if rows.is_empty():
+        return rows
+    keys = [k for k in _OUTCOME_KEYS if k in rows.columns and k in frame.columns]
+    cols = [c for c in OUTCOME_COLUMNS if c in frame.columns]
+    src = frame.filter(pl.col("model") == FOCUS + RB.CAL) if "model" in frame.columns else frame
+    src = (src if not src.is_empty() else frame).select(*keys, *cols).unique(keys, keep="first", maintain_order=True)
+    out = rows.drop([c for c in (*cols, "pred_cdf_at_actual") if c in rows.columns])
+    src = src.with_columns([pl.col(k).cast(out.schema[k]) for k in keys])
+    out = out.join(src, on=keys, how="left")
+    try:
+        from ffml.eval.harness import with_pit
+
+        out = with_pit(out)
+    except Exception:  # noqa: BLE001 - optional column
+        pass
+    return out
+
+
+def outcomes_sha256(frame: pl.DataFrame) -> str:
+    """SHA-256 of the outcome rows a week was scored against (keys plus outcome columns, sorted, CSV)."""
+    keys = [k for k in _OUTCOME_KEYS if k in frame.columns]
+    cols = [c for c in OUTCOME_COLUMNS if c in frame.columns]
+    rows = frame.filter(pl.col("model") == FOCUS + RB.CAL) if "model" in frame.columns else frame
+    sub = rows.select(*keys, *cols).unique(keys, keep="first").sort(keys)
+    return sha256_bytes(sub.write_csv().encode("utf-8"))
+
+
+#: D-116 A3: 12:00 UTC on the first Friday at least 72 hours after the week's last kickoff
+CUTOFF_LAG = timedelta(hours=72)
+CUTOFF_HOUR_UTC = 12
+FRIDAY = 4
+
+
+def data_cutoff(dim_game: pl.DataFrame, season: int, week: int) -> datetime | None:
+    """The week's data cutoff (D-116 A3), or None when ``dim_game`` has no regular-season game for it."""
+    g = dim_game.filter((pl.col("season") == season) & (pl.col("week") == week))
+    if "game_type" in g.columns:
+        g = g.filter(pl.col("game_type") == "REG")
+    if g.is_empty() or "kickoff_utc" not in g.columns:
+        return None
+    last = parse_time(g["kickoff_utc"].max())
+    if last is None:
+        return None
+    earliest = last + CUTOFF_LAG
+    day = datetime(earliest.year, earliest.month, earliest.day, CUTOFF_HOUR_UTC, tzinfo=UTC)
+    while day.weekday() != FRIDAY or day < earliest:
+        day += timedelta(days=1)
+    return day
+
+
+#: the datasets weekly scoring reads, by store tier (processed, and the restricted consensus archive)
+PINNED_DATASETS: tuple[tuple[str, str], ...] = (
+    ("processed", "dim_game"), ("processed", "fact_player_game"), ("processed", "fact_dst_game"),
+    ("restricted", "fact_ecr_weekly"),
+)
+
+
+def store_roots() -> dict[str, Path]:
+    processed = Path(get_settings().processed_dir)
+    return {"processed": processed, "restricted": processed / "restricted"}
+
+
+def snapshot_time(snapshot_id: str) -> datetime | None:
+    try:
+        return datetime.strptime(snapshot_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def first_snapshot_at_or_after(root: Path, dataset: str, cutoff: datetime) -> str | None:
+    from ffml.data.store import SnapshotStore
+
+    ids = SnapshotStore(root).list_snapshots(dataset) if (Path(root) / dataset).is_dir() else []
+    timed = sorted((t, sid) for sid in ids if (t := snapshot_time(sid)) is not None)
+    return next((sid for t, sid in timed if t >= cutoff), None)
+
+
+def choose_pins(cutoff: datetime, *, roots: Mapping[str, Path] | None = None,
+                recorded: Mapping[str, str] | None = None,
+                datasets: Sequence[tuple[str, str]] = PINNED_DATASETS) -> dict[str, str]:
+    """``{"<tier>/<dataset>": snapshot id}``: the first snapshot at or after the cutoff for each dataset read.
+
+    A rescore reuses ``recorded`` (the week's sealed record), so a week is
+    always scored against the same snapshots. A tier whose dataset does not
+    exist at all (no consensus archive) is left out. Raises
+    :class:`RetryLater` while a dataset has no snapshot at or after the cutoff.
+    """
+    if recorded:
+        return dict(recorded)
+    roots = dict(roots or store_roots())
+    pins: dict[str, str] = {}
+    missing = []
+    for tier, ds in datasets:
+        if tier != "processed" and not (Path(roots[tier]) / ds).is_dir():
+            continue
+        sid = first_snapshot_at_or_after(roots[tier], ds, cutoff)
+        if sid is None:
+            missing.append(f"{tier}/{ds}")
+        else:
+            pins[f"{tier}/{ds}"] = sid
+    if missing:
+        raise RetryLater(f"no snapshot at or after the data cutoff {iso(cutoff)} yet for {missing}")
+    return pins
+
+
+def pinned_stores(pins: Mapping[str, str], roots: Mapping[str, Path] | None = None) -> dict[str, Any]:
+    """Snapshot stores that read only the pinned snapshot of each dataset; reading anything else fails."""
+    from ffml.data.store import SnapshotStore
+
+    class PinnedStore(SnapshotStore):
+        def __init__(self, root: Path, tier: str) -> None:
+            super().__init__(root)
+            self.tier = tier
+            self.pins = {k.split("/", 1)[1]: v for k, v in pins.items() if k.startswith(tier + "/")}
+
+        def resolve_snapshot_id(self, dataset: str, snapshot_id: str | None = None) -> str:
+            if snapshot_id is None:
+                if dataset not in self.pins:
+                    raise ScoreRefused(f"{self.tier}/{dataset} is read but has no pinned snapshot (D-116 A3)")
+                snapshot_id = self.pins[dataset]
+            return super().resolve_snapshot_id(dataset, snapshot_id)
+
+    roots = dict(roots or store_roots())
+    out: dict[str, Any] = {tier: PinnedStore(Path(roots[tier]), tier) for tier in roots}
+    if not any(k.startswith("restricted/") for k in pins):
+        out["restricted"] = None
+    return out
+
+
+def changelog_at(rev: str, root: Path) -> set[str]:
+    """Commits named in the change log as it stood at ``rev`` (empty when the file did not exist there)."""
+    out = _run_git(root, "show", f"{rev}:{CHANGELOG_DOC}")
+    return changelog_commits(out.stdout) if out.returncode == 0 else set()
+
+
+def flagged_marker(source: BranchSource, w: tuple[int, int], marker: Mapping[str, Any] | None,
+                   records: Mapping[tuple[int, int], Any]) -> dict[str, Any]:
+    """D-116 A5: a MISSED marker for a committed or sealed week, with when and why it was flagged."""
+    wk = week_key(*w)
+    added = source.added_by(f"{wk}/{MISSED_NAME}")
+    reasons = []
+    if source.read(f"{wk}/{COMMITMENT_NAME}") is not None:
+        reasons.append("a commitment.json on the branch")
+    if source.read(f"{SEALED_BRANCH_DIR}/{wk}.sha256") is not None:
+        reasons.append("a sealed-hash record on the branch")
+    if w in records:
+        reasons.append("a local sealed record")
+    m = dict(marker or {})
+    return {"week": wk, "commit": added[0] if added else None, "commit_time": added[1] if added else None,
+            "created_at": m.get("created_at"), "recorded_at": m.get("recorded_at"),
+            "reason": "the week has " + " and ".join(reasons) + "; it is scored and the marker is not used"}
+
+
+def _prereg_at(rev: str, root: Path) -> dict[str, Any] | None:
+    out = _run_git(root, "show", f"{rev}:{PREREG_DOC}")
+    if out.returncode != 0:
+        return None
+    m = re.search(r"```json\s*\n(.*?)\n```", out.stdout, flags=re.S)
+    try:
+        return json.loads(m.group(1)) if m else None
+    except ValueError:
+        return None
+
+
+def resolve_frozen_commit(to: str, root: Path, prereg_data: Mapping[str, Any] | None = None
+                          ) -> tuple[str | None, dict[str, Any] | None, str]:
+    """``(X, pre-registration, source)``: the first filled ``commit`` in --prereg, at --to, on main, on origin/main.
+
+    The pinned worktree may sit at X itself, whose copy still carries the
+    placeholder; main (a ref the worktree shares) carries the filled field.
+    """
+    for label, data in (("--prereg", prereg_data), (f"--to {to[:12]}", _prereg_at(to, root)),
+                        ("main", _prereg_at("main", root)), ("origin/main", _prereg_at("origin/main", root))):
+        c = str((data or {}).get("commit") or "")
+        if data and re.fullmatch(r"[0-9a-fA-F]{7,40}", c):
+            full = H._full_sha(c, root)
+            if full:
+                return full, dict(data), label
+    return None, None, "no pre-registration with a filled commit in --prereg, at --to, on main or on origin/main"
+
+
+def prebuild_check(from_sha: str | None, to_sha: str, root: Path = PROJECT_ROOT,
+                   prereg_data: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """D-116 B1 / A1: every commit in from..to is logged in the change log at --to, and none touches a frozen path.
+
+    An empty ``from_sha`` means the pre-registered X. A commit that only
+    appends to the change log needs no entry (:func:`_changelog_append_only`).
+    Any path not listed as allowed is frozen (the pre-registration's path policy).
+    """
+    res: dict[str, Any] = {"ok": False, "uncovered": [], "frozen": [], "detail": "", "from": None, "to": None,
+                           "x": None, "commits": 0}
+    fto = H._full_sha(str(to_sha or ""), root)
+    if fto is None:
+        res["detail"] = f"--to {to_sha!r} is not a known commit"
+        return res
+    x, data, source = resolve_frozen_commit(fto, root, prereg_data)
+    if x is None or data is None:
+        res["detail"] = source
+        return res
+    ffrom = x if not from_sha else H._full_sha(str(from_sha), root)
+    res.update({"x": x, "to": fto, "from": ffrom})
+    if ffrom is None:
+        res["detail"] = f"--from {from_sha!r} is not a known commit"
+        return res
+    if _run_git(root, "merge-base", "--is-ancestor", x, fto).returncode != 0:
+        res["detail"] = f"--to {fto[:12]} does not descend from the pre-registered X {x[:12]}"
+        return res
+    if _run_git(root, "merge-base", "--is-ancestor", ffrom, fto).returncode != 0:
+        res["detail"] = f"--from {ffrom[:12]} is not an ancestor of --to {fto[:12]}"
+        return res
+    listed = _run_git(root, "rev-list", f"{ffrom}..{fto}")
+    commits = listed.stdout.split() if listed.returncode == 0 else []
+    logged = changelog_at(fto, root)
+    allowed, frozen = allowed_prefixes(data)
+    uncovered = [c for c in commits if not any(c.startswith(t) for t in logged) and not _changelog_append_only(c, root)]
+    hits = []
+    for c in commits:
+        names = _run_git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-m", c).stdout.splitlines()
+        bad = sorted({n.strip().replace("\\", "/") for n in names
+                      if n.strip() and not path_allowed(n.strip().replace("\\", "/"), allowed, frozen)})
+        if bad:
+            hits.append({"commit": c, "paths": bad})
+    ok = not uncovered and not hits
+    res.update({"ok": ok, "uncovered": uncovered, "frozen": hits, "commits": len(commits)})
+    res["detail"] = (f"{len(commits)} commit(s) in {ffrom[:12]}..{fto[:12]}; X {x[:12]} from {source}; "
+                     + ("all logged in the change log at --to and none on a frozen path" if ok else
+                        f"{len(uncovered)} without a change-log entry at --to; {len(hits)} touching a frozen path"))
+    return res
 
 
 def default_reports_dir() -> Path:
@@ -941,20 +1259,61 @@ def verify_seals(source: BranchSource, root: Path, weeks: Iterable[tuple[int, in
     return checks
 
 
+def consensus_part_path(root: Path, season: int, week: int) -> Path:
+    return root / SEALED_DIR / f"{week_key(season, week)}_consensus.parquet"
+
+
+def load_consensus_parts(root: Path, weeks: Iterable[tuple[int, int]]) -> pl.DataFrame | None:
+    """The sealed consensus rows of ``weeks`` (a week without a scrape has none)."""
+    frames = [pl.read_parquet(cp) for s_, w_ in weeks if (cp := consensus_part_path(root, s_, w_)).is_file()]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else None
+
+
 def write_sealed(root: Path, rec: WeekRecord, frame: pl.DataFrame, extra: Mapping[str, Any],
-                 metrics: Mapping[str, Any]) -> dict[str, str]:
-    """Write the week's sealed parquet and JSON, then the ``.sha256`` list the runner pushes."""
+                 metrics: Mapping[str, Any], consensus: pl.DataFrame | None = None) -> dict[str, str]:
+    """Write the week's sealed parquet, consensus rows and JSON, then the ``.sha256`` list the runner pushes."""
     pp = part_path(root, rec.season, rec.week)
     pp.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(pp)
+    cp = consensus_part_path(root, rec.season, rec.week)
+    if consensus is not None and not consensus.is_empty():
+        consensus.write_parquet(cp)
+    elif cp.exists():
+        cp.unlink()
     rp = record_path(root, rec.season, rec.week)
     payload = {**rec.as_dict(), **extra, "part": pp.name, "part_sha256": sha256_file(pp),
-               "scored_at": iso(datetime.now(UTC)), "sealed_metrics": dict(metrics)}
+               "consensus_part": cp.name if cp.exists() else None,
+               "consensus_part_sha256": sha256_file(cp) if cp.exists() else None,
+               "scored_at": iso(utcnow()), "sealed_metrics": dict(metrics)}
     rp.write_text(json.dumps(payload, indent=1, default=str), encoding="utf-8")
-    seals = {pp.name: sha256_file(pp), rp.name: sha256_file(rp)}
+    seals = {pp.name: sha256_file(pp), **({cp.name: sha256_file(cp)} if cp.exists() else {}), rp.name: sha256_file(rp)}
     seal_path(root, rec.season, rec.week).write_text(
         "".join(f"{sha}  {name}\n" for name, sha in seals.items()), encoding="utf-8")
     return seals
+
+
+def week_status_path(root: Path, season: int, week: int) -> Path:
+    return root / "weeks" / f"{week_key(season, week)}.json"
+
+
+def write_week_status(root: Path, rec: WeekRecord, extra: Mapping[str, Any], seals: Mapping[str, str]) -> Path:
+    """``weeks/<week>.json``: the week's public status for the runner (snapshots, hashes, check names); no metric."""
+    path = week_status_path(root, rec.season, rec.week)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "week": week_key(rec.season, rec.week),
+        "dim_game_snapshot": extra.get("dim_game_snapshot"),
+        "processed_snapshots": extra.get("processed_snapshots") or {},
+        "data_cutoff_utc": extra.get("data_cutoff"),
+        "data_snapshots": extra.get("data_snapshots") or {},
+        "outcome_rows_sha256": extra.get("outcome_rows_sha256"),
+        "commitment_sha256": rec.commitment_sha256,
+        "sealed": dict(seals),
+        "checks": [{"name": c.name, "ok": c.ok} for c in rec.checks],
+        "scored_at": iso(utcnow()),
+    }
+    path.write_text(json.dumps(payload, indent=1, default=str), encoding="utf-8")
+    return path
 
 
 def load_parts(root: Path, weeks: Iterable[tuple[int, int]]) -> tuple[pl.DataFrame, list[tuple[int, int]]]:
@@ -1031,6 +1390,8 @@ def score_week(
     snapshot_ids: Mapping[str, Any] | None = None,
     weekly_sensitivity: bool = False,
     sensitivity_n_boot: int = SENSITIVITY_N_BOOT,
+    data_cutoff: datetime | None = None,
+    data_snapshots: Mapping[str, Any] | None = None,
 ) -> tuple[WeekRecord, Path]:
     """Verify, score into the sealed store and write the verification report (no metric leaves this function).
 
@@ -1060,14 +1421,21 @@ def score_week(
     frame = week_frame(raw_rows, cal_rows, season, week, outcomes)
     parts = [frame]
     if baselines is not None and not baselines.is_empty():
-        parts.append(baselines.filter((pl.col("season") == season) & (pl.col("week") == week)))
+        # one set of outcomes for every model: the comparators' rows take the chain's outcome columns (D-116 A3)
+        parts.append(with_outcomes_of(baselines.filter((pl.col("season") == season) & (pl.col("week") == week)),
+                                      frame))
     week_all = pl.concat(parts, how="diagonal_relaxed")
-    scored = score_frames(week_all, consensus, n_boot=n_boot)
+    week_cons = consensus.filter((pl.col("season") == season) & (pl.col("week") == week)) \
+        if consensus is not None and not consensus.is_empty() else None
+    scored = score_frames(week_all, week_cons, n_boot=n_boot)
     window = prereg_window(prereg.data if prereg else {})
-    earlier, found = load_parts(root, [w for w in window if w != (season, week)])
+    earlier_weeks = [w for w in window if w != (season, week)]
+    earlier, found = load_parts(root, earlier_weeks)
     this_ppr = week_all.filter(pl.col("scoring") == SCORING) if "scoring" in week_all.columns else week_all
     so_far = pl.concat([f for f in (earlier, this_ppr) if not f.is_empty()], how="diagonal_relaxed")
-    cumulative = score_frames(so_far, consensus, n_boot=n_boot)
+    cons_parts = [f for f in (load_consensus_parts(root, found), week_cons) if f is not None and not f.is_empty()]
+    cons_so_far = pl.concat(cons_parts, how="diagonal_relaxed") if cons_parts else None
+    cumulative = score_frames(so_far, cons_so_far, n_boot=n_boot)
     metrics: dict[str, Any] = {
         "week_points": {pos: {m: dict(v) for m, v in scored.main.points.get(pos, {}).items()} for pos in POSITIONS},
         "week_lines": [{"id": r.line.id, "passed": r.passed, "detail": r.detail} for r in scored.results],
@@ -1076,14 +1444,17 @@ def score_week(
         "cumulative_lines_sensitivity": None,
     }
     if weekly_sensitivity:
-        sens = score_frames(so_far, consensus, n_boot=sensitivity_n_boot)
+        sens = score_frames(so_far, cons_so_far, n_boot=sensitivity_n_boot)
         metrics["cumulative_lines_sensitivity"] = {"n_boot": sensitivity_n_boot, "lines": [
             {"id": r.line.id, "passed": r.passed, "detail": r.detail} for r in sens.results]}
     extra = {"dim_game_snapshot": dim_game_id, "processed_snapshots": dict(snapshot_ids or {}),
              "rows": frame.height, "comparators": scored.comparators_present,
              "consensus": scored.consensus_present, "n_boot": n_boot, "scoring": SCORING,
-             "window_weeks_scored": sorted(found + [(season, week)]), "window_total": len(window)}
-    seals = write_sealed(root, rec, week_all, extra, metrics)
+             "window_weeks_scored": sorted(found + [(season, week)]), "window_total": len(window),
+             "data_cutoff": iso(data_cutoff), "data_snapshots": dict(data_snapshots or {}),
+             "outcome_rows_sha256": outcomes_sha256(frame), "bootstrap_frames": scored.bootstrap_frames}
+    seals = write_sealed(root, rec, week_all, extra, metrics, consensus=week_cons)
+    write_week_status(root, rec, extra, seals)
     text = render_verification(rec, extra, seals)
     assert "Verdict:" not in text
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1134,7 +1505,12 @@ def render_verification(rec: WeekRecord, extra: Mapping[str, Any], seals: Mappin
         ["dim_game first kickoff", rec.dim_game_first_kickoff], ["binding deadline", rec.deadline],
         ["GitHub push timestamp", f"{rec.external_timestamp} ({rec.external_source})"],
         ["games final in dim_game", f"{rec.games_final} of {rec.games} (snapshot {extra.get('dim_game_snapshot')})"],
-        ["processed snapshots", "; ".join(f"{k} {v}" for k, v in (extra.get("processed_snapshots") or {}).items()) or "n/a"],
+        ["processed snapshots (LATEST at scoring)",
+         "; ".join(f"{k} {v}" for k, v in (extra.get("processed_snapshots") or {}).items()) or "n/a"],
+        ["data cutoff (D-116 A3)", extra.get("data_cutoff") or "n/a"],
+        ["snapshots scored against (first at or after the cutoff)",
+         "; ".join(f"{k} {v}" for k, v in (extra.get("data_snapshots") or {}).items()) or "n/a"],
+        ["outcome rows sha256", extra.get("outcome_rows_sha256") or "n/a"],
         ["files verified", str(rec.files_verified)], ["rows sealed", str(extra.get("rows"))],
         ["comparators present", ", ".join(extra.get("comparators") or []) or "none"],
         ["consensus present", "yes" if extra.get("consensus") else "no"],
@@ -1230,10 +1606,13 @@ def livetest_integrity_checks(prereg: H.Prereg, records: Mapping[tuple[int, int]
             rel = commit_relation_allowed(commit, r["code_commit"], repo_root, allowed, frozen)
             failed = [c for c in failed if c["name"] != "code commit"] + ([] if rel.ok else [{"name": "code commit", "detail": rel.detail}])
         if commit and r.get("code_commit") and H._full_sha(str(r["code_commit"]), repo_root) not in (None, H._full_sha(commit, repo_root)):
-            missing = uncovered_commits(commit, str(r["code_commit"]), repo_root, logged)
+            # D-116 A2: logged before first use, i.e. in the change log as it stood at the build commit
+            at_build = changelog_at(str(r["code_commit"]), repo_root)
+            missing = uncovered_commits(commit, str(r["code_commit"]), repo_root, at_build)
             checks.append(Check(f"{wk} change log", not missing,
-                                "every commit between X and the build commit is logged" if not missing
-                                else f"unlogged commits: {[m[:12] for m in missing[:5]]}"))
+                                "every commit between X and the build commit was in the change log at the build "
+                                "commit" if not missing
+                                else f"not in the change log at the build commit: {[m[:12] for m in missing[:5]]}"))
         checks.append(Check(f"{wk} commitment", not failed,
                             f"commitment {str(r.get('commitment_sha256'))[:12]}, GitHub push {r.get('external_timestamp')}, "
                             f"kickoff {r.get('first_kickoff')}, {r.get('files_verified')} files"
@@ -1274,11 +1653,15 @@ def fetch_branch_ref(repo_root: Path = PROJECT_ROOT, remote: str = REMOTE, branc
     ref = f"{remote}/{branch}"
     fetched = _run_git(repo_root, "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{ref}")
     if fetched.returncode != 0:
-        raise ScoreRefused(f"the final is refused: git fetch {remote} {branch} failed: {fetched.stderr.strip()[:200]}")
+        raise FetchFailed(f"the final is refused: git fetch {remote} {branch} failed: {fetched.stderr.strip()[:200]}")
     local = _run_git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/remotes/{ref}").stdout.strip()
-    remote_line = _run_git(repo_root, "ls-remote", remote, f"refs/heads/{branch}").stdout.split()
+    listed = _run_git(repo_root, "ls-remote", remote, f"refs/heads/{branch}")
+    remote_line = listed.stdout.split() if listed.returncode == 0 else []
     remote_sha = remote_line[0] if remote_line else ""
     ok = bool(local) and local == remote_sha
+    if not ok:  # D-116 A4: retryable; no verdict is recorded
+        raise FetchFailed(f"the final is refused: {ref} {local[:12] or '?'} does not equal the remote head "
+                          f"{remote_sha[:12] or '?'} (ls-remote exit {listed.returncode})")
     return {"ref": ref, "sha": local, "remote_sha": remote_sha, "ok": ok, "fetched_at": iso(datetime.now(UTC)),
             "detail": f"{ref} {local[:12]} equals the remote head" if ok else
             f"{ref} {local[:12] or '?'} differs from the remote head {remote_sha[:12] or '?'}"}
@@ -1354,6 +1737,7 @@ def final_evaluation(
                            "sealed files (they must match the branch record) or score it")
     misses = {w: m for w, m in markers.items() if w not in on_branch and w not in records}
     conflicts = [w for w in window if w in markers and (w in on_branch or w in records)]
+    flagged = [flagged_marker(source, w, markers[w], records) for w in conflicts]
     unknown = [week_key(*w) for w in window if w not in records and w not in misses]
     if unknown:
         raise ScoreRefused(f"the final is refused: weeks neither sealed nor marked MISSED: {unknown}")
@@ -1375,6 +1759,8 @@ def final_evaluation(
     sens: Scored | None = None
     if all(c.ok for c in checks):
         frame, found = load_parts(root, scored_weeks)
+        if consensus is None:  # D-116 A3: the final reads only sealed parts, never fresh actuals or consensus
+            consensus = load_consensus_parts(root, scored_weeks)
         scored = score_frames(frame, consensus, n_boot=n_boot)
         results = scored.results
         if sensitivity:
@@ -1418,8 +1804,12 @@ def final_evaluation(
         L += ["Not computed: an integrity check failed.", ""]
     if conflicts:
         L += ["## Integrity findings that do not change the verdict", "",
-              "MISSED markers found for weeks that have a commitment or a sealed record on the branch. Those weeks "
-              "were scored; the markers were not used: " + ", ".join(week_key(*w) for w in conflicts) + ".", ""]
+              "MISSED markers found for weeks that have a commitment or a sealed record. Those weeks were scored; "
+              "the markers were not used (D-116 A5):", "",
+              RB._md_table(["week", "marker added by branch commit", "GitHub commit time", "created_at in the marker",
+                            "why flagged"],
+                           [[f["week"], f["commit"] or "n/a (not a git ref)", f["commit_time"] or "n/a",
+                             f["created_at"] or "absent", f["reason"]] for f in flagged]), ""]
     L += ["## Verdict", "", verdict, ""]
     reports_dir.mkdir(parents=True, exist_ok=True)
     out = reports_dir / ("final_dry_run.md" if dry_run else "final.md")
@@ -1435,6 +1825,7 @@ def final_evaluation(
                                                                  "intervals": line_intervals(sens, r.line)} for r in sens.results],
                         "differing": differing} if sens is not None else None,
         "unsealed_weeks": [week_key(*w) for w in scored_weeks],
+        "flagged_markers": flagged,
     }, indent=1, default=str), encoding="utf-8")
     return verdict, out
 
@@ -1448,11 +1839,24 @@ def default_push_record(season: int, week: int) -> Path:
     return get_settings().data_dir / "livetest" / "runner" / week_key(season, week) / PUSH_RECORD_NAME
 
 
+def _week_record(season: int, week: int) -> dict[str, Any] | None:
+    rp = record_path(scoring_root(), season, week)
+    return json.loads(rp.read_text(encoding="utf-8")) if rp.is_file() else None
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
+    """Exit codes: 0 ok; 2 usage; 3 refused; 4 retry later (--week); 5 blocked (--prebuild-check);
+    75 retryable fetch failure (--final)."""
     ensure_utf8()
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--week", help="season-week, for example 2026w10")
     ap.add_argument("--final", action="store_true", help="the single final evaluation (refused until the window is complete)")
+    ap.add_argument("--prebuild-check", action="store_true",
+                    help="before a build: every commit in --from..--to logged at --to, none on a frozen path (D-116)")
+    ap.add_argument("--from", dest="from_", default="", help="with --prebuild-check: last build's code commit ('' = X)")
+    ap.add_argument("--to", default=None, help="with --prebuild-check: the commit the pinned worktree holds now")
+    ap.add_argument("--repo", default=str(PROJECT_ROOT), help="with --prebuild-check: the repository (default: this code's)")
+    ap.add_argument("--data-cutoff", metavar="WEEK", default=None, help="print the week's data cutoff (ISO UTC)")
     ap.add_argument("--dry-run", action="store_true", help="with --final: label the verdict as a dry run")
     ap.add_argument("--worktree", default=str(DEFAULT_WORKTREE),
                     help=f"commitments worktree for weekly scoring (else git show origin/{BRANCH}); "
@@ -1470,59 +1874,111 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
                     help="also seal the cumulative lines at the sensitivity draw count each week (slow)")
     ap.add_argument("--no-sensitivity", action="store_true", help="with --final: skip the report-only check")
     args = ap.parse_args(argv)
-    source = BranchSource(None if args.no_worktree else Path(args.worktree))
     prereg = load_prereg(args.prereg)
+
+    if args.prebuild_check:
+        if not args.to:
+            ap.error("--prebuild-check needs --to")
+        res = prebuild_check(args.from_ or None, args.to, Path(args.repo),
+                             prereg.data if (prereg is not None and args.prereg) else None)
+        print(json.dumps({k: res[k] for k in ("ok", "uncovered", "frozen", "detail", "from", "to", "x", "commits")}))
+        return EXIT_OK if res["ok"] else EXIT_BLOCKED
+
+    if args.data_cutoff:
+        season, week = parse_week(args.data_cutoff)
+        games = load_dim_game([season])
+        cutoff = data_cutoff(games, season, week)
+        if cutoff is None:  # not in dim_game yet (a 2027 week before the schedule is published)
+            print(f"retry later: {week_key(season, week)} has no regular-season game in dim_game", file=sys.stderr)
+            return EXIT_RETRY_LATER
+        g = games.filter((pl.col("season") == season) & (pl.col("week") == week))
+        if "game_type" in g.columns:
+            g = g.filter(pl.col("game_type") == "REG")
+        print(json.dumps({"week": week_key(season, week), "data_cutoff_utc": iso(cutoff),
+                          "last_kickoff_utc": iso(parse_time(g["kickoff_utc"].max())),
+                          "rule": "12:00 UTC on the first Friday at least 72 h after the last kickoff (D-116 A3)"}))
+        return EXIT_OK
+
     if args.final:
         if prereg is None:
             print("the final needs the pre-registration", file=sys.stderr)
-            return 2
+            return EXIT_USAGE
         try:
-            # QA-F29: the final reads the branch record only from the freshly fetched remote ref
+            # QA-F29 / D-116 A4: the branch record is the freshly fetched remote ref; a failed fetch is retryable
             branch_ref = fetch_branch_ref()
+        except FetchFailed as exc:
+            print(f"retry later: {exc}", file=sys.stderr)
+            return EXIT_FETCH_RETRY
+        try:
             source = BranchSource(None, ref=branch_ref["ref"])
             verdict, out = final_evaluation(source=source, dim_game=load_dim_game(), prereg=prereg,
-                                            branch_ref=branch_ref,
-                                            consensus=None if args.no_consensus else _all_consensus(prereg),
-                                            dry_run=args.dry_run, sensitivity=not args.no_sensitivity)
+                                            branch_ref=branch_ref, dry_run=args.dry_run,
+                                            sensitivity=not args.no_sensitivity)
         except ScoreRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
-            return 3
+            return EXIT_REFUSED
         print(verdict)
         print(f"wrote {out}")
-        return 0
+        return EXIT_OK
+
     if not args.week:
-        ap.error("--week or --final is required")
+        ap.error("--week, --final, --prebuild-check or --data-cutoff is required")
     season, week = parse_week(args.week)
+    wk = week_key(season, week)
+    cutoff = data_cutoff(load_dim_game([season]), season, week)
+    if cutoff is None:
+        print(f"refused: {wk} has no regular-season game in dim_game", file=sys.stderr)
+        return EXIT_REFUSED
+    if utcnow() < cutoff:
+        print(f"retry later: the data cutoff for {wk} is {iso(cutoff)}", file=sys.stderr)
+        return EXIT_RETRY_LATER
+    recorded = (_week_record(season, week) or {}).get("data_snapshots") or None
+    try:
+        pins = choose_pins(cutoff, recorded=recorded)
+    except RetryLater as exc:
+        print(f"retry later: {exc}", file=sys.stderr)
+        return EXIT_RETRY_LATER
+    stores = pinned_stores(pins)
+    dim_game = stores["processed"].read("dim_game", seasons=[season])
+    status = week_status(dim_game, season, week)
+    if not status.is_final:
+        print(f"retry later: {wk} is not final in the pinned dim_game ({status.final} of {status.games} games)",
+              file=sys.stderr)
+        return EXIT_RETRY_LATER
     rec_path = Path(args.push_record) if args.push_record else default_push_record(season, week)
     push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
-    dim_game = load_dim_game([season])
+    source = BranchSource(None if args.no_worktree else Path(args.worktree))
     baselines = None
     if not args.no_comparators:
         try:
-            baselines = ensure_comparators(season, week, dim_game, run=args.baselines_run)
+            baselines = ensure_comparators(season, week, dim_game, run=args.baselines_run,
+                                           actuals_fn=lambda s_: load_actuals(s_, stores["processed"]))
         except ScoreRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
-            return 3
+            return EXIT_REFUSED
     consensus = None
-    if not args.no_consensus:
+    if not args.no_consensus and stores.get("restricted") is not None:
         try:
-            consensus = consensus_rows(season, week)
-        except Exception as exc:  # noqa: BLE001 - the weekly report says the lines are unavailable
+            consensus = consensus_rows(season, week, store=stores["processed"], restricted_store=stores["restricted"])
+        except ScoreRefused:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the week is sealed without consensus rows; L13-L16 skip it
             print(f"consensus unavailable: {exc}", file=sys.stderr)
     try:
         rec, out = score_week(season, week, source=source, dim_game=dim_game, push_record=push_record,
                               roots=[PROJECT_ROOT, get_settings().data_dir.parent], baselines=baselines,
                               consensus=consensus, prereg=prereg, allow_rehearsal=args.allow_rehearsal,
-                              dim_game_id=dim_game_snapshot_id(), snapshot_ids=processed_snapshot_ids(),
-                              weekly_sensitivity=args.weekly_sensitivity)
+                              outcomes=lambda raw, s_: harness_outcomes(raw, s_, stores["processed"]),
+                              dim_game_id=pins.get("processed/dim_game"), snapshot_ids=processed_snapshot_ids(),
+                              weekly_sensitivity=args.weekly_sensitivity, data_cutoff=cutoff, data_snapshots=pins)
     except ScoreRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
-        return 3
+        return EXIT_REFUSED
     failed = [c.name for c in rec.checks if not c.ok]
-    print(f"sealed {week_key(season, week)}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
+    print(f"sealed {wk}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
           + (f"; failed: {failed}" if failed else "") + "; no metric is printed before the final (D-111)")
     print(f"wrote {out}")
-    return 0
+    return EXIT_OK
 
 
 def _all_consensus(prereg: H.Prereg) -> pl.DataFrame | None:  # pragma: no cover - restricted data
