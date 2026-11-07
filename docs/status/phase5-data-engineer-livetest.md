@@ -734,3 +734,50 @@ yet); `--week <week> --weekly-sensitivity` exits 0 (4 = not yet), writes
 `data/livetest/scoring/sealed/<week>.sha256` and
 `data/livetest/scoring/weeks/<week>.json` with `dim_game_snapshot` and
 `processed_snapshots`.
+
+## DE-5.9: before the freeze (D-120, D-121; the Evaluator's F1, R1, R2, R3) (2026-11-07)
+
+1. **Pin at Y (F1, D-120).** `livetest_setup_worktree.py --commit <Y>` and
+   `init --expected-commit <Y>`, where Y is the append-only change-log commit
+   after the fill commit. After the existing pin check, the runner (and the
+   setup script) verify, once the pre-registration's `commit` field holds X,
+   that Y is X or a descendant of X and that `git diff --name-only X Y` touches
+   only allowed paths (`core.verify_descends_from_frozen`, the scorer's path
+   policy reimplemented in `core.path_allowed` and tested equal to it); before
+   the fill the check is skipped and logged. RUNBOOK section 3 states that the
+   final always runs from the main checkout.
+2. **Refresh before scoring (R1).** `score-week` refreshes when any dataset the
+   scorer pins (`dim_game`, `fact_player_game`, `fact_dst_game`,
+   `restricted/fact_ecr_weekly`, tested equal to the scorer's
+   `PINNED_DATASETS`) lacks a snapshot taken at or after the pin point; at most
+   two refreshes per week and pin point, so a straddling refresh is repeated on
+   the next 2-hour repetition instead of delaying the week.
+3. **A game that never becomes final (D-121).** `score-week` tries every due,
+   unsealed week in order in one run; a waiting week (not final, or scorer
+   exit 4) never holds a later one. `exclusion_after_utc` is read from
+   `--data-cutoff` (stubbed as cutoff + 14 days until the Evaluator's lands),
+   logged, and after it a week with a game still not final is passed to the
+   scorer, which excludes the game; `seal_record.json` records
+   `exclusion_after_utc` and `not_final_at_scoring`.
+4. **2027 re-initialisation (R3):** RUNBOOK section 16.
+5. **Change-log helper:** `scripts/livetest_changelog.py` (RUNBOOK section 17).
+   It lists the commits in X..HEAD without a row and with `--append` adds rows
+   only for commits whose every path is outside the pinned build; it refuses
+   `ffml/`, `scripts/`, `pyproject.toml`, `requirements.lock.txt`, merges, and
+   paths the pre-registration freezes or does not allow; it never edits a row;
+   `--commit` commits the change log alone and checks the commit is
+   append-only (exempt). Its parser and exemption rule are tested equal to the
+   scorer's `changelog_commits` and `_changelog_append_only`.
+
+**Finding (2027 week 1, needs a later fix in `ffml/data/`).** `seasons_to_load`
+has no cap, so an ingest of 2016-2027 before nflverse publishes a dataset's
+2027 file fails as a gap (D-028) for that dataset. The week 1 build's refresh
+will therefore fail for play-by-play, player stats, snap counts and the other
+weekly files until the first 2027 games are played; the runner then builds on
+the newest snapshots after three attempts or K - 3 h, with an alert. Section 16
+works around the schedule part by hand. Proposed fix: treat a requested season
+newer than every published season of a dataset as not yet published (skip
+with a warning), as for seasons before the data start. It is an `ffml/data/`
+change (allowed path), so it needs a change-log row, the Evaluator's
+byte-identical check on every committed week's feature rows, and a re-pin of
+the code worktree, before 2027 week 1 (2027-09).

@@ -87,17 +87,29 @@ never this one.
 Run everything from the repository root in PowerShell. Set
 `$env:PYTHONUTF8 = "1"` first.
 
-1. **Create the pinned code worktree.** Use the commit that was pre-registered.
+1. **Create the pinned code worktree at Y, not X (D-120, the Evaluator's F1).**
+   The freeze procedure gives three commits on `main`, in order:
+   - X, the frozen code commit;
+   - the fill commit, which writes X into the pre-registration's `commit`
+     field and changes nothing else;
+   - Y, one commit that only appends change-log rows for every commit from X
+     to the fill commit (section 17). Y is exempt from needing its own row.
+
+   Pin the worktree at **Y**. A worktree at X would carry the pre-registration
+   with the placeholder commit field, so every weekly code-commit check would
+   fail.
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_setup_worktree.py --commit <sha>
+   .venv\Scripts\python scripts\livetest_setup_worktree.py --commit <Y>
    ```
 
-   This creates `..\ffml-livetest-code`, detached at `<sha>`, and a Python 3.11
+   This creates `..\ffml-livetest-code`, detached at Y, and a Python 3.11
    venv at `..\ffml-livetest-code\.venv`. The venv is installed from that
    commit's `requirements.lock.txt`, plus the worktree as an editable package.
-   The script ends with the pin check described in section 6, and it prints
-   the `init` command. Use `--dry-run` to see the commands first.
+   The script ends with the pin check described in section 6, including
+   the check that Y descends from X through allowed paths only (X is read from
+   the main checkout's pre-registration, or `--frozen-commit <X>`), and it
+   prints the `init` command. Use `--dry-run` to see the commands first.
 
    Two practical notes:
    - The setup took about 8 minutes on this laptop, mostly downloads.
@@ -111,8 +123,16 @@ Run everything from the repository root in PowerShell. Set
    ```powershell
    .venv\Scripts\python scripts\livetest_week.py init --season 2026 --weeks 10-18 `
      --code-worktree ..\ffml-livetest-code --python ..\ffml-livetest-code\.venv\Scripts\python.exe `
-     --expected-commit <sha> --note "pre-registration <commit of the pre-registration note>"
+     --expected-commit <Y> --note "pinned at Y, the change-log commit after the fill commit (D-120)"
    ```
+
+   `--expected-commit` is Y. Commitments then record `code.commit` = Y; the
+   weekly check accepts it because X..Y touches only allowed paths.
+
+   **The final always runs from the main checkout**, never from the pinned
+   worktree (D-120): `python -m ffml.eval.livetest_score --final` in this
+   repository, where the pre-registration carries the filled commit and the
+   change log is complete (section 15).
 
    If the design starts at the next full week, use `--weeks 11-18`. With
    `--force` the config is replaced. The old values are kept under `history`.
@@ -294,9 +314,21 @@ Before every run, the runner refuses (exit 2, alert) unless all of these hold:
 - the interpreter imports `ffml` from inside the worktree, both from the
   worktree directory and from a neutral directory (the editable install);
 - `pip freeze --exclude-editable` equals the worktree's
-  `requirements.lock.txt`.
+  `requirements.lock.txt`;
+- once the pre-registration's `commit` field is filled with X: the pinned
+  commit Y is X or a descendant of X, and `git diff --name-only X Y` touches
+  only paths the pre-registration allows (a frozen path, or any path not
+  under `allowed_paths`, refuses). Before the fill, this check is skipped
+  and the run log says so.
 
 The commitment must also name the pinned commit, with `code.clean: true`.
+
+To check the descendant relation by hand:
+
+```powershell
+git merge-base --is-ancestor <X> <Y>; $LASTEXITCODE        # 0: Y descends from X
+git diff --name-only <X> <Y>                               # only docs/, tests/, reports/, ... (allowed paths)
+```
 
 To check by hand:
 
@@ -697,20 +729,30 @@ outcome rows used.
 
 The Friday job `livetest_week.py score-week` (task `\ffml\livetest-weekly-score`,
 Fridays from 13:00 UTC, repeating every 2 h for 12 h):
-1. picks the oldest test week that has kicked off, has a commitment on the
-   branch, is not missed and has no `sealed_hashes.json` yet (nothing to do:
-   exit 0);
-2. asks the scorer for the week's cutoff
-   (`<pinned python> -m ffml.eval.livetest_score --data-cutoff 2026wNN`); before
-   the cutoff it does nothing (exit 0); exit 4 means "not yet" (exit 1, retried,
+1. takes **every** test week that has kicked off, has a commitment on the
+   branch, is not missed and has no `sealed_hashes.json` yet, oldest first,
+   and works through all of them in the same run (nothing to do: exit 0). A
+   week that is still waiting (not final, or scorer exit 4) never holds a later
+   week back (D-121); the run exits 1 while any week is waiting, so the next
+   repetition retries it;
+2. for each week, asks the scorer for the week's cutoff and exclusion point
+   (`<pinned python> -m ffml.eval.livetest_score --data-cutoff 2026wNN`, which
+   prints `data_cutoff_utc` and `exclusion_after_utc`; both are logged); before
+   the cutoff it does nothing for that week; exit 4 means "not yet" (retried,
    no alert);
-3. at or after the cutoff, refreshes the data with the pinned interpreter
-   unless a `dim_game` snapshot taken at or after the cutoff already exists
-   (skip with `--skip-refresh`), and checks that every game of the week is
-   final in `dim_game`; if not, exit 1 without an alert, and the next
-   repetition retries;
+3. at or after the cutoff, refreshes the data with the pinned interpreter when
+   **any** dataset the scorer pins (`dim_game`, `fact_player_game`,
+   `fact_dst_game`, `restricted/fact_ecr_weekly`) lacks a snapshot taken at or
+   after the pin point (the cutoff, or the exclusion point when that applies).
+   A refresh that straddles 12:00 UTC therefore leaves the scoring only until
+   the next 2-hour repetition, which refreshes again (at most twice per week
+   and pin point), never for a week (R1). Skip with `--skip-refresh`. Then it
+   checks that every game of the week is final in `dim_game`; if not, and the
+   exclusion point has not passed, that week waits (no alert);
 4. runs the scorer (`--week 2026wNN --weekly-sensitivity`) from the pinned
-   worktree when no sealed file exists yet, at above-normal priority on
+   worktree when no sealed file exists yet (also when a game is still not final
+   after the exclusion point: the scorer then excludes it, D-121), at
+   above-normal priority on
    Windows with a 360-minute timeout (A7); exit 4 is "not yet" (retried, no
    alert); any other non-zero exit or a missing sealed file raises
    `scoring_failure` (exit 1, retried);
@@ -720,8 +762,20 @@ Fridays from 13:00 UTC, repeating every 2 h for 12 h):
    raw text) plus a regenerated `STATUS.md` with the `sealed` column, then
    pushes `livetest-2026` only and records in
    `data/livetest/runner/2026wNN/seal_record.json` the push, GitHub's view,
-   the data cutoff (`data_cutoff_utc`) and the scorer's snapshot ids (from
+   the data cutoff (`data_cutoff_utc`), the exclusion point
+   (`exclusion_after_utc`), the games still not final when it was scored
+   (`not_final_at_scoring`) and the scorer's snapshot ids (from
    `data/livetest/scoring/weeks/2026wNN.json`).
+
+**A game that never becomes final (D-121).** A week is scored once every game
+is final. If a game is still not final 14 days after the week's data cutoff
+(the `exclusion_after_utc` point), the week is scored without it: the scorer
+excludes its player, team and defense rows, lists the excluded game ids in the
+sealed record and the final report, and pins the first snapshots taken at or
+after that point. A game the league reschedules into a later week stays in its
+original week in the schedule and does not trigger the rule. No owner ruling
+is needed; the runner simply keeps trying the week every Friday and scores it
+after the exclusion point, while later weeks are scored as usual.
 
 `seal` is idempotent: the same sealed file is never committed twice. It is
 also immutable: a local sealed file that differs from the published hashes is
@@ -743,7 +797,8 @@ sealed yet (locally or on the branch), and 6 on any difference. The scoring
 itself, the weekly reports and the final verdict are the Evaluator's; the
 runner never reads a sealed part.
 
-The final (Evaluator, once, after 2027 week 9): `python -m
+The final (Evaluator, once, after 2027 week 9) runs **from the main checkout,
+never from the pinned worktree** (D-120): `python -m
 ffml.eval.livetest_score --final`. **Exit 75 means the GitHub fetch of
 `livetest-2026` failed** (D-116, A4): no verdict was recorded, no `Verdict:`
 line and no final report were written, and the sealed files are untouched.
@@ -752,3 +807,103 @@ Check the network and `gh auth status`, then simply run the final again.
 > **No pruning during the live test (D-118).** Never call `SnapshotStore.prune` or delete
 > processed snapshots between the freeze and the final evaluation: each sealed week pins the
 > first processed snapshot at or after its data cutoff, and a rescore must find it.
+
+## 16. Re-initialising for 2027 weeks 1-9 (R3)
+
+The window is 2026 weeks 10-18 and 2027 weeks 1-9 (the pre-registration's
+`window`). The runner targets one season at a time (`init --season`), so it
+is re-initialised for 2027 once the NFL publishes the 2027 schedule (usually
+in May). The miss count, `STATUS.md` and the `status` footer already span the
+whole window (QA-F30): misses from 2026 carry over, and the allowed count (2)
+is still read from the pre-registration.
+
+When the 2027 schedule is published (and before 2027 week 1):
+
+1. **Bring the 2027 schedule into `dim_game`**, with the pinned code. The
+   regular refresh would ask for 2016-2027 for every dataset and fail for
+   those nflverse has not published for 2027 yet (a gap after a loaded season,
+   D-028), so run the schedule part by hand:
+
+   ```powershell
+   $env:PYTHONUTF8 = "1"
+   $env:FFML_DATA_DIR = (Resolve-Path data).Path
+   $env:FFML_ARTIFACTS_DIR = (Resolve-Path artifacts).Path
+   $env:FFML_REPORTS_DIR = (Resolve-Path reports).Path
+   $py = "..\ffml-livetest-code\.venv\Scripts\python.exe"
+   & $py -m ffml.data.refresh --step ingest --seasons 2016-2027 --datasets schedules,teams
+   & $py -m ffml.data.refresh --step process --seasons 2016-2027
+   ```
+
+   Each step prints `REFRESH_RESULT {...}` with `"ok": true`.
+2. **Re-initialise** (keeps the old values under `history`):
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py init --force --season 2027 --weeks 1-9 `
+     --code-worktree ..\ffml-livetest-code --python ..\ffml-livetest-code\.venv\Scripts\python.exe `
+     --expected-commit <the pinned commit> --note "2027 re-initialisation (R3)"
+   ```
+
+   The printed JSON shows `"season": 2027`, `"weeks": [1, ..., 9]`, the
+   pre-registration path and `"misses_allowed": 2`.
+3. **Verify:**
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py plan            # 2027w01..2027w09 with kickoffs, none tentative except week 9 if unset
+   .venv\Scripts\python scripts\livetest_week.py status          # rows 2026w10..2027w09; footer "misses: N (...); allowed 2"
+   ```
+
+   `status` must show the 2026 misses (if any) in the footer; `STATUS.md` on
+   the branch shows "Window 2026w10 to 2027w09 (18 weeks)" at the next push.
+4. **Re-export the tracked schedule** for the GitHub watchdog and commit it
+   on `main` with a change-log row (section 17; the file keeps its name):
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py plan --export scripts\livetest_schedule_2026.json
+   ```
+
+5. **Re-register the weekly tasks** (the owner; section 14, dry run first).
+   The run tasks are generated from the 2027 plan; the Friday scoring task is
+   unchanged.
+
+Known limit for 2027 week 1: until nflverse publishes 2027 play-by-play,
+player stats, snap counts and the other weekly files (after the first games),
+the week 1 build's refresh fails as a gap for those datasets; the runner
+alerts, retries, and after three attempts or K - 3 h builds on the newest
+snapshots (which include the 2027 schedule from step 1 and the current
+injuries and rosters once those files exist). A code fix (treat a season
+newer than every published one as not yet published) needs a change in
+`ffml/data/` with the Evaluator's byte-identical check and a re-pin; it is
+tracked in the Data Engineer's status note.
+
+## 17. The change log (D-115, D-120)
+
+Every commit after X needs a row in `docs/status/livetest-changelog-2026.md`
+before the first build that could use it, and before the final. A commit that
+only appends change-log rows needs none (one parent, the change log its only
+file, lines added and none deleted). The pre-build check (section 4) blocks a
+build while a commit in the build's range has no row.
+
+`scripts/livetest_changelog.py` lists and adds the safe rows:
+
+```powershell
+.venv\Scripts\python scripts\livetest_week.py status   # (optional) the state first
+.venv\Scripts\python scripts\livetest_changelog.py --from <X>                  # commits in X..HEAD without a row
+.venv\Scripts\python scripts\livetest_changelog.py --from <X> --append --commit --trailer "Co-Authored-By: ..."
+```
+
+- It adds one row per missing commit whose every path is outside the pinned
+  build (`api/`, `web/`, `docs/`, `reports/`, `tests/`, `.github/`, `README.md`
+  and the other allowed non-code files): date, commit, paths, the commit
+  subject as reason, verification "paths outside the pinned build; no effect
+  on commitments", verified by "orchestrator", first week "n/a".
+- It refuses to write a row for a commit that touches `ffml/`, `scripts/`,
+  `pyproject.toml` or `requirements.lock.txt` (a hand-written row with the
+  Evaluator's verification is needed), for a merge commit, and for a commit
+  that touches a frozen path or any path the pre-registration does not allow
+  (the owner's ruling is needed, D-111; a row would not make it valid).
+- It inserts rows after the table's last row and never edits an existing one.
+  `--commit` commits the change log alone and confirms the commit is
+  append-only, so it is exempt (D-115).
+- Exit 0: nothing is missing, or every missing commit was rowed. Exit 1:
+  commits remain that need a hand-written row or a ruling. Exit 2: an error
+  (for example files already staged, which `--commit` refuses).
