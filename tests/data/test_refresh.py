@@ -130,6 +130,23 @@ def test_single_step_runs_in_process_with_the_working_pin_copy(tmp_settings, fak
     assert results.info["ffml"] == str(Path(ingest_mod.__file__).resolve().parents[1])
 
 
+def test_refresh_ingest_succeeds_when_the_newest_season_is_not_published(tmp_settings, fake_registry):
+    """D-122: the runner's refresh for a 2027 week before nflverse publishes the 2027 file."""
+    loader = fake_registry["fake_weekly"].loader
+
+    def loader_2027(season=None, **kwargs):
+        if season == 2027:
+            raise ConnectionError("Failed to download https://x/2027.parquet: 404 Client Error")
+        return loader(season=season, **kwargs)
+
+    import dataclasses
+
+    fake_registry["fake_weekly"] = dataclasses.replace(fake_registry["fake_weekly"], loader=loader_2027)
+    (result,) = refresh.run_refresh("ingest", seasons=[2025, 2026, 2027])
+    assert result.ok, result.error
+    assert result.info["not_yet_published"] == {"fake_weekly": [2027]}
+
+
 def test_all_runs_each_step_in_its_own_process_and_stops_at_a_failure(tmp_settings):
     calls: list[list[str]] = []
 

@@ -34,7 +34,14 @@ Missing seasons: when nflverse has no file for a season (HTTP 404 or the
 loader's own range check) and no earlier season of that dataset loaded either,
 the season is treated as "before the data start" and skipped with a warning
 (recorded under ``extra.skipped_seasons`` in the manifest). A missing season
-*after* a season that did load is a gap and fails the dataset.
+*after* a season that did load is a gap and fails the dataset (D-028), with
+one exception (D-122): a season newer than every season the source has
+published for the dataset (every season in its current ``LATEST`` snapshot
+and every season loaded in this run) whose file does not exist yet is
+skipped with a warning as "not yet published" (``extra.not_yet_published_seasons``
+and :attr:`DatasetResult.not_yet_published`). If any later requested season
+then loads, the skipped one was not the newest and the dataset fails as a gap.
+Every published season loads exactly as before.
 
 Failures are per dataset: the run continues with the remaining datasets and
 raises at the end (``SchemaDriftError`` when every failure was drift, otherwise
@@ -96,6 +103,7 @@ class DatasetResult:
     rows_per_partition: dict[str, int] = field(default_factory=dict)
     total_rows: int = 0
     skipped_seasons: list[int] = field(default_factory=list)
+    not_yet_published: list[int] = field(default_factory=list)  # D-122
     dropped_null_rows: dict[str, int] = field(default_factory=dict)
     drift: DriftReport | None = None
     latest_updated: bool = False
@@ -271,6 +279,14 @@ def _fetched_at() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _published_seasons(store: SnapshotStore, spec: DatasetSpec) -> list[int]:
+    """Seasons in the dataset's current ``LATEST`` snapshot (published earlier); empty when none."""
+    try:
+        return [int(s) for s in store.read_manifest(spec.store_path).get("seasons", [])]
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return []
+
+
 def ingest_dataset(
     spec: DatasetSpec,
     seasons: list[int],
@@ -285,6 +301,7 @@ def ingest_dataset(
     latest_key: int | str | None = None
     latest_columns: dict[str, str] = {}
     wanted: list[int] = []
+    published = _published_seasons(store, spec)
 
     try:
         if spec.seasonal:
@@ -297,6 +314,13 @@ def ingest_dataset(
                 try:
                     df = fetch(spec, season)
                 except SeasonNotAvailable as exc:
+                    if latest_key is not None and season > max([*published, int(latest_key)]):
+                        log.warning(
+                            "%s: season %s is newer than every published season and not published yet; "
+                            "skipped (%s)", spec.name, season, exc,
+                        )
+                        result.not_yet_published.append(season)
+                        continue
                     if latest_key is not None:
                         raise IngestError(
                             f"{spec.name}: season {season} missing upstream after season "
@@ -307,6 +331,11 @@ def ingest_dataset(
                     )
                     result.skipped_seasons.append(season)
                     continue
+                if result.not_yet_published:  # a later season loaded: the skipped one was a gap
+                    raise IngestError(
+                        f"{spec.name}: season {result.not_yet_published[0]} missing upstream while season "
+                        f"{season} loaded (gap)"
+                    )
                 df, report = clean(spec, df)
                 for column, count in report["dropped_null_rows"].items():
                     result.dropped_null_rows[column] = (
@@ -349,6 +378,8 @@ def ingest_dataset(
             "dropped_null_rows": dict(result.dropped_null_rows),
             "requested_seasons": list(seasons) if spec.seasonal else [],
         }
+        if result.not_yet_published:
+            meta["not_yet_published_seasons"] = list(result.not_yet_published)
         result.total_rows = sum(result.rows_per_partition.values())
 
         try:
@@ -476,6 +507,8 @@ def _log_summary(results: dict[str, DatasetResult]) -> None:
             status += " (LATEST not advanced)"
         if res.skipped_seasons:
             status += f" skipped={res.skipped_seasons}"
+        if res.not_yet_published:
+            status += f" not_yet_published={res.not_yet_published}"
         if res.drift and res.drift.status not in ("unchanged", "pinned"):
             status += f" schema={res.drift.status}"
         lines.append(

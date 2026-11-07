@@ -781,3 +781,22 @@ with a warning), as for seasons before the data start. It is an `ffml/data/`
 change (allowed path), so it needs a change-log row, the Evaluator's
 byte-identical check on every committed week's feature rows, and a re-pin of
 the code worktree, before 2027 week 1 (2027-09).
+
+## DE-5.10: D-122, the unpublished newest season (2026-11-08)
+
+Fixes the DE-5.9 finding before the freeze. `ingest_dataset` skips a
+requested season with a warning as "not yet published" only when its file
+is not found and it is newer than every season the source has published for
+the dataset (the seasons in the dataset's current `LATEST` snapshot and the
+seasons loaded in this run). It is recorded in
+`DatasetResult.not_yet_published`, in the manifest's
+`extra.not_yet_published_seasons` (only when non-empty) and in the ingest
+summary, not as a D-028 gap. If a later requested season loads, the skipped
+one was not the newest and the dataset fails as a gap. A missing season
+known to be at or before the newest published one fails at once, exactly as
+before. `seasons_to_load` is unchanged, and a fully published 2016-2026
+source loads the same seasons in the same order with the same manifest keys.
+`ffml.data.refresh` reports `not_yet_published` per dataset. RUNBOOK section
+16 keeps one refresh by hand before 2027 week 1 (the runner refreshes only
+inside a week's window, so the 2027 schedule must reach `dim_game` first),
+now without the per-dataset workaround, and drops the week 1 limit note.

@@ -209,6 +209,55 @@ def test_missing_season_after_a_loaded_one_is_a_gap(registry, store, pin_path) -
     assert not pin_path.exists()
 
 
+def test_seasons_to_load_and_the_plan_for_2016_2026_are_unchanged(registry, store, pin_path) -> None:
+    """D-122: every real spec requests the same seasons, and a fully published source loads as before."""
+    span = list(range(2016, 2027))
+    for spec in DATASETS.values():
+        expected = [] if not spec.seasonal else [s for s in span if spec.min_season is None or s >= spec.min_season]
+        assert spec.seasons_to_load(span) == expected, spec.name
+    loader = Loader()
+    add_weekly(registry, loader, min_season=2016)
+    result = run_ingest(span, ["fake_weekly"], store=store, pin_path=pin_path)["fake_weekly"]
+    assert loader.calls == span
+    assert sorted(result.rows_per_partition) == [str(s) for s in span]
+    assert result.skipped_seasons == [] and result.not_yet_published == []
+    extra = store.read_manifest("fake_weekly")["extra"]
+    assert "not_yet_published_seasons" not in extra and extra["skipped_seasons"] == []
+
+
+def test_newest_season_not_yet_published_is_skipped_not_a_gap(registry, store, pin_path, caplog) -> None:
+    not_found = ConnectionError("Failed to download https://x/2027.parquet: 404 Client Error")
+    add_weekly(registry, Loader(fail={2027: not_found}), min_season=2016)
+    run_ingest(list(range(2024, 2027)), ["fake_weekly"], store=store, pin_path=pin_path)  # 2024-2026 published
+    with caplog.at_level("WARNING"):
+        result = run_ingest(list(range(2024, 2028)), ["fake_weekly"], store=store, pin_path=pin_path)["fake_weekly"]
+    assert result.not_yet_published == [2027] and result.skipped_seasons == [] and result.latest_updated
+    assert sorted(result.rows_per_partition) == ["2024", "2025", "2026"]
+    assert "not published yet" in caplog.text
+    manifest = store.read_manifest("fake_weekly")
+    assert manifest["seasons"] == [2024, 2025, 2026] and manifest["extra"]["not_yet_published_seasons"] == [2027]
+
+
+def test_missing_season_before_the_newest_published_is_still_a_gap(registry, store, pin_path) -> None:
+    not_found = ConnectionError("Failed to download https://x/2025.parquet: 404 Client Error")
+    # 2025 absent, 2026 published: a gap whether 2026 is known from an earlier snapshot or loads after it
+    add_weekly(registry, Loader(fail={2025: not_found}), min_season=2016)
+    with pytest.raises(IngestError, match="gap"):
+        run_ingest([2024, 2025, 2026], ["fake_weekly"], store=store, pin_path=pin_path)
+    assert store.latest_id("fake_weekly") is None
+    registry.clear()
+    add_weekly(registry, Loader(), min_season=2016)
+    run_ingest([2024, 2025, 2026], ["fake_weekly"], store=store, pin_path=pin_path)
+    registry.clear()
+    loader = Loader(fail={2025: not_found})
+    add_weekly(registry, loader, min_season=2016)
+    before = store.latest_id("fake_weekly")
+    with pytest.raises(IngestError, match="gap"):
+        run_ingest([2024, 2025, 2026], ["fake_weekly"], store=store, pin_path=pin_path)
+    assert loader.calls == [2024, 2025]  # known from the earlier snapshot: fails at once, as before D-122
+    assert store.latest_id("fake_weekly") == before
+
+
 def test_all_seasons_missing_fails(registry, store, pin_path) -> None:
     unavailable = ValueError("Season must be between 2030 and 2031")
     add_weekly(registry, Loader(fail={2024: unavailable, 2025: unavailable}))

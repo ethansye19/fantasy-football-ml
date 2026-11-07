@@ -820,9 +820,9 @@ is still read from the pre-registration.
 When the 2027 schedule is published (and before 2027 week 1):
 
 1. **Bring the 2027 schedule into `dim_game`**, with the pinned code. The
-   regular refresh would ask for 2016-2027 for every dataset and fail for
-   those nflverse has not published for 2027 yet (a gap after a loaded season,
-   D-028), so run the schedule part by hand:
+   runner refreshes only inside a week's window, so before 2027 week 1 run one
+   refresh by hand. Datasets nflverse has not published for 2027 yet are
+   skipped as "not yet published" (D-122), not failed as gaps:
 
    ```powershell
    $env:PYTHONUTF8 = "1"
@@ -830,11 +830,13 @@ When the 2027 schedule is published (and before 2027 week 1):
    $env:FFML_ARTIFACTS_DIR = (Resolve-Path artifacts).Path
    $env:FFML_REPORTS_DIR = (Resolve-Path reports).Path
    $py = "..\ffml-livetest-code\.venv\Scripts\python.exe"
-   & $py -m ffml.data.refresh --step ingest --seasons 2016-2027 --datasets schedules,teams
+   & $py -m ffml.data.refresh --step ingest --seasons 2016-2027
    & $py -m ffml.data.refresh --step process --seasons 2016-2027
    ```
 
-   Each step prints `REFRESH_RESULT {...}` with `"ok": true`.
+   Each step prints `REFRESH_RESULT {...}` with `"ok": true`; the ingest result
+   lists the datasets in `not_yet_published` (for example play-by-play before
+   the first 2027 games).
 2. **Re-initialise** (keeps the old values under `history`):
 
    ```powershell
@@ -865,15 +867,10 @@ When the 2027 schedule is published (and before 2027 week 1):
    The run tasks are generated from the 2027 plan; the Friday scoring task is
    unchanged.
 
-Known limit for 2027 week 1: until nflverse publishes 2027 play-by-play,
-player stats, snap counts and the other weekly files (after the first games),
-the week 1 build's refresh fails as a gap for those datasets; the runner
-alerts, retries, and after three attempts or K - 3 h builds on the newest
-snapshots (which include the 2027 schedule from step 1 and the current
-injuries and rosters once those files exist). A code fix (treat a season
-newer than every published one as not yet published) needs a change in
-`ffml/data/` with the Evaluator's byte-identical check and a re-pin; it is
-tracked in the Data Engineer's status note.
+From then on the weekly refresh works as in 2026: a 2027 file nflverse has not
+published yet (for example play-by-play before week 1) is skipped as "not yet
+published" (D-122); a missing file for any season at or before the newest
+published one still fails the refresh as a gap.
 
 ## 17. The change log (D-115, D-120)
 

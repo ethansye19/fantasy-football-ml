@@ -208,6 +208,7 @@ def step_ingest(
     return {
         "snapshots": {name: r.snapshot_id for name, r in results.items()},
         "latest_advanced": {name: r.latest_updated for name, r in results.items()},
+        "not_yet_published": {name: r.not_yet_published for name, r in results.items() if r.not_yet_published},
         "pin_path": str(resolve_pin_path(pin_path, update_tracked=update_schema_pin)),
     }
 
