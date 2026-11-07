@@ -122,6 +122,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-120 | 2026-11-07 | decided (orchestrator, D-117) | Freeze procedure: the commit field is filled in its own commit; one append-only change-log commit Y then logs every commit since X; the code worktree is pinned at Y, not X; the final runs from the main checkout |
 | D-121 | 2026-11-07 | decided (orchestrator, D-117) | A game that never becomes final: the week waits, and if a game is still not final 14 days after the week's data cutoff the week is scored without it (its rows excluded and listed), pinning the first snapshots at or after that point; later weeks are never held behind it |
 | D-122 | 2026-11-08 | decided (orchestrator, D-117) | Fix before the freeze, not in September 2027: an ingest skips a requested season only when it is newer than every published season and its file does not exist yet (warning, not a D-028 gap); every published season loads exactly as before |
+| D-123 | 2026-11-08 | decided (orchestrator, D-117) | The restricted-reads audit stays as it is: the runner stops naming the restricted dataset and takes the list of pinned datasets from the scorer's `--data-cutoff` output |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
