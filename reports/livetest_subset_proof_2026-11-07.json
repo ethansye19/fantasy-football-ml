@@ -1,0 +1,523 @@
+{
+ "A_pass@500": {
+  "world": "A_pass",
+  "n_boot": 500,
+  "weeks": 18,
+  "rows": 23040,
+  "labels_full": 8,
+  "labels_subset": 4,
+  "minutes_full": 7.994374068333612,
+  "minutes_subset": 4.815393668335552,
+  "differences": [],
+  "verdict_lines": [
+   [
+    "L01",
+    true
+   ],
+   [
+    "L02",
+    true
+   ],
+   [
+    "L03",
+    true
+   ],
+   [
+    "L04",
+    true
+   ],
+   [
+    "L05",
+    true
+   ],
+   [
+    "L06",
+    true
+   ],
+   [
+    "L07",
+    true
+   ],
+   [
+    "L08",
+    true
+   ],
+   [
+    "L09",
+    true
+   ],
+   [
+    "L10",
+    true
+   ],
+   [
+    "L11",
+    true
+   ],
+   [
+    "L12",
+    true
+   ],
+   [
+    "L13",
+    true
+   ],
+   [
+    "L14",
+    true
+   ],
+   [
+    "L15",
+    true
+   ],
+   [
+    "L16",
+    true
+   ],
+   [
+    "L17",
+    true
+   ],
+   [
+    "L18",
+    true
+   ],
+   [
+    "L19",
+    true
+   ],
+   [
+    "L20",
+    true
+   ],
+   [
+    "L21",
+    true
+   ],
+   [
+    "L22",
+    true
+   ]
+  ],
+  "lines_passed": 22,
+  "verdict_if_all_checks_pass": "Verdict: APPROVED"
+ },
+ "B_qb_narrow@500": {
+  "world": "B_qb_narrow",
+  "n_boot": 500,
+  "weeks": 18,
+  "rows": 23040,
+  "labels_full": 8,
+  "labels_subset": 4,
+  "minutes_full": 379.9562839166649,
+  "minutes_subset": 4.83683170999866,
+  "differences": [],
+  "verdict_lines": [
+   [
+    "L01",
+    true
+   ],
+   [
+    "L02",
+    true
+   ],
+   [
+    "L03",
+    true
+   ],
+   [
+    "L04",
+    true
+   ],
+   [
+    "L05",
+    true
+   ],
+   [
+    "L06",
+    true
+   ],
+   [
+    "L07",
+    true
+   ],
+   [
+    "L08",
+    true
+   ],
+   [
+    "L09",
+    true
+   ],
+   [
+    "L10",
+    true
+   ],
+   [
+    "L11",
+    true
+   ],
+   [
+    "L12",
+    true
+   ],
+   [
+    "L13",
+    true
+   ],
+   [
+    "L14",
+    true
+   ],
+   [
+    "L15",
+    true
+   ],
+   [
+    "L16",
+    true
+   ],
+   [
+    "L17",
+    false
+   ],
+   [
+    "L18",
+    true
+   ],
+   [
+    "L19",
+    true
+   ],
+   [
+    "L20",
+    true
+   ],
+   [
+    "L21",
+    true
+   ],
+   [
+    "L22",
+    true
+   ]
+  ],
+  "lines_passed": 21,
+  "verdict_if_all_checks_pass": "Verdict: NOT APPROVED"
+ },
+ "C_accuracy_tie@500": {
+  "world": "C_accuracy_tie",
+  "n_boot": 500,
+  "weeks": 18,
+  "rows": 23040,
+  "labels_full": 8,
+  "labels_subset": 4,
+  "minutes_full": 4.09472226666597,
+  "minutes_subset": 2.608386684996852,
+  "cpu_minutes_full": 7.139583333333333,
+  "cpu_minutes_subset": 4.637760416666667,
+  "differences": [],
+  "verdict_lines": [
+   [
+    "L01",
+    true
+   ],
+   [
+    "L02",
+    true
+   ],
+   [
+    "L03",
+    true
+   ],
+   [
+    "L04",
+    true
+   ],
+   [
+    "L05",
+    true
+   ],
+   [
+    "L06",
+    true
+   ],
+   [
+    "L07",
+    false
+   ],
+   [
+    "L08",
+    true
+   ],
+   [
+    "L09",
+    true
+   ],
+   [
+    "L10",
+    true
+   ],
+   [
+    "L11",
+    true
+   ],
+   [
+    "L12",
+    true
+   ],
+   [
+    "L13",
+    true
+   ],
+   [
+    "L14",
+    true
+   ],
+   [
+    "L15",
+    true
+   ],
+   [
+    "L16",
+    true
+   ],
+   [
+    "L17",
+    true
+   ],
+   [
+    "L18",
+    true
+   ],
+   [
+    "L19",
+    true
+   ],
+   [
+    "L20",
+    true
+   ],
+   [
+    "L21",
+    true
+   ],
+   [
+    "L22",
+    true
+   ]
+  ],
+  "lines_passed": 21,
+  "verdict_if_all_checks_pass": "Verdict: NOT APPROVED"
+ },
+ "A_pass@5000": {
+  "world": "A_pass",
+  "n_boot": 5000,
+  "weeks": 18,
+  "rows": 23040,
+  "labels_full": 8,
+  "labels_subset": 4,
+  "minutes_full": 137.74993896000086,
+  "minutes_subset": 59.49952863000023,
+  "cpu_minutes_full": 127.27239583333333,
+  "cpu_minutes_subset": 114.02864583333333,
+  "differences": [],
+  "verdict_lines": [
+   [
+    "L01",
+    true
+   ],
+   [
+    "L02",
+    true
+   ],
+   [
+    "L03",
+    true
+   ],
+   [
+    "L04",
+    true
+   ],
+   [
+    "L05",
+    true
+   ],
+   [
+    "L06",
+    true
+   ],
+   [
+    "L07",
+    true
+   ],
+   [
+    "L08",
+    true
+   ],
+   [
+    "L09",
+    true
+   ],
+   [
+    "L10",
+    true
+   ],
+   [
+    "L11",
+    true
+   ],
+   [
+    "L12",
+    true
+   ],
+   [
+    "L13",
+    true
+   ],
+   [
+    "L14",
+    true
+   ],
+   [
+    "L15",
+    true
+   ],
+   [
+    "L16",
+    true
+   ],
+   [
+    "L17",
+    true
+   ],
+   [
+    "L18",
+    true
+   ],
+   [
+    "L19",
+    true
+   ],
+   [
+    "L20",
+    true
+   ],
+   [
+    "L21",
+    true
+   ],
+   [
+    "L22",
+    true
+   ]
+  ],
+  "lines_passed": 22,
+  "verdict_if_all_checks_pass": "Verdict: APPROVED"
+ },
+ "C_accuracy_tie@5000": {
+  "world": "C_accuracy_tie",
+  "n_boot": 5000,
+  "weeks": 18,
+  "rows": 23040,
+  "labels_full": 8,
+  "labels_subset": 4,
+  "minutes_full": 81.78889936833099,
+  "minutes_subset": 46.0159353199997,
+  "cpu_minutes_full": 200.27421875,
+  "cpu_minutes_subset": 108.33515625,
+  "differences": [],
+  "verdict_lines": [
+   [
+    "L01",
+    true
+   ],
+   [
+    "L02",
+    true
+   ],
+   [
+    "L03",
+    true
+   ],
+   [
+    "L04",
+    true
+   ],
+   [
+    "L05",
+    true
+   ],
+   [
+    "L06",
+    true
+   ],
+   [
+    "L07",
+    false
+   ],
+   [
+    "L08",
+    true
+   ],
+   [
+    "L09",
+    true
+   ],
+   [
+    "L10",
+    true
+   ],
+   [
+    "L11",
+    true
+   ],
+   [
+    "L12",
+    true
+   ],
+   [
+    "L13",
+    true
+   ],
+   [
+    "L14",
+    true
+   ],
+   [
+    "L15",
+    true
+   ],
+   [
+    "L16",
+    true
+   ],
+   [
+    "L17",
+    true
+   ],
+   [
+    "L18",
+    true
+   ],
+   [
+    "L19",
+    true
+   ],
+   [
+    "L20",
+    true
+   ],
+   [
+    "L21",
+    true
+   ],
+   [
+    "L22",
+    true
+   ]
+  ],
+  "lines_passed": 21,
+  "verdict_if_all_checks_pass": "Verdict: NOT APPROVED"
+ }
+}

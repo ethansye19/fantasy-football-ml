@@ -9,6 +9,8 @@ the orchestrator's proposed fixes. The fixes are prepared on branch
 `prefreeze-fixes` (from 1f2baf9, in the worktree `../ffml-prefreeze-fixes`),
 not merged and not pushed; the owner approves before anything reaches main.
 
+Updated 2026-11-07 for EV-4.7 (D-116, D-117): the last section, "EV-4.7: D-116 implemented in the scorer".
+
 ## Summary
 
 | item | verdict |
@@ -313,3 +315,197 @@ for QA-F29, three more for the `allowed` read) and the audit's eval-code check. 
 **One thing to re-run after merging:** 4d (missing branch hash record) and the change-log scenarios, under
 the new fetch-only final. They should give the same results; it is a quick subset
 (`FFML_REHEARSAL_ONLY=A_pass`).
+
+
+## EV-4.7: D-116 implemented in the scorer (2026-11-06)
+
+Implemented on main in `ffml/eval/livetest_score.py`, with a small change to `ffml/eval/ecr_baseline.py`
+(optional stores, so the consensus can be pinned). It follows D-116 and the orchestrator's assumptions A1-A7,
+and the runner's interface note (7d309ab, d2af36b; `scripts/livetest_stub_score.py`).
+
+Two commits: bd3bf21 holds every D-116 change with the bootstrap subset present but off (the full computation),
+and the commit after it turns the subset on, once the proof below showed zero differences.
+
+### Exit codes (CLI `python -m ffml.eval.livetest_score`)
+
+| code | meaning | where |
+| --- | --- | --- |
+| 0 | ok | every mode |
+| 2 | usage (argparse), or `--final` without a pre-registration | unchanged |
+| 3 | refused: an integrity refusal or another failure a retry will not fix | unchanged |
+| **4** | retry later | `--week`: before the data cutoff, the week not final in the pinned `dim_game`, or no snapshot at or after the cutoff yet. `--data-cutoff`: the week is not in `dim_game` yet |
+| **5** | blocked | `--prebuild-check`: an uncovered or a frozen-path commit, or input it cannot resolve |
+| **75** | retryable fetch failure | `--final`: `git fetch` or the `ls-remote` check failed |
+
+No code clashed with an existing one; 4, 5 and 75 were free. Exit 75 is raised before anything is computed,
+so it writes no `Verdict:` line, no final report and nothing in the sealed directory (A4). That is tested
+through `main()`.
+
+### The changes
+
+- **Flagged markers (A5).** The final report lists every flagged MISSED marker in a table:
+  - the week;
+  - the branch commit that added the marker and its committer time (`git log --diff-filter=A` on the fetched
+    ref; the time is the commit's own date as GitHub shows it);
+  - `created_at` from the marker, if present;
+  - why it was flagged: a commitment on the branch, a sealed-hash record on the branch, a local sealed record.
+
+  The same list is stored in `sealed/final_lines.json`.
+- **Pre-build check (B1, A1).** `--prebuild-check --from <sha|""> --to <sha>` prints
+  `{"ok", "uncovered", "frozen", "detail", "from", "to", "x", "commits"}` and exits 0 or 5.
+  - An empty `--from` means X.
+  - X is read from the first filled `commit` in, in order: `--prereg`, the pre-registration at `--to`,
+    `main`, `origin/main`. The pinned worktree at X carries the placeholder; `main` is a ref the worktree
+    shares.
+  - Every commit in from..to must have an entry in the change log as it stands at `--to`; append-only
+    change-log commits are exempt.
+  - No commit may touch a path that is not allowed (the path policy: unlisted means frozen); merges are
+    checked against each parent (`diff-tree -m`).
+  - The `frozen` list holds `{"commit", "paths"}` objects.
+- **A2 in the final.** For each scored week, every commit between X and that week's build commit must be in
+  the change log as it stood at the build commit (`git show <build>:docs/status/livetest-changelog-2026.md`).
+  A change logged only after its first use now fails that week's check.
+- **Friday data cutoff (B3, A3).**
+  - `--data-cutoff <week>` prints `{"week", "data_cutoff_utc", "last_kickoff_utc", "rule"}`: 12:00 UTC on the
+    first Friday at least 72 hours after the week's last regular-season kickoff in `dim_game`.
+  - `--week` exits 4 before the cutoff.
+  - It then pins, for each dataset it reads (`processed/dim_game`, `processed/fact_player_game`,
+    `processed/fact_dst_game`, `restricted/fact_ecr_weekly`), the first snapshot taken at or after the
+    cutoff. The stores it uses refuse to read any dataset that has no pin.
+  - The week-final check uses the pinned `dim_game`; not final gives exit 4.
+  - The pins and a SHA-256 of the outcome rows (`outcome_rows_sha256`) are recorded in the sealed JSON, in
+    the verification report and in the new public status file `scoring/weeks/<week>.json` (snapshots,
+    hashes, check names; no metric).
+  - A rescore reuses the pins recorded in the week's sealed JSON.
+- **The final recomputes only from sealed parts.** Two gaps were found and closed:
+  1. The final used to rebuild the consensus from fresh data (`_all_consensus`). The rank-to-points curve is
+     fitted on earlier seasons' actuals, so a later correction could have reached L13-L16 and the D-077 pair
+     set. Each week's consensus rows are now sealed as `sealed/<week>_consensus.parquet` (listed in
+     `<week>.sha256` and verified at the final), and the final reads only those.
+  2. The comparators' rows carried their own outcome columns from the comparators run, rebuilt at each
+     extension. Every sealed week now takes the chain's outcome columns (`with_outcomes_of`), so all models
+     are scored against the one pinned set of outcomes.
+
+  `test_final_uses_only_sealed_parts_after_a_correction` replaces every outcome and consensus source with
+  one that raises, and the final gives the identical verdict and binding lines.
+- **Bootstrap subset (B2, A6).** The main bootstrap runs on the frames the 22 lines read: `chain_v2+cal` and
+  the three line baselines' calibrated forms. The consensus bootstrap is unchanged.
+  - *By construction:* `run_bootstrap` draws `default_rng(seed).integers(0, K, (n_boot, K))` per position
+    from the cluster universe of the frames it is given, and computes each frame's metrics from that frame
+    alone. The aligned frames share their keys, so the universe and the draw matrix do not depend on which
+    other frames are included.
+  - `line_frames` checks the universes at every position and falls back to the full computation if they
+    differ; that fallback is tested.
+  - *Demonstrated:* section "Bootstrap-subset proof" below.
+
+### Bootstrap-subset proof
+
+`tests/eval/test_bootstrap_subset_proof.py` runs QA's rehearsal worlds (from `tests/rehearsal/_rehearsal_world.py`'s
+generators: 18 weeks, 8 labels and 23,040 rows in all, about 160 rows per week per label: `chain_v2` and the three line baselines, each raw and
+calibrated, plus a synthetic consensus). It scores each world twice through `score_frames`, once with every frame
+(`subset=False`) and once with only the line frames (`subset=True`). It then compares, exactly:
+
+- the point value and the whole replicate array (`np.array_equal`) of every bootstrapped metric of every line frame;
+- each beats-baseline line's delta, interval bounds and status;
+- the start/sit deltas;
+- the line interval strings, the 22 line results and the verdict text.
+
+Floats are compared with `==`, not a tolerance. The gated cases run with `FFML_SUBSET_PROOF=1`. The evidence is in
+`data/reports/livetest_subset_proof.json` (copy: `reports/livetest_subset_proof_2026-11-07.json`).
+
+| world | draws | differences | lines passed | verdict (if every check passes) | wall, full / subset (min) | CPU, full / subset (min) |
+| --- | --- | --- | --- | --- | --- | --- |
+| A_pass | 500 | **0** | 22 | APPROVED | 8.0 / 4.8 | not recorded |
+| B_qb_narrow | 500 | **0** | 21 (L17 fails) | NOT APPROVED | invalid (the session paused) / 4.8 | not recorded |
+| C_accuracy_tie | 500 | **0** | 21 (L07 fails) | NOT APPROVED | **4.1 / 2.6** (uninterrupted) | 7.1 / 4.6 |
+| A_pass | 5,000 | **0** | 22 | APPROVED | full not uninterrupted (137.7) / **59.5** (uninterrupted) | 127.3 / 114.0 |
+| C_accuracy_tie | 5,000 | **0** | 21 (L07 fails) | NOT APPROVED | both contended (81.8 / 46.0) | 200.3 / 108.3 |
+
+There are zero differences in all five cases, and each verdict is the one the world was built for. Two fast tests
+always run in the suite:
+
+- `test_subset_identical_on_fixture_weeks`, the same comparison on the scorer's fixture weeks;
+- `test_line_frames_falls_back_when_universes_differ`, which gives a non-line frame a cluster the line frames lack
+  and checks that the scorer falls back to every frame.
+
+**Adopted.** Per A6 the subset is turned on (`BOOTSTRAP_LINE_FRAMES_ONLY = True`) in a separate commit after the
+5,000-draw cases. bd3bf21 runs the full computation. Each sealed weekly JSON records which was used
+(`bootstrap_frames`: `full` or `lines`).
+
+### Timing at 5,000 draws
+
+Wall times are quoted only from uninterrupted runs. Two of the long runs were not uninterrupted:
+
+- **A_pass at 5,000 draws, full pass.** Between 22:04 and 23:45 the process averaged about 0.5 cores, against about
+  2 afterwards. That is background throttling, or the session being idle.
+- **C_accuracy_tie at 5,000 draws, both passes.** These ran alongside QA's full rehearsal (`pytest -m slow
+  tests/rehearsal`, started at 01:33 with up to three worker processes).
+
+Their wall times are in the table for completeness only. The A_pass subset pass at 5,000 draws ran from 00:22 to
+01:21, before QA's run started, at about 1.9 cores.
+
+| measurement | full | line frames only |
+| --- | --- | --- |
+| rehearsal world, 500 draws (C, uninterrupted) | 4.1 min | 2.6 min |
+| rehearsal world, 5,000 draws (A, uninterrupted) | not measured uninterrupted | **59.5 min** (0.71 s per draw) |
+| realistic-size window, 500 draws (EV-4.6, measured) | 11.6 min | 5.3 min |
+| realistic-size window, 5,000 draws (EV-4.6, extrapolated from 100 and 500 draws) | about 114 min | about 53 min |
+
+The rehearsal world has 8 labels, so dropping 4 of them saves less there (a ratio of about 0.6) than on the live
+window, where 10 of 14 labels drop (about 0.46).
+
+The one direct, uninterrupted 5,000-draw measurement is about 10% above EV-4.6's extrapolated rate (0.71 against
+0.64 s per draw). It was taken on a world with about a third of the live window's rows per label, which shows the
+fixed per-draw work dominates. So I treat EV-4.6's 5,000-draw figures as optimistic by up to about 10%, and plan
+on about 60 minutes (subset) and about 125 minutes (full) for the live window's cumulative 5,000-draw step at the
+18th week.
+
+**At the 18th week the weekly job is therefore about 70 minutes with the subset:**
+
+- cumulative 500 draws, about 5 minutes;
+- cumulative 5,000 draws, about 60 minutes;
+- the one-week score, the comparators' extension and the loading, a few minutes.
+
+With the full computation it is about 140 minutes. The final, 500 plus 5,000 draws, is about 65 minutes against
+about 135. The runner now launches the scorer above normal priority with a 360-minute timeout (A7,
+`scripts/livetest_week.py`). Even the full computation under the throttling seen here (about 1.5 times as long)
+fits inside that timeout, with margin.
+
+### Notes for the Data Engineer and QA
+
+- **Sealed records now list up to three files:** `<week>.parquet`, `<week>_consensus.parquet` (when the
+  week has consensus rows) and `<week>.json`. The runner publishes `<week>.sha256` verbatim, so nothing
+  changes for it. QA's rehearsal reproduction that rewrites a two-file record will need the third line.
+- **The rehearsal driver** calls `final_evaluation(consensus=LS._all_consensus(prereg))` in its
+  forced-sensitivity hook. The keyword is kept as an explicit override, so that still runs. The CLI final
+  never passes it and reads only sealed consensus. The full rehearsal rerun (D-116 C) should drop the
+  override.
+- **Pinned snapshots and pruning:** `SnapshotStore.prune` keeps the newest 8 snapshots. A week's pinned
+  snapshot can therefore be pruned within about a week of nightly refreshes. The final never needs it (it
+  reads sealed parts), but a rescore of an old week would. If rescoring must stay possible, protect the
+  pinned ids from pruning.
+- **Snapshot policy:** the refresh observed on 2026-11-04 wrote a new snapshot of every processed and
+  restricted dataset. If a future refresh skipped an unchanged dataset, `--week` would wait (exit 4) for its
+  next snapshot.
+- **QA's rehearsal pins bd3bf21** (`FFML_REHEARSAL_COMMIT`), which runs the full computation. QA's uncommitted
+  rehearsal test asserts `bootstrap_line_frames_only is False` and `bootstrap_frames == "full"`. Against the
+  subset commit those become `True` and `"lines"`; nothing else in the rehearsal should change, because the
+  line results are identical.
+- **`--data-cutoff` for a week not in `dim_game`** returns 4 (not yet; for example 2027 weeks before the
+  schedule is published). The stub returned 2.
+
+### Tests
+
+On main with the subset on (the second EV-4.7 commit), one process at normal priority alongside QA's rehearsal:
+
+- `pytest -q tests/eval` gave **179 passed, 5 skipped** in 28 minutes. The 5 skips are the gated rehearsal-world
+  proof cases.
+- That includes the 11 new scorer tests for D-116 and the two fast subset tests.
+- `ruff check ffml tests/eval scripts` is clean.
+
+The gated proof, `FFML_SUBSET_PROOF=1 pytest tests/eval/test_bootstrap_subset_proof.py`, was run over two sessions:
+
+- A, B and C at 500 draws, then A and C at 5,000 draws;
+- all 5 passed (the last three cases in 5 h 32 min);
+- the evidence is in `data/reports/livetest_subset_proof.json` (local), with a copy committed as
+  `reports/livetest_subset_proof_2026-11-07.json`. Both hold synthetic worlds only, with no player rows.

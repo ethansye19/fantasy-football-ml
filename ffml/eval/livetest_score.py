@@ -888,8 +888,9 @@ class Scored:
     bootstrap_frames: str = "full"  # "lines" when only the frames the 22 lines read were bootstrapped (D-116 B2)
 
 
-#: D-116 B2 / A6: bootstrap only the line frames; off until the rehearsal-world proof at 500 and 5,000 draws is complete
-BOOTSTRAP_LINE_FRAMES_ONLY = False
+#: D-116 B2 / A6: bootstrap only the line frames. On after the rehearsal-world proof showed zero differences at
+#: 500 draws (worlds A, B, C) and 5,000 draws (A, C): data/reports/livetest_subset_proof.json
+BOOTSTRAP_LINE_FRAMES_ONLY = True
 #: frames the 22 lines read from the main bootstrap: the calibrated chain and the three line baselines' calibrated forms
 LINE_FRAME_LABELS: tuple[str, ...] = (FOCUS + RB.CAL, *(b + RB.CAL for b in H.LINE_BASELINES))
 
