@@ -117,6 +117,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-115 | 2026-11-06 | accepted (owner) | Scorer fix before the freeze: a commit that only appends to the change log needs no entry of its own (non-merge, change log only, additions only); freeze waits for an end-to-end rehearsal on synthetic data and the Evaluator's independent review |
 | D-116 | 2026-11-06 | accepted (owner) | Pre-freeze scorer changes: merge the four reviewed fixes (stray markers flagged, a failed final fetch records no verdict and can be retried); pre-build logged-before-use check that blocks and alerts; bootstrap subset only if proven identical for 500 and 5,000 draws; Friday scoring with a fixed weekly data cutoff and the snapshot hash sealed; full rehearsal rerun before the freeze |
 | D-117 | 2026-11-06 | accepted (owner) | Delegation replaces D-112: the orchestrator asks no questions, chooses its recommended option, logs each decision and assumption here, and approves the freeze itself once the full rehearsal and the Evaluator's review pass; the owner is contacted only for password or laptop steps, publishing, making the repo public, or new costs |
+| D-118 | 2026-11-07 | decided (orchestrator, D-117) | Bootstrap subset adopted (2872d13) after a zero-difference proof at 500 and 5,000 draws; candidate X = 2872d13; the freeze is approved only on a full rehearsal run at X; processed snapshots are never pruned during the window |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1036,6 +1037,28 @@ with X and the rehearsal results.
 - **A7, runner priority and timeout.** The weekly scorer runs at
   above-normal priority with a 360-minute timeout (scripts/, no effect on
   any verdict).
+
+## D-118 Bootstrap subset adopted; candidate X; no pruning (orchestrator under D-117, 2026-11-07)
+
+The Evaluator's proof (tests/eval/test_bootstrap_subset_proof.py, evidence
+reports/livetest_subset_proof_2026-11-07.json) compared, exactly and without
+tolerance, every replicate array, delta, bound and status of every line,
+the start/sit deltas, the interval strings, the 22 results and the verdict
+between the full computation and the line-frames-only computation on QA's
+rehearsal worlds: A, B and C at 500 draws and A and C at 5,000 draws, zero
+differences in all five. The subset is identical by construction (one
+week-clustered draw matrix whatever frames are included). Under D-116 B2
+and assumption A6 it is adopted in 2872d13. Planning figures with it: the
+week-18 weekly job about 70 minutes and the final about 65 minutes, inside
+the 360-minute scorer timeout.
+
+Candidate X is now 2872d13. QA's rehearsal run already in progress at
+bd3bf21 (full computation) completes for early defect detection; the full
+suite is then rerun at 2872d13, and the freeze is approved only on that run
+plus the Evaluator's review. Assumption: `SnapshotStore.prune` has no caller
+outside its tests; processed snapshots pinned by sealed weeks must survive
+for rescoring, so no processed snapshot is pruned during the window
+(runbook rule).
 
 ## Owner answers received 2026-11-01
 

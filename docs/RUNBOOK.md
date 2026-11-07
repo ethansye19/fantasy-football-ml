@@ -748,3 +748,7 @@ ffml.eval.livetest_score --final`. **Exit 75 means the GitHub fetch of
 `livetest-2026` failed** (D-116, A4): no verdict was recorded, no `Verdict:`
 line and no final report were written, and the sealed files are untouched.
 Check the network and `gh auth status`, then simply run the final again.
+
+> **No pruning during the live test (D-118).** Never call `SnapshotStore.prune` or delete
+> processed snapshots between the freeze and the final evaluation: each sealed week pins the
+> first processed snapshot at or after its data cutoff, and a rescore must find it.
