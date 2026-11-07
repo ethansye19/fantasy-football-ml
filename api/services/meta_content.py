@@ -121,8 +121,10 @@ MODEL_CARD: dict[str, Any] = {
         "2025 holdout test: its quarterback 80% ranges were too narrow (tie-aware coverage "
         "0.739, required 0.75 to 0.85); the other 21 of 22 pre-registered checks passed (D-097). "
         "A second version (chain_v2) adds 2025 to training and updates its calibration weekly; "
-        "it must pass a pre-registered live test on 2026 weeks before any projections are "
-        "published (D-098)."
+        "it must pass a pre-registered live test over 2026 weeks 10-18 and 2027 weeks 1-9 "
+        "before any projections are published (D-098, D-110). The verdict is expected about "
+        "2027-11-12; even a well-calibrated model with the validated accuracy has only about a "
+        "56% chance of passing that test (D-111)."
     ),
     "definitions": {
         "floor": "10th percentile of simulated points under your scoring.",
@@ -139,7 +141,8 @@ MODEL_CARD: dict[str, Any] = {
     },
     "limitations": [
         "Kicker and defense boom/bust probabilities are low confidence (D-089).",
-        "Quarterback boom/bust probabilities were miscalibrated on the 2025 holdout (D-097).",
+        "Quarterback boom/bust probabilities are low confidence: they were miscalibrated on the "
+        "2025 holdout (D-097, D-104).",
         "Historical betting lines are closing lines, slightly optimistic for midweek "
         "projections (D-008).",
         "Injury designations have no timestamps in the source data; the model lags them and "

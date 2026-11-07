@@ -34,6 +34,16 @@ export const ATTRIBUTION_FALLBACK: AttributionResponse = {
       notes: [],
     },
     {
+      id: "ff_playerids",
+      name: "DynastyProcess player ids",
+      license: "via nflverse",
+      url: "https://github.com/dynastyprocess/data",
+      in_use: true,
+      text: "Player id crosswalk from DynastyProcess via nflverse.",
+      used_for: "Matching Sleeper players to nflverse players.",
+      notes: [],
+    },
+    {
       id: "sleeper",
       name: "Sleeper",
       license: "Sleeper API terms: free for non-commercial use",
