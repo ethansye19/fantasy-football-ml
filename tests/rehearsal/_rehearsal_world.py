@@ -44,7 +44,7 @@ MAIN_REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "_rehearsal_driver.py"
 #: the candidate frozen commit X (override for a later candidate)
-FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "2872d13")
+FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "071c3a4")
 PREREG_DOC = "docs/status/livetest-preregistration-2026.md"
 CHANGELOG_DOC = "docs/status/livetest-changelog-2026.md"
 WINDOW: tuple[tuple[int, int], ...] = (*((2026, w) for w in range(10, 19)), *((2027, w) for w in range(1, 10)))
@@ -115,6 +115,15 @@ def data_cutoff(season: int, week: int) -> datetime:
     return day
 
 
+def game_id(season: int, week: int, index: int) -> str:
+    away, home = matchups(season, week)[index]
+    return f"{season}_{week:02d}_{away}_{home}"
+
+
+def game_kickoff(season: int, week: int, index: int) -> datetime:
+    return game_kickoffs(season, week)[index]
+
+
 def matchups(season: int, week: int) -> list[tuple[str, str]]:
     """Round-robin pairs (circle method), different every week."""
     n = len(TEAMS)
@@ -162,6 +171,8 @@ class WorldSpec:
     corrections: bool = False
     #: the pre-build check scenario (blocked builds; see _rehearsal_scenarios.prebuild_events)
     prebuild: bool = False
+    #: D-121: game id -> "never" (never final) or the ISO time it becomes final (a late game)
+    unfinal_games: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -232,8 +243,32 @@ class World:
                    FFML_REPORTS_DIR=str(self.settings_reports_dir),
                    FFML_REHEARSAL_CLONE=str(self.clone), FFML_REHEARSAL_SPEC=self.spec.to_json())
         env.pop("FFML_HOLDOUT_UNLOCK", None)
+        if stream_path():
+            env["REHEARSAL_STREAM_FILE"] = stream_path()
         env.update(extra)
         return env
+
+
+def stream_path() -> str | None:
+    """The file every scenario result is appended to as soon as it exists (``FFML_REHEARSAL_EVIDENCE`` + .partial.jsonl)."""
+    if os.environ.get("REHEARSAL_STREAM_FILE"):
+        return os.environ["REHEARSAL_STREAM_FILE"]
+    ev = os.environ.get("FFML_REHEARSAL_EVIDENCE")
+    return f"{ev}.partial.jsonl" if ev else None
+
+
+def stream(world: str, key: str, value: Any) -> Any:
+    """Append one result as one JSON line (one write call, so lines of parallel worlds do not interleave)."""
+    path = stream_path()
+    if path:
+        line = json.dumps({"at": datetime.now(UTC).isoformat(timespec="seconds"), "world": world, "key": key,
+                           "result": value}, default=str) + "\n"
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -472,8 +507,14 @@ def state_as_of(truth, when: datetime, spec: WorldSpec):
             continue
         kicks = game_kickoffs(season, week)
         for gi, (away, home) in enumerate(matchups(season, week)):
+            gid = f"{season}_{week:02d}_{away}_{home}"
             final = kicks[gi] + timedelta(hours=GAME_HOURS) <= when
-            games.append({"game_id": f"{season}_{week:02d}_{away}_{home}", "season": season, "week": week,
+            late = spec.unfinal_games.get(gid)
+            if late == "never":
+                final = False
+            elif late:
+                final = datetime.fromisoformat(late) <= when
+            games.append({"game_id": gid, "season": season, "week": week,
                           "game_type": "REG", "away_team": away, "home_team": home, "kickoff_utc": kicks[gi],
                           "status": "final" if final else "scheduled", "away_score": 20 if final else None,
                           "home_score": 24 if final else None, "result": 4 if final else None})

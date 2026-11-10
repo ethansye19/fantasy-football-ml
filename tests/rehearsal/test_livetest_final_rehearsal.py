@@ -4,7 +4,7 @@ Run it explicitly (about two and a half hours with three worlds at a time)::
 
     FFML_REHEARSAL=1 pytest -m slow tests/rehearsal -q
 
-``FFML_REHEARSAL_COMMIT`` names the candidate X (default 2872d13, D-118),
+``FFML_REHEARSAL_COMMIT`` names the candidate X (default 071c3a4, D-125),
 ``FFML_REHEARSAL_WORKERS`` the number of worlds run at a time (default 3),
 ``FFML_REHEARSAL_ONLY`` a comma-separated subset of worlds, and
 ``FFML_REHEARSAL_EVIDENCE`` a file for the JSON evidence behind
@@ -22,7 +22,9 @@ Scenarios: the first rehearsal's (PASS; FAIL on L17 and on L07; 0 to 3 missed
 weeks; sealed results; the change log and the commit relation; the report-only
 5,000-draw rule) plus D-116 C's (a blocked build, a stat correction after the
 cutoff, a failed final fetch, flagged markers, the 2027 boundary of the miss
-count) and rechecks of QA-F27 to F30.
+count) and rechecks of QA-F27 to F30; D-121 (world G: a game never final, a
+game final before the 14 days, the runner's score-week). Every result is also
+appended to ``FFML_REHEARSAL_EVIDENCE``.partial.jsonl as soon as it exists.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 import _rehearsal_scenarios as S
@@ -121,7 +124,7 @@ def common_world_asserts(ev):
             assert step["push_record"]["on_time"] is True
             calls = step.get("scorer_calls") or []
             assert any(c["args"][:1] == ["--prebuild-check"] and c["returncode"] == 0 for c in calls), step
-        if step["op"] == "score-hook":
+        if step["op"] == "score-hook" and step["exit"] == 0:
             assert step["failed"] == [], step
     scored = [k for k, v in ev["sealed"]["weeks"].items() if v["local_sha256_file"]]
     for wk in scored:
@@ -552,3 +555,113 @@ def test_final_from_the_pinned_worktree_at_x_is_invalid(results):
     r = world(results, "A_pass")["repro_pinned"]["final_at_x"]
     v = single_verdict(r)
     assert v.startswith("Verdict: INVALID (frozen commit: pre-registered commit '<frozen commit>'"), v
+
+
+# --------------------------------------------------------------------------- #
+# D-121. A game still not final 14 days after the cutoff; a game final before then
+# --------------------------------------------------------------------------- #
+
+GAME_NEVER = W.game_id(*S.UNFINAL_NEVER)
+GAME_LATE = W.game_id(*S.UNFINAL_LATE)
+D121_REASON = "not final 14 days after the week's data cutoff (D-121)"
+
+
+def _sealed_record(ev, wk):
+    path = Path(ev["root"]) / "clone" / "data" / "livetest" / "scoring" / "sealed" / f"{wk}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _tried(step):
+    rows = [e for e in step["score_events"] if e["status"] == "weeks tried"]
+    assert len(rows) == 1, step["score_events"]
+    return rows[0]["results"]
+
+
+def test_week_with_a_game_not_final_waits_then_is_scored_without_it(results):
+    ev = world(results, "G_unfinal_game")
+    common_world_asserts(ev)
+    friday, cli = _steps(ev, "never_wait_friday")[0], _steps(ev, "never_wait_cli")[0]
+    assert friday["exit"] == 4 and "is not final in the pinned dim_game" in friday["message"], friday
+    assert cli["exit"] == 4 and "is not final in the pinned dim_game" in cli["stderr"], cli
+    assert cli["data_written"] == [] and cli["reports_written"] == []
+    cutoff = W.data_cutoff(2026, 14)
+    point = cutoff + timedelta(days=14)
+    rec = _sealed_record(ev, "2026w14")
+    assert rec["data_cutoff"] == cutoff.isoformat()
+    assert rec["exclusion_after_utc"] == point.isoformat() and rec["pin_from_utc"] == point.isoformat()
+    away, home = GAME_NEVER.split("_")[2:]
+    assert rec["excluded_games"] == [{"game_id": GAME_NEVER, "teams": sorted([away, home]),
+                                      "status_in_pinned_dim_game": "scheduled", "reason": D121_REASON}]
+    # the first snapshot at or after the exclusion point: the 2026w16 Friday refresh (that cutoff plus 30 minutes)
+    assert point == W.data_cutoff(2026, 16)
+    first = (point + timedelta(minutes=30)).strftime("%Y%m%dT%H%M%SZ")
+    assert set(rec["data_snapshots"].values()) == {first}, rec["data_snapshots"]
+    assert all(c["ok"] for c in rec["checks"]), [c for c in rec["checks"] if not c["ok"]]
+    week_final = next(c for c in rec["checks"] if c["name"] == "week final")
+    assert GAME_NEVER in week_final["detail"] and "excluded" in week_final["detail"]
+
+
+def test_later_weeks_are_not_held_behind_the_waiting_week(results):
+    ev = world(results, "G_unfinal_game")
+    waiting, after = _steps(ev, "runner_while_waiting")[0], _steps(ev, "runner_after_14_days")[0]
+    tried = _tried(waiting)
+    assert tried["2026w14"] != 0 and tried["2026w15"] == 0, tried
+    assert "2026w15" in waiting["sealed_on_branch"] and "2026w14" not in waiting["sealed_on_branch"]
+    assert any(e["status"] == "week not final yet" and e.get("week") == "2026w14" and e.get("not_final") == [GAME_NEVER]
+               for e in waiting["score_events"]), waiting["score_events"]
+    assert [c["args"] for c in waiting["scorer_calls"] if c["args"][:1] == ["--week"]] == [["--week", "2026w15"]]
+    tried = _tried(after)
+    assert after["exit"] == 0 and tried["2026w14"] == 0 and tried["2026w16"] == 0, tried
+    assert {"2026w14", "2026w15", "2026w16"} <= set(after["sealed_on_branch"])
+    assert any(e["status"] == "scoring with games excluded" and e.get("week") == "2026w14"
+               and e.get("not_final") == [GAME_NEVER] for e in after["score_events"]), after["score_events"]
+    calls = [c for c in after["scorer_calls"] if c["args"][:1] == ["--week"]]
+    assert sorted(c["args"][1] for c in calls) == ["2026w14", "2026w16"] and all(c["returncode"] == 0 for c in calls)
+    for wk in ("2026w15", "2026w16"):
+        rec = _sealed_record(ev, wk)
+        assert rec["excluded_games"] == [] and rec["pin_from_utc"] == rec["data_cutoff"], wk
+
+
+def test_game_final_before_the_14_days_is_scored_from_the_first_final_snapshot(results):
+    ev = world(results, "G_unfinal_game")
+    wait, scored = _steps(ev, "late_wait_friday")[0], _steps(ev, "late_scored")[0]
+    assert wait["exit"] == 4 and "is not final in the pinned dim_game" in wait["message"], wait
+    # the game became final 4 days after the cutoff; the next refresh is the 2027w04 pre-build one
+    refresh = W.attempt_time(2027, 4) - timedelta(hours=1)
+    assert W.data_cutoff(2027, 2) + timedelta(days=4) < refresh < W.data_cutoff(2027, 2) + timedelta(days=14)
+    assert scored["exit"] == 0 and scored["excluded"] == [] and scored["pin_from"] == refresh.isoformat(), scored
+    rec = _sealed_record(ev, "2027w02")
+    assert rec["excluded_games"] == [] and rec["pin_from_utc"] == refresh.isoformat()
+    assert set(rec["data_snapshots"].values()) == {refresh.strftime("%Y%m%dT%H%M%SZ")}
+    assert all(c["ok"] for c in rec["checks"]), [c for c in rec["checks"] if not c["ok"]]
+
+
+def test_unfinal_world_verdict_equals_the_all_final_world(results):
+    a, g = world(results, "A_pass"), world(results, "G_unfinal_game")
+    for wk, info in g["sealed"]["weeks"].items():
+        same = info["outcome_rows_sha256"] == a["sealed"]["weeks"][wk]["outcome_rows_sha256"]
+        assert same is (wk != "2026w14"), wk  # only the excluded game's rows differ
+    fin = g["final"]
+    assert single_verdict(fin) == single_verdict(a["final_pass"]) == APPROVED
+    assert all(c[1] == "PASS" for c in fin["checks"]), [c for c in fin["checks"] if c[1] != "PASS"]
+    c = check(fin["checks"], "2026w14 games excluded (D-121)")
+    assert c[1] == "PASS" and GAME_NEVER in c[2]
+    assert not [x for x in fin["checks"] if x[0].endswith("games excluded (D-121)") and not x[0].startswith("2026w14")]
+    scored, excluded = _excluded(fin)
+    assert len(scored) == 18 and excluded == []
+    assert "## Games excluded (D-121)" in fin["final_md"] and GAME_NEVER in fin["final_md"]
+    assert [x["game_id"] for x in fin["final_lines"]["excluded_games"]] == [GAME_NEVER]
+    assert all(v == [] for v in g["metric_leaks"].values()), {k: v for k, v in g["metric_leaks"].items() if v}
+
+
+def test_comparators_gap_probe_left_the_world_as_it_was(results):
+    gap = world(results, "G_unfinal_game")["comparators_gap"]
+    assert gap["restored"] is True
+
+
+@pytest.mark.xfail(strict=True, reason="QA-F31: ensure_comparators ignores the D-121 exclusion; when the comparators "
+                   "run must be extended, the week with the excluded game and every later week of its season are refused")
+def test_comparators_extension_honours_the_excluded_game(results):
+    gap = world(results, "G_unfinal_game")["comparators_gap"]
+    for case in ("unfinal_week", "later_week"):
+        assert "comparators cannot be extended" not in gap[case]["stderr"], gap[case]

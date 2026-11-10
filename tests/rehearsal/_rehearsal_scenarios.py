@@ -28,6 +28,30 @@ QUICK = os.environ.get("FFML_REHEARSAL_5000") != "1"
 FINAL_TIMEOUT = 4 * 3600
 H = timedelta(hours=1)
 M = timedelta(minutes=1)
+D = timedelta(days=1)
+
+
+def _compact(value: Any) -> Any:
+    """A final without the report text (the world's evidence directory keeps the report)."""
+    if isinstance(value, dict) and "proc" in value:
+        out = {k: v for k, v in value.items() if k not in ("final_md", "proc", "final_lines")}
+        out["returncode"] = value["proc"]["returncode"]
+        out["stderr_tail"] = value["proc"]["stderr"][-1200:]
+        fl = value.get("final_lines") or {}
+        if fl.get("binding"):
+            out["binding_lines"] = {ln["id"]: ln["passed"] for ln in fl["binding"]["lines"]}
+        if fl.get("excluded_games"):
+            out["excluded_games"] = fl["excluded_games"]
+        return out
+    if isinstance(value, dict):
+        return {k: _compact(v) for k, v in value.items()}
+    return value
+
+
+def record(world: str, key: str, value: Any) -> Any:
+    """Stream one scenario result as soon as it exists (see ``W.stream``); returns it unchanged."""
+    W.stream(world, key, _compact(value))
+    return value
 
 
 def _t(text: str) -> datetime:
@@ -95,6 +119,39 @@ def correction_events() -> list[tuple[datetime, int, dict[str, Any]]]:
                              "tag": "no_snapshot_yet", "expect_exit": 4})]
 
 
+#: world G (D-121): a game that is never final, and a game that becomes final 4 days after its week's cutoff
+UNFINAL_NEVER, UNFINAL_LATE = (2026, 14, 3), (2027, 2, 2)
+
+
+def unfinal_spec_games() -> dict[str, str]:
+    s, w, g = UNFINAL_LATE
+    return {W.game_id(*UNFINAL_NEVER): "never", W.game_id(s, w, g): iso(W.data_cutoff(s, w) + 4 * D)}
+
+
+def unfinal_events() -> tuple[list[tuple[datetime, int, dict[str, Any]]], set[tuple[int, int]]]:
+    """World G: 2026w14 waits, is retried and is scored without its game after 14 days, while the runner
+    scores and seals 2026w15 and 2026w16 (later weeks are not held); 2027w02 waits until its late game is final."""
+    ev: list[tuple[datetime, int, dict[str, Any]]] = []
+    s, w, _ = UNFINAL_NEVER
+    c = W.data_cutoff(s, w)
+    c15 = W.data_cutoff(s, w + 1)
+    ev += [(c + H, 0, {"op": "score-hook", "season": s, "week": w, "at": iso(c + H), "required": False,
+                       "tag": "never_wait_friday"}),
+           (c + 7 * D + H, 2, {"op": "cli", "args": ["--week", W.week_key(s, w)], "at": iso(c + 7 * D + H),
+                               "required": False, "tag": "never_wait_cli", "expect_exit": 4}),
+           (c15 + H, 2, {"op": "score-week", "at": iso(c15 + H), "required": False, "tag": "runner_while_waiting"}),
+           (c + 14 * D + 45 * M, 2, {"op": "score-week", "at": iso(c + 14 * D + 45 * M), "required": False,
+                                     "tag": "runner_after_14_days"})]
+    s, w, _ = UNFINAL_LATE
+    c = W.data_cutoff(s, w)
+    ev += [(c + H, 0, {"op": "score-hook", "season": s, "week": w, "at": iso(c + H), "required": False,
+                       "tag": "late_wait_friday"}),
+           (c + 7 * D + H, 2, {"op": "score-hook", "season": s, "week": w, "at": iso(c + 7 * D + H),
+                               "tag": "late_scored"}),
+           (c + 7 * D + 90 * M, 2, {"op": "seal", "season": s, "week": w, "at": iso(c + 7 * D + 90 * M)})]
+    return ev, {(2026, 14), (2026, 15), (2026, 16), (2027, 2)}
+
+
 def weekly_plan(spec: W.WorldSpec) -> list[dict[str, Any]]:
     """Every step of the window in simulated-time order (a pre-build refresh, the runner's build and push,
     the Friday refresh after the data cutoff, weekly scoring, the seal)."""
@@ -111,6 +168,10 @@ def weekly_plan(spec: W.WorldSpec) -> list[dict[str, Any]]:
         ev += extra
     if spec.corrections:
         ev += correction_events()
+    custom_scoring: set[tuple[int, int]] = set()
+    if spec.unfinal_games:
+        extra_u, custom_scoring = unfinal_events()
+        ev += extra_u
     no_commitment = missed | ({PREBUILD_MISSED} if spec.prebuild else set())
     for s, w in W.WINDOW:
         a = W.attempt_time(s, w)
@@ -121,7 +182,7 @@ def weekly_plan(spec: W.WorldSpec) -> list[dict[str, Any]]:
         c = W.data_cutoff(s, w)
         ev.append((c + 30 * M, 0, {"op": "refresh", "at": iso(c + 30 * M), "kind": "friday",
                                    "week": W.week_key(s, w)}))
-        if (s, w) not in no_commitment:
+        if (s, w) not in no_commitment and (s, w) not in custom_scoring:
             if (s, w) in set(spec.cli_weeks):
                 ev.append((c + H, 0, {"op": "score-cli", "season": s, "week": w, "at": iso(c + H)}))
             else:
@@ -210,7 +271,7 @@ def final(world: W.World, *flags: str, label: str, env: dict[str, str] | None = 
     if lines_json.is_file():
         out["final_lines"] = json.loads(lines_json.read_text(encoding="utf-8"))
         shutil.copy2(lines_json, world.evidence / f"final_lines_{label}.json")
-    return out
+    return record(world.spec.name, f"final:{label}", out)
 
 
 def integrity(world: W.World) -> dict[str, Any]:
@@ -319,7 +380,7 @@ def pipeline_pass(root: Path, spawn: Callable[[str, Callable[[], dict[str, Any]]
     W.git(world.clone, "remote", "set-url", "origin", world.remote.as_uri())
     W.git(world.clone, "fetch", "-q", "origin", "+refs/heads/livetest-2026:refs/remotes/origin/livetest-2026")
     # --- QA-F29: tampering with the worktree's uncommitted copy no longer helps ---------- #
-    sealed["worktree_tamper"] = worktree_tamper(world, 2026, 10)
+    sealed["worktree_tamper"] = record(spec.name, "worktree_tamper", worktree_tamper(world, 2026, 10))
     ev["sealed_checks"] = sealed
 
     # --- the PASS final (the retry after the failed fetch); binding 500 draws ------------- #
@@ -347,9 +408,9 @@ def pipeline_pass(root: Path, spawn: Callable[[str, Callable[[], dict[str, Any]]
                                    "differing": (forced.get("final_lines") or {}).get("sensitivity", {}).get("differing"),
                                    "final_md": forced["final_md"]}
     ev["git_scenarios"] = git_scenarios(world, ev["commits"])
-    ev["repro_pinned"] = repro_pinned(world, ev["x"])
+    ev["repro_pinned"] = record(spec.name, "repro_pinned", repro_pinned(world, ev["x"]))
     # last (they push to the branch): a stray MISSED marker on a committed week, then the QA-F28 attack
-    ev["stray_marker"] = stray_marker(world, 2026, 13)
+    ev["stray_marker"] = record(spec.name, "stray_marker", stray_marker(world, 2026, 13))
     return ev
 
 
@@ -541,7 +602,7 @@ def pipeline_misses(root: Path, name: str, spec: W.WorldSpec, *, check_last_week
                       "hook_consensus_sha256": res["consensus_part_sha256"],
                       "cli_outcome_rows_sha256": ev["sealed"]["weeks"][wk]["outcome_rows_sha256"],
                       "hook_outcome_rows_sha256": res["outcome_rows_sha256"]}
-        ev["hook_cli_equivalence"] = eq
+        ev["hook_cli_equivalence"] = record(spec.name, "hook_cli_equivalence", eq)
     ev["final"] = final(world, "--no-sensitivity", label="no_sensitivity")
     ev["integrity"] = integrity(world)
     return ev
@@ -561,7 +622,7 @@ def pipeline_correction(root: Path) -> dict[str, Any]:
     p, unpinned = W.driver(world, "hook-part", {"season": 2027, "week": 1, "at": "2027-12-01T00:00:00+00:00",
                                                 "root": str(world.root / "latest-scratch"), "pins": latest})
     assert p.returncode == 0, p.stderr[-3000:]
-    ev["unpinned_2027w01"] = unpinned
+    ev["unpinned_2027w01"] = record(spec.name, "unpinned_2027w01", unpinned)
     # the real CLI rescore of 2027w01 after its correction: it must reuse the recorded pins
     keep = {q: q.read_bytes() for q in world.sealed_dir.glob("2027w01*")}
     keep.update({q: q.read_bytes() for q in world.weeks_dir.glob("2027w01*")})
@@ -576,11 +637,68 @@ def pipeline_correction(root: Path) -> dict[str, Any]:
                      "outcome_before": before["record"].get("outcome_rows_sha256"),
                      "outcome_after": after_record.get("outcome_rows_sha256"),
                      "record_sha_changed": W.sha256_file(world.sealed_dir / "2027w01.json") != before["record_sha"]}
+    record(spec.name, "rescore", ev["rescore"])
     ev["rescore"]["final_after_rescore"] = final(world, "--no-sensitivity", label="after_rescore")
     for q, data in keep.items():  # put the original sealed files back
         q.write_bytes(data)
     ev["final"] = final(world, "--no-sensitivity", label="no_sensitivity")
     return ev
+
+
+def pipeline_unfinal(root: Path) -> dict[str, Any]:
+    """World G (D-121): one game never final, one final 4 days after its cutoff; then the comparators gap."""
+    spec = W.WorldSpec("G_unfinal_game", unfinal_games=unfinal_spec_games(), weekly_sensitivity=False)
+    st = prepare(spec, root / "G")
+    world, ev = st["world"], st["ev"]
+    ev["sealed"] = sealed_inventory(world)
+    ev["unfinal_games"] = unfinal_spec_games()
+    for wk in ("2026w14", "2026w15", "2026w16", "2027w02"):
+        rec = json.loads((world.sealed_dir / f"{wk}.json").read_text(encoding="utf-8"))
+        ev["sealed"]["weeks"][wk].update({k: rec.get(k) for k in ("excluded_games", "pin_from_utc",
+                                                                   "exclusion_after_utc", "scored_at")})
+    record(spec.name, "sealed_d121_weeks", {wk: {k: ev["sealed"]["weeks"][wk].get(k) for k in (
+        "excluded_games", "pin_from_utc", "exclusion_after_utc", "data_cutoff", "data_snapshots", "outcome_rows_sha256")}
+        for wk in ("2026w14", "2026w15", "2026w16", "2027w02")})
+    ev["metric_leaks"] = weekly_leaks(world, ev)
+    ev["final"] = final(world, "--no-sensitivity", label="no_sensitivity")
+    ev["comparators_gap"] = comparators_gap(world)
+    return ev
+
+
+def comparators_gap(world: W.World) -> dict[str, Any]:
+    """The real ``--week`` CLI when the comparators run must be extended to the week (as each week in production):
+    the predictions file is cut before 2026w14 and the week's own sealed files are removed (a first scoring);
+    everything is put back afterwards."""
+    import polars as pl
+
+    pred = world.data_dir / "backtests" / "livetest_comparators" / "predictions.parquet"
+    assert pred.is_file(), pred
+    keep = pred.read_bytes()
+    dirs = (world.sealed_dir, world.weeks_dir, world.weekly_reports_dir)
+    backup = world.root / "gap-backup"
+    listing_before = [W.tree_listing(d) for d in dirs]
+    for i, d in enumerate(dirs):
+        shutil.copytree(d, backup / str(i))
+    out: dict[str, Any] = {}
+    try:
+        frame = pl.read_parquet(pred)
+        frame.filter(pl.col("season") * 100 + pl.col("week") < 2026 * 100 + 14).write_parquet(pred)
+        cases = (("unfinal_week", 2026, 14, W.data_cutoff(2026, 14) + 14 * D + 2 * H),
+                 ("later_week", 2026, 17, W.data_cutoff(2026, 17) + 2 * H))
+        for label, s, w, when in cases:
+            wk = W.week_key(s, w)
+            for q in world.sealed_dir.glob(f"{wk}*"):
+                q.unlink()
+            p = W.scorer_cli(world, "--week", wk, now=when)
+            out[label] = {"week": wk, "at": iso(when), "returncode": p.returncode, "stderr": p.stderr[-1500:],
+                          "stdout": p.stdout[-500:], "sealed_written": sorted(q.name for q in world.sealed_dir.glob(f"{wk}*"))}
+    finally:
+        pred.write_bytes(keep)
+        for i, d in enumerate(dirs):
+            shutil.rmtree(d)
+            shutil.copytree(backup / str(i), d)
+    out["restored"] = [W.tree_listing(d) for d in dirs] == listing_before
+    return record(world.spec.name, "comparators_gap", out)
 
 
 def pipeline_prebuild(root: Path) -> dict[str, Any]:
@@ -614,6 +732,7 @@ def run_all(root: Path, workers: int = 3, only: set[str] | None = None) -> dict[
         except Exception as exc:  # noqa: BLE001 - every world reports its own failure
             res = {"world": name, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
         res["seconds"] = round(time.perf_counter() - t0, 1)
+        W.stream(name, "world_done", {"seconds": res["seconds"], "error": res.get("error")})
         with lock:
             results[name] = res
 
@@ -623,6 +742,7 @@ def run_all(root: Path, workers: int = 3, only: set[str] | None = None) -> dict[
 
     jobs: dict[str, Callable[[], dict[str, Any]]] = {
         "A_pass": lambda: pipeline_pass(root, spawn),
+        "G_unfinal_game": lambda: pipeline_unfinal(root),
         "E_stat_correction": lambda: pipeline_correction(root),
         "P_prebuild": lambda: pipeline_prebuild(root),
         "D1_one_miss": lambda: pipeline_misses(root, "D1", W.WorldSpec(

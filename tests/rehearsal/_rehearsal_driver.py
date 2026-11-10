@@ -18,7 +18,7 @@ Injection points used here (documented in reports/livetest_final_rehearsal.md):
   other command runs unchanged;
 * scorer side, weekly: ``score_week(..., n_boot=..., sensitivity_n_boot=...)``
   with every other argument wired exactly as ``livetest_score.main`` wires
-  ``--week`` (data cutoff, pinned snapshots, pinned stores); the weekly sealed
+  ``--week`` (``plan_week``: data cutoff, pins, pinned stores, D-121 exclusions); the weekly sealed
   metrics are never read by the final and the sealed parquet parts do not
   depend on the draw count;
 * scorer side, final: ``final_evaluation(sensitivity_fn=...)`` only for the
@@ -128,10 +128,14 @@ def run_hook(cmd, *args, **kw):
         env["FFML_REHEARSAL_CLONE"] = str(CLONE)
         env["FFML_REHEARSAL_NOW"] = CLOCK().isoformat()
         kw["env"] = env
-        cmd = [cmd[0], "-c", W.SCORER_WRAPPER, *cmd[3:]]
+        # the runner asks for the weekly 5,000-draw sensitivity; the rehearsal drops it to save hours (world A
+        # runs the weekly sensitivity through the hook with 5 draws)
+        dropped = [a for a in cmd[3:] if a == "--weekly-sensitivity"]
+        cmd = [cmd[0], "-c", W.SCORER_WRAPPER, *[a for a in cmd[3:] if a != "--weekly-sensitivity"]]
         proc = subprocess.run(cmd, *args, **kw)
-        SCORER_CALLS.append({"args": cmd[3:], "returncode": proc.returncode, "at": env["FFML_REHEARSAL_NOW"],
-                             "stdout": (proc.stdout or "")[-600:], "stderr": (proc.stderr or "")[-600:]})
+        SCORER_CALLS.append({"args": cmd[3:], "dropped": dropped, "returncode": proc.returncode,
+                             "at": env["FFML_REHEARSAL_NOW"], "stdout": (proc.stdout or "")[-600:],
+                             "stderr": (proc.stderr or "")[-600:]})
         return proc
     return subprocess.run(cmd, *args, **kw)
 
@@ -170,30 +174,27 @@ def _t(text: str) -> datetime:
 
 
 def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_sensitivity: bool, now: datetime,
-                root: Path | None = None, reports_dir: Path | None = None, recorded=None):
-    """``livetest_score.main`` for ``--week``, step for step, with the draw counts as parameters."""
+                root: Path | None = None, reports_dir: Path | None = None, record=None):
+    """``livetest_score.main`` for ``--week``, step for step (``plan_week``, D-116 A3 and D-121), with the draw
+    counts as parameters. ``record`` defaults to the week's sealed JSON, as in ``main`` (a rescore)."""
     wk = W.week_key(season, week)
-    cutoff = LS.data_cutoff(LS.load_dim_game([season]), season, week)
-    if cutoff is None:
-        return {"exit": 3, "message": f"refused: {wk} has no regular-season game in dim_game"}
-    if now < cutoff:
-        return {"exit": 4, "message": f"retry later: the data cutoff for {wk} is {LS.iso(cutoff)}"}
-    if recorded is None:
-        recorded = (LS._week_record(season, week) or {}).get("data_snapshots") or None
+    if record is None:
+        record = LS._week_record(season, week)
     try:
-        pins = LS.choose_pins(cutoff, recorded=recorded)
+        plan = LS.plan_week(season, week, LS.load_dim_game([season]), now=now, record=record)
     except LS.RetryLater as exc:
         return {"exit": 4, "message": f"retry later: {exc}"}
-    stores = LS.pinned_stores(pins)
-    dim_game = stores["processed"].read("dim_game", seasons=[season])
-    status = LS.week_status(dim_game, season, week)
-    if not status.is_final:
-        return {"exit": 4, "message": f"retry later: {wk} is not final in the pinned dim_game"}
+    except LS.ScoreRefused as exc:
+        return {"exit": 3, "message": f"refused: {exc}"}
+    pins, stores, dim_game, cutoff = plan.pins, plan.stores, plan.dim_game, plan.cutoff
     rec_path = LS.default_push_record(season, week)
     push_record = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else None
     source = LS.BranchSource(Path(LS.DEFAULT_WORKTREE))
-    baselines = LS.ensure_comparators(season, week, dim_game, run=LS.COMPARATORS_RUN,
-                                      actuals_fn=lambda s_: LS.load_actuals(s_, stores["processed"]))
+    try:
+        baselines = LS.ensure_comparators(season, week, dim_game, run=LS.COMPARATORS_RUN,
+                                          actuals_fn=lambda s_: LS.load_actuals(s_, stores["processed"]))
+    except LS.ScoreRefused as exc:
+        return {"exit": 3, "message": f"refused: {exc}"}
     consensus = None
     if stores.get("restricted") is not None:
         consensus = LS.consensus_rows(season, week, store=stores["processed"], restricted_store=stores["restricted"])
@@ -210,12 +211,14 @@ def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_se
             outcomes=lambda raw, s_: LS.harness_outcomes(raw, s_, stores["processed"]),
             dim_game_id=pins.get("processed/dim_game"), snapshot_ids=LS.processed_snapshot_ids(),
             weekly_sensitivity=weekly_sensitivity, data_cutoff=cutoff, data_snapshots=pins, n_boot=n_boot,
-            sensitivity_n_boot=sens_n_boot, **kw)
+            sensitivity_n_boot=sens_n_boot, excluded_games=plan.excluded, pin_from=plan.pin_from, **kw)
+    except LS.ScoreRefused as exc:
+        return {"exit": 3, "message": f"refused: {exc}"}
     finally:
         LS.utcnow = saved
     failed = [c.name for c in rec.checks if not c.ok]
     return {"exit": 0, "checks": len(rec.checks), "failed": failed, "report": str(out), "pins": pins,
-            "data_cutoff": LS.iso(cutoff),
+            "data_cutoff": LS.iso(cutoff), "pin_from": LS.iso(plan.pin_from), "excluded": list(plan.excluded),
             "message": f"sealed {wk}: {len(rec.checks) - len(failed)} of {len(rec.checks)} checks pass"
                        + (f"; failed: {failed}" if failed else "")}
 
@@ -223,6 +226,32 @@ def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_se
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
+
+
+def sealed_on_branch() -> list[str]:
+    """The weeks with a sealed-hash record on the fake remote branch."""
+    names = W.git(WORLD.remote, "ls-tree", "-r", "--name-only", "refs/heads/livetest-2026", check=False).splitlines()
+    return sorted(n.split("/", 1)[0] for n in names if n.endswith("/" + core.SEALED_NAME))
+
+
+def runner_log_events(sizes: dict[Path, int], step: str) -> list[dict]:
+    """The runner log events of one step written since ``sizes`` was taken."""
+    logs = get_settings().data_dir / "livetest" / "logs"
+    keep = ("ts", "status", "week", "results", "not_final", "exclusion_after", "pin_point", "returncode", "message")
+    out = []
+    for f in sorted(logs.glob("*.jsonl")) if logs.is_dir() else []:
+        with f.open("rb") as fh:
+            fh.seek(sizes.get(f, 0))
+            for line in fh.read().decode("utf-8").splitlines():
+                e = json.loads(line)
+                if e.get("step") == step:
+                    out.append({k: v for k, v in e.items() if k in keep})
+    return out
+
+
+def log_sizes() -> dict[Path, int]:
+    logs = get_settings().data_dir / "livetest" / "logs"
+    return {f: f.stat().st_size for f in logs.glob("*.jsonl")} if logs.is_dir() else {}
 
 
 def cmd_probe(payload):
@@ -321,6 +350,12 @@ def cmd_weekly(payload):
                            clone_reports_written=sorted(k for k in clone_after if clone_before.get(k) != clone_after[k]))
                 if step.get("expect_exit") is not None and p.returncode == step["expect_exit"]:
                     res["exit_as_expected"] = True
+            elif op == "score-week":  # the runner's Friday job: every due, unsealed week (A3, D-121)
+                CLOCK.set(_t(step["at"]))
+                sizes = log_sizes()
+                res["exit"] = runner_main(["score-week", "--skip-refresh", "--no-live-schedule"])
+                res["score_events"] = runner_log_events(sizes, "score")
+                res["sealed_on_branch"] = sealed_on_branch()
             elif op == "seal":
                 CLOCK.set(_t(step["at"]))
                 res["exit"] = runner_main(["seal", "--season", str(step["season"]), "--week", str(step["week"]),
@@ -358,6 +393,8 @@ def cmd_weekly(payload):
         res["scorer_calls"] = SCORER_CALLS[s0:]
         res["seconds"] = round(time.perf_counter() - t0, 1)
         results.append(res)
+        if step.get("tag"):  # streamed at once, so an interrupted run keeps it
+            W.stream(SPEC.name, f"step:{step['tag']}", {k: v for k, v in res.items() if k != "snapshots"})
         if res.get("exit") not in (0, None) and step.get("required", True):
             break
     return {"steps": results, "labels": labels}
@@ -384,9 +421,11 @@ def cmd_hook_part(payload):
     """Score one week with the hook into a scratch root, reusing the week's recorded pins; part hashes."""
     scratch = Path(payload["root"])
     s, w = payload["season"], payload["week"]
-    recorded = payload.get("pins") or (LS._week_record(s, w) or {}).get("data_snapshots")
+    record = LS._week_record(s, w) or {}
+    if payload.get("pins"):  # score against these snapshots instead of the recorded ones (the LATEST contrast)
+        record = {**record, "data_snapshots": payload["pins"]}
     res = weekly_hook(s, w, 5, 5, False, _t(payload["at"]), root=scratch, reports_dir=scratch / "reports",
-                      recorded=recorded)
+                      record=record)
     part = LS.part_path(scratch, s, w)
     cons = LS.consensus_part_path(scratch, s, w)
     rec = read_json(LS.record_path(scratch, s, w)) or {}
@@ -428,8 +467,8 @@ def cmd_repro_pinned_dirty(payload):
            "default_reports_dir": str(LS.default_reports_dir())}
     s, w = payload["season"], payload["week"]
     res = weekly_hook(s, w, 5, 5, False, W.friday_scoring(s, w), root=scratch,
-                      recorded=(json.loads((Path(payload["sealed_dir"]) / f"{W.week_key(s, w)}.json")
-                                           .read_text(encoding="utf-8")).get("data_snapshots")))
+                      record=json.loads((Path(payload["sealed_dir"]) / f"{W.week_key(s, w)}.json")
+                                        .read_text(encoding="utf-8")))
     out.update(weekly=res, status_after=status(), pin_after=pin())
     return out
 
