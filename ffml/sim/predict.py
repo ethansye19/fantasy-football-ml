@@ -27,7 +27,10 @@ Modes (approval gate, D-097 to D-099)
     and ``calibration_info`` goes to the manifest. Private tests only.
 - **Replay** (``replay=True``). As before (any model, never moves ``LATEST``);
   manifest ``environment="replay"`` and ``approval_status="not approved"``
-  unless the model is the live approved version.
+  unless the model is the live approved version. Without an explicit
+  ``root`` a replay is written to
+  ``Settings.private_predictions_dir / "replays_test_only"``, never to the
+  public store the real app reads (D-124).
 
 Refused requests raise :class:`PredictionRefused` before anything is read.
 
@@ -693,6 +696,9 @@ def run_predict(
     )
     if environment == "private_test":
         root = private_store(rehearsal)
+    if replay and root is None:
+        # D-124: replays are test data; by default they never land in the public store the real app reads
+        root = get_settings().private_predictions_dir / "replays_test_only"
     if replay:
         if season is None or week is None:
             raise ValueError("replay needs an explicit season and week")

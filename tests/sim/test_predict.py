@@ -370,11 +370,12 @@ def test_replay_is_labeled_not_approved_and_never_moves_latest(registry_env, syn
     add_candidate(SYNTHETIC_VERSION, model_dir)  # a candidate is not approved
     res = _replay(model_dir=model_dir, data=data)
     assert (res.environment, res.approval_status, res.mode) == ("replay", "not approved", "replay")
-    m = read_predictions(2017, 12, res.run_id, root=registry_env.predictions_dir).manifest
+    replays = registry_env.private_predictions_dir / "replays_test_only"  # D-124: replays are test data
+    m = read_predictions(2017, 12, res.run_id, root=replays).manifest
     assert m["environment"] == "replay" and m["approval_status"] == "not approved"
     assert "label" not in m and m["extra"]["mode"] == "replay"
-    assert not (registry_env.predictions_dir / "LATEST").exists()
-    assert not registry_env.private_predictions_dir.exists()
+    assert not registry_env.predictions_dir.exists() or not any(registry_env.predictions_dir.iterdir())
+    assert not (replays / "LATEST").exists() and not (registry_env.private_predictions_dir / "LATEST").exists()
     with pytest.raises(PredictionRefused, match="never move LATEST"):
         _replay(model_dir=model_dir, data=data, update_latest=True)
     with pytest.raises(PredictionRefused, match="model_version"):
@@ -391,7 +392,7 @@ def test_replay_of_the_live_version_is_labeled_approved(registry_env, synthetic_
     obj = ChainModel.load(model_dir, data=data)
     assert _replay(model=obj, run_id="object").approval_status == "not approved"
     for run_id, status in (("dir", "approved"), ("object", "not approved")):
-        m = read_predictions(2017, 12, run_id, root=registry_env.predictions_dir).manifest
+        m = read_predictions(2017, 12, run_id, root=registry_env.private_predictions_dir / "replays_test_only").manifest
         assert m["approval_status"] == status and m["environment"] == "replay"
     assert not (registry_env.predictions_dir / "LATEST").exists()
 
