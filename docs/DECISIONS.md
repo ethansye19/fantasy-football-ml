@@ -124,6 +124,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-122 | 2026-11-08 | decided (orchestrator, D-117) | Fix before the freeze, not in September 2027: an ingest skips a requested season only when it is newer than every published season and its file does not exist yet (warning, not a D-028 gap); every published season loads exactly as before |
 | D-123 | 2026-11-08 | decided (orchestrator, D-117) | The restricted-reads audit stays as it is: the runner stops naming the restricted dataset and takes the list of pinned datasets from the scorer's `--data-cutoff` output |
 | D-124 | 2026-11-10 | accepted (owner) | The real app uses the current 2026 season and week from Sleeper's state endpoint, cross-checked with the nflverse schedule; data refreshed through 2026 week 9; 2024 replays only in private test, labeled as test data; gated features stay on no approved model and show the 2026 context |
+| D-125 | 2026-11-10 | decided (orchestrator, D-117) | Candidate X = 071c3a4 (HEAD after D-121 to D-124; contains every required commit); the freeze is approved only on QA's full rehearsal at X and the Evaluator's pass |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
