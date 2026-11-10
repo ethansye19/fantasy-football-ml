@@ -6,7 +6,8 @@ official first kickoff. They are scored only after the games finish. The
 runbook also covers the alerts that support the test (QA-5.1), the operating
 rules for missed weeks (D-106, revisited in D-111: up to two misses), the
 operations set-up (D-107), the pre-build change-log check (D-116) and the
-Friday scoring and sealing job (section 15).
+Friday scoring and sealing job (section 15). Section 18 covers where the app
+takes the current season and week from (D-124).
 
 Sections 11 to 14 are the ones the owner acts on: the GitHub watchdog, the
 power settings, the logged-off dry run and the registration command.
@@ -904,3 +905,50 @@ build while a commit in the build's range has no row.
 - Exit 0: nothing is missing, or every missing commit was rowed. Exit 1:
   commits remain that need a hand-written row or a ruling. Exit 2: an error
   (for example files already staged, which `--commit` refuses).
+
+## 18. The app's season and week (D-124)
+
+The real app (`FFML_APP_ENV=production`) shows the current season and week on
+every page. It never takes them from the calendar or from a prediction run.
+
+- `GET /meta/season` asks Sleeper's state endpoint (`/v1/state/nfl`, through
+  the API's one Sleeper client and its rate limiter) and cross-checks the
+  answer with the nflverse schedule (the latest raw `schedules` snapshot).
+  When they agree the page says "From Sleeper, matching the nflverse
+  schedule". When they disagree, or Sleeper cannot be reached within 5 s,
+  the schedule's answer is shown and the page says so; the API log has a
+  `season cross-check` or `Sleeper state unavailable` warning. The answer is
+  reused for 3 minutes (1 minute when a source is missing).
+- A `week` disagreement for a day or so after Monday night is expected: a
+  refreshed schedule moves to the next week before Sleeper does. A lasting
+  disagreement usually means the schedule snapshot is old: check
+  `cross_check.schedule.snapshot_id` and run the refresh below.
+- Projections, start/sit, waivers, trades and rankings stay on "no approved
+  model" in production (D-099, D-124 assumption) and show the current season
+  and week as context.
+
+Refreshing the data the app reads (adds snapshots, never deletes any, D-118):
+
+```powershell
+$env:PYTHONUTF8 = "1"
+.venv\Scripts\ffml refresh --step all     # ingest 2016 through the current season, Sleeper map, process, validate, features
+```
+
+Then restart the API (the player directory is loaded once per process) and
+re-sync a Sleeper league through the API, for example with the API on port
+8000:
+
+```powershell
+$id = (Invoke-RestMethod http://127.0.0.1:8000/leagues).leagues | Where-Object external_id -eq "1389750342958223360" | Select-Object -ExpandProperty id
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/leagues/$id/sync
+```
+
+Test-only replays. Historical replays (for example 2024 weeks 10 and 11) live
+only in `data/predictions_private/replays_test_only/`. The public store
+`data/predictions` holds no replay: production never reads replays, and the
+API warns at startup if one is left there. In `FFML_APP_ENV=private_test`
+every page and response that uses a replay is labeled "TEST DATA: 2024 week
+11 replay, not approved, not a recommendation" next to the "not approved"
+label. `ffml predict` in replay mode writes to the public store by default,
+so move a new replay into the test-only folder (or pass its `root`) before
+starting the API.

@@ -1,7 +1,7 @@
 # API contract (Phase 4)
 
 Owner: Backend Engineer. Consumers: the web app (`web/`), Playwright tests, QA.
-Status: contract v1.4, 2026-11-05. Every endpoint below is implemented and
+Status: contract v1.5, 2026-11-10. Every endpoint below is implemented and
 tested (tests/api). Changes are recorded in the changelog at the end.
 
 Code: `api/` (FastAPI, Pydantic v2, SQLAlchemy 2). Run locally:
@@ -44,7 +44,11 @@ these limits, which the API enforces:
 | `FFML_DB_AUTO_MIGRATE` | `true` | Run Alembic `upgrade head` at startup. |
 | `FFML_CORS_ORIGINS` | `["http://localhost:3000","http://127.0.0.1:3000"]` | JSON list of allowed browser origins. In production each entry must be an explicit `http(s)://host[:port]`; `*` is refused and the API does not start. |
 | `FFML_API_FIXTURE_PREDICTIONS_DIR` | unset | `private_test` only: a predictions store holding fixture runs. |
-| `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>`. |
+| `FFML_API_REPLAY_RUN` | unset | `private_test` only: pin one replay as `<season>/<week>/<run_id>` (looked up in the private store and its test-only folder; the run must be a replay). |
+| `FFML_API_TEST_REPLAYS_DIR` | `data/predictions_private/replays_test_only` | `private_test` only: the test-only replay folder (D-124). |
+| `FFML_SEASON_SLEEPER_ENABLED` | `true` | `/meta/season` asks Sleeper's state endpoint and cross-checks it with the schedule (section 5). `false`: the schedule alone (the API tests default to this). |
+| `FFML_SEASON_TTL_SECONDS` | `180` | How long one `/meta/season` answer is reused (at most 60 s when a source is missing). |
+| `FFML_SEASON_SLEEPER_TIMEOUT_SECONDS` | `5` | Deadline of the Sleeper state call; past it the schedule answers. |
 | `FFML_APPROVAL_TTL_SECONDS` | `5` | How long one gate evaluation is reused. |
 | `FFML_DOCS_ENABLED` | unset | Interactive docs (`/docs`, `/redoc`, `/openapi.json`). Unset: on in `private_test`, off in `production`. |
 | `FFML_BODY_MAX_BYTES` | `262144` | Largest accepted request body (413 above it; `0` disables the check). |
@@ -117,10 +121,23 @@ Gated routes serve the first readable source in this order:
    `environment: "private_test"`, `approval_status: "not approved"`,
    `label: "not approved"`);
 2. a replay run: `FFML_API_REPLAY_RUN` if set, else the newest run whose
-   manifest says `mode: "replay"` in the private or public store (a replay is a
-   past week predicted from information available before it, for example
-   2024 week 10);
+   manifest says `mode: "replay"` (or whose run id ends in `-replay`) in the
+   private store or its test-only folder `data/predictions_private/replays_test_only`
+   (a replay is a past week predicted from information available before it,
+   for example 2024 week 11). The public store `data/predictions` is never
+   searched for replays and holds none (D-124); a replay left there is logged
+   at startup and never served;
 3. the fixture store `FFML_API_FIXTURE_PREDICTIONS_DIR`, if set.
+
+Replays and fixtures are test data. Every response that uses one carries
+`test_data_label`, for example `"TEST DATA: 2024 week 11 replay, not approved,
+not a recommendation"` (fixtures: `"TEST DATA: fixture data, not approved, not a
+recommendation"`): in `run.test_data_label` of every envelope, as the first
+entry of `notices`, and at the top level of `/meta/approval` and
+`/meta/run-info`. The UI shows it next to the "not approved" label on the
+global banner and on every projection view. A private-test run of a candidate
+(source `private_test`) is labeled "not approved" but is not test data, so its
+`test_data_label` is `null`.
 
 Every response in `private_test` (gated or not) has the header
 `X-FFML-Approval: not-approved`, and every projection-derived body has
@@ -143,18 +160,20 @@ HTTP/1.1 503
   "environment": "private_test",
   "run": {
     "source": "replay",
-    "run_id": "2024w10-20261103T010442Z-replay",
+    "run_id": "2024w11-20261104T225732Z-replay",
     "season": 2024,
-    "week": 10,
+    "week": 11,
     "model_version": "chain_v1",
-    "written_at": "2026-11-03T01:04:55Z",
+    "written_at": "2026-11-04T22:57:50Z",
     "n_sims": 2000,
     "is_replay": true,
-    "has_rest_of_season": true
+    "has_rest_of_season": true,
+    "test_data_label": "TEST DATA: 2024 week 11 replay, not approved, not a recommendation"
   },
   "notices": [
+    "TEST DATA: 2024 week 11 replay, not approved, not a recommendation",
     "Not approved: these numbers come from a model that has not passed its pre-registered test. Private test environment only; not a recommendation.",
-    "Historical replay of 2024 week 10: ..."
+    "Historical replay of 2024 week 11: ..."
   ],
   "...route fields...": "..."
 }
@@ -291,16 +310,55 @@ When serving, `run` is the envelope's run object plus `seeds`, `as_of`,
 
 ### GET /meta/season
 
+The current season, week and season type, read live (D-124). Primary source:
+Sleeper's state endpoint (`GET https://api.sleeper.app/v1/state/nfl`, through
+the app's one Sleeper client and its rate limiter, D-025). Cross-check: the
+nflverse schedule (`ffml.season.current_state` on the latest raw `schedules`
+snapshot: the earliest regular-season week with a game that is not final).
+The calendar is never used.
+
 ```json
-{"season": 2026, "mode": "regular", "projection_week": 10, "week_in_progress": false,
- "offseason": false, "banner": null, "as_of": "..."}
+{"season": 2026, "week": 9, "season_type": "regular", "mode": "regular",
+ "projection_week": 9, "week_in_progress": true, "last_completed_week": 8,
+ "next_kickoff_utc": "2026-11-13T01:15:00+00:00", "offseason": false, "banner": null,
+ "source": "sleeper", "as_of": "2026-11-10T02:40:00+00:00",
+ "cross_check": {
+   "status": "agree", "differences": [],
+   "message": "Sleeper and the nflverse schedule agree.",
+   "sleeper": {"season": 2026, "season_type": "regular", "week": 9, "display_week": 9,
+               "raw_season_type": "regular"},
+   "schedule": {"season": 2026, "season_type": "regular", "week": 9, "week_in_progress": true,
+                "last_completed_week": 8, "games_final": 135, "games_total": 272,
+                "snapshot_id": "20261110T023724Z"}}}
 ```
 
-`mode` is `regular`, `postseason`, `offseason` or `unknown` (no schedule
-snapshot). `offseason` is `true` in `postseason` and `offseason`, `false` in
-`regular`, and `null` when the mode is `unknown` (the UI keys on `mode` and
-shows "season status unknown"). In `postseason`/`offseason` `banner` explains
-that weekly features are paused and rankings are season-level.
+| `cross_check.status` | Answer shown | `source` |
+| --- | --- | --- |
+| `agree` | Sleeper's (the same as the schedule's) | `sleeper` |
+| `disagree` | the schedule's; `differences` lists `season`, `season_type` and/or `week`, and the API logs a warning once per distinct disagreement | `schedule` |
+| `sleeper_unavailable` | the schedule's; Sleeper failed, timed out (`sleeper_error`) or is switched off (`FFML_SEASON_SLEEPER_ENABLED=false`) | `schedule` |
+| `schedule_unavailable` | Sleeper's, not cross-checked (no schedule snapshot) | `sleeper` |
+| `unavailable` | none: `mode: "unknown"`, `season`/`week` null | `none` |
+
+`season_type` is `preseason`, `regular`, `postseason`, `offseason` or
+`unknown` (Sleeper's `pre`, `regular`, `post`, `off`). Sleeper's preseason
+agrees with a schedule whose next week is week 1 with no final game. Weeks are
+compared only when both sources say regular season. Right after Monday night,
+a refreshed schedule moves to the next week before Sleeper does; that shows up
+as a `week` disagreement, and the schedule's (newer) week is shown.
+`week` is the current regular-season week (null otherwise); `projection_week`,
+`week_in_progress`, `last_completed_week` and `next_kickoff_utc` come from the
+schedule. `as_of` is when the answer was resolved; it is reused for
+`FFML_SEASON_TTL_SECONDS` (180 s), at most 60 s when a source is missing.
+The schedule is only as fresh as its latest snapshot (`snapshot_id`), so the
+data refresh (RUNBOOK) keeps the cross-check meaningful.
+
+`mode` is `regular`, `postseason`, `offseason` or `unknown`. `offseason` is
+`true` in `postseason` and `offseason`, `false` in `regular`, and `null` when
+the mode is `unknown` (the UI keys on `mode` and shows "season status
+unknown"). In `postseason`/`offseason` `banner` explains that weekly features
+are paused and rankings are season-level. The web app shows the season and
+week on every page and on the "no approved model" state of every gated view.
 
 ## 6. Leagues (never gated)
 
@@ -592,6 +650,16 @@ whenever a new run is published (weekly).
 
 ## Changelog
 
+- v1.5 (2026-11-10), D-124:
+  - `/meta/season` reads Sleeper's state endpoint, cross-checked with the nflverse schedule;
+    new fields `week`, `season_type`, `source`, `cross_check`; cached 180 s (section 5).
+  - Replays are read only from the private store and its test-only folder
+    `data/predictions_private/replays_test_only`, never from the public store; a pinned
+    `FFML_API_REPLAY_RUN` must be a replay.
+  - `test_data_label` ("TEST DATA: ...") on replay and fixture runs: `run.test_data_label`,
+    first entry of `notices`, top level of `/meta/approval` and `/meta/run-info`.
+  - Production logs a warning at startup for test-only settings it ignores and for any
+    replay left in the public store.
 - v1 (2026-11-04): first contract; gate, meta health and approval implemented.
 - v1.4 (2026-11-05), BE-4.10 hardening (docs/SECURITY.md findings):
   - production also verifies the live entry's evaluator report (`Verdict: APPROVED`
