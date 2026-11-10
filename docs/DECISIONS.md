@@ -123,6 +123,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-121 | 2026-11-07 | decided (orchestrator, D-117) | A game that never becomes final: the week waits, and if a game is still not final 14 days after the week's data cutoff the week is scored without it (its rows excluded and listed), pinning the first snapshots at or after that point; later weeks are never held behind it |
 | D-122 | 2026-11-08 | decided (orchestrator, D-117) | Fix before the freeze, not in September 2027: an ingest skips a requested season only when it is newer than every published season and its file does not exist yet (warning, not a D-028 gap); every published season loads exactly as before |
 | D-123 | 2026-11-08 | decided (orchestrator, D-117) | The restricted-reads audit stays as it is: the runner stops naming the restricted dataset and takes the list of pinned datasets from the scorer's `--data-cutoff` output |
+| D-124 | 2026-11-10 | accepted (owner) | The real app uses the current 2026 season and week from Sleeper's state endpoint, cross-checked with the nflverse schedule; data refreshed through 2026 week 9; 2024 replays only in private test, labeled as test data; gated features stay on no approved model and show the 2026 context |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1118,6 +1119,31 @@ than every season the source has published and its file does not exist
 yet. A missing file for any earlier season still fails as a gap. Ingest of
 every published season is unchanged, so no feature row changes; a test
 shows the seasons loaded for 2016-2026 are identical before and after.
+
+## D-124 The app follows the current 2026 season (owner request, 2026-11-10)
+
+The owner reported that the app shows 2024 data. Sources found: the season
+banner reads the latest raw schedule snapshot (not refreshed since early
+November), and both prediction stores hold a 2024 week-11 replay made
+during Phase 4 testing; the public store is the one the real app reads.
+
+Decisions:
+- The real app takes the current season, week and season type from
+  Sleeper's state endpoint, cross-checked with the nflverse schedule
+  (`ffml.season.current_state` on the latest schedule snapshot). If the
+  two disagree, the app shows the schedule's answer and logs the
+  disagreement. If Sleeper is unreachable, the schedule is used and the
+  source is shown.
+- Data is refreshed now: 2026 rosters, schedules, completed-game stats
+  through week 9, injuries, and the owner's Sleeper league (re-synced).
+  New snapshots are added; none is deleted (D-118).
+- 2024 replays exist only in private test environments, labeled as test
+  data. The public prediction store holds no replay.
+- **Assumption (the owner's item 4 was cut off mid-sentence):**
+  projections, start/sit, waivers, trades and rankings stay on "no
+  approved model" in the real app, and those pages show the current 2026
+  season and week as context. In private test they may show the 2024
+  replay, labeled as test data and not approved.
 
 ## Owner answers received 2026-11-01
 
