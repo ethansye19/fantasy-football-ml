@@ -125,6 +125,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-123 | 2026-11-08 | decided (orchestrator, D-117) | The restricted-reads audit stays as it is: the runner stops naming the restricted dataset and takes the list of pinned datasets from the scorer's `--data-cutoff` output |
 | D-124 | 2026-11-10 | accepted (owner) | The real app uses the current 2026 season and week from Sleeper's state endpoint, cross-checked with the nflverse schedule; data refreshed through 2026 week 9; 2024 replays only in private test, labeled as test data; gated features stay on no approved model and show the 2026 context |
 | D-125 | 2026-11-10 | decided (orchestrator, D-117) | Candidate X = 071c3a4 (HEAD after D-121 to D-124; contains every required commit); the freeze is approved only on QA's full rehearsal at X and the Evaluator's pass |
+| D-126 | 2026-11-10 | decided (orchestrator, D-117) | F8: a season is skipped as not yet published only while none of its regular-season games is final; fixed now in ffml/data (allowed path, after X, hand-written change-log row with the Evaluator's verification); X stays 071c3a4 |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1145,6 +1146,21 @@ Decisions:
   approved model" in the real app, and those pages show the current 2026
   season and week as context. In private test they may show the 2024
   replay, labeled as test data and not approved.
+
+## D-126 Not-yet-published seasons only before any game is final (orchestrator under D-117, 2026-11-10)
+
+The Evaluator found (F8, 502b190) that D-122 opens a verdict path for 2027
+week 1. If a weekly stats file for 2027 is still unpublished after that
+week's data cutoff, the refresh would write stats tables with no 2027 rows,
+and the scorer would pin that snapshot. The rule is narrowed: a requested
+season is skipped as "not yet published" only while none of its
+regular-season games is final in the schedule loaded in the same refresh.
+Once any game is final, a missing season file fails the dataset as a gap,
+the refresh stops before writing processed snapshots, and the runner
+retries. `ffml/data/` is an allowed path, so the fix lands after X with a
+hand-written change-log row verified by the Evaluator. It changes no row of
+any published season and no committed week (none exists yet), so X stays
+071c3a4 and QA's rehearsal at X remains the freeze evidence.
 
 ## Owner answers received 2026-11-01
 
