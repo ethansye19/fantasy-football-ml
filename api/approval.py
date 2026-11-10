@@ -24,9 +24,11 @@ production
 private_test
     Serve, in this order: the private-test store's ``LATEST``
     (``Settings.private_predictions_dir``), a replay run (pinned with
-    ``FFML_API_REPLAY_RUN`` or the newest replay in the public or private
-    store), a fixture store (``FFML_API_FIXTURE_PREDICTIONS_DIR``). Every
-    result is labeled "not approved", whatever a manifest says.
+    ``FFML_API_REPLAY_RUN`` or the newest replay in the private store or its
+    test-only folder ``replays_test_only``; never the public store, D-124), a
+    fixture store (``FFML_API_FIXTURE_PREDICTIONS_DIR``). Every result is
+    labeled "not approved", whatever a manifest says, and replays and fixtures
+    also carry a "TEST DATA" label (:func:`test_data_label`).
 
 Manifests are read defensively: a missing ``approval_status`` counts as not
 approved.
@@ -84,6 +86,15 @@ SOURCE_REPLAY = "replay"
 SOURCE_FIXTURE = "fixture"
 
 
+def test_data_label(kind: str, season: int, week: int, is_replay: bool) -> str | None:
+    """The "TEST DATA" label of a replay or fixture run (D-124); None for any other run."""
+    if is_replay:
+        return f"TEST DATA: {season} week {week} replay, not approved, not a recommendation"
+    if kind == SOURCE_FIXTURE:
+        return "TEST DATA: fixture data, not approved, not a recommendation"
+    return None
+
+
 class SnapshotError(ValueError):
     """A predictions pointer or manifest is missing or malformed."""
 
@@ -121,6 +132,10 @@ class PredictionSource:
     def has_file(self, name: str) -> bool:
         return (self.path / name).is_file()
 
+    @property
+    def test_data_label(self) -> str | None:
+        return test_data_label(self.kind, self.season, self.week, self.is_replay)
+
     def describe(self) -> dict[str, Any]:
         files = self.manifest.get("files")
         return {
@@ -133,6 +148,7 @@ class PredictionSource:
             "n_sims": self.manifest.get("n_sims"),
             "is_replay": self.is_replay,
             "has_rest_of_season": isinstance(files, dict) and "ros_sims.parquet" in files,
+            "test_data_label": self.test_data_label,
         }
 
 
@@ -152,6 +168,13 @@ class ApprovalState:
     @property
     def label(self) -> str:
         return self.approval_status
+
+    @property
+    def test_data_label(self) -> str | None:
+        """The "TEST DATA: ..." label when a replay or fixture is served (D-124), else None."""
+        if not self.serving or self.source is None:
+            return None
+        return self.source.test_data_label
 
     @property
     def header_value(self) -> str:
@@ -181,6 +204,7 @@ class ApprovalState:
             "message": self.message,
             "checked_at": self.checked_at,
             "run": self.source.describe() if self.source is not None and self.serving else None,
+            "test_data_label": self.test_data_label,
         }
         if self.environment == PRODUCTION:
             out["live_model_version"] = self.live_model_version
@@ -403,12 +427,28 @@ def _pinned_replay(settings: ApiSettings) -> PredictionSource | None:
     if len(parts) != 3:
         log.warning("FFML_API_REPLAY_RUN must be <season>/<week>/<run_id>; got %r", spec)
         return None
-    for root in (settings.private_predictions_dir, settings.predictions_dir):
+    for root in replay_roots(settings):
         try:
-            return load_run(root, parts[0], parts[1], parts[2], SOURCE_REPLAY)
+            src = load_run(root, parts[0], parts[1], parts[2], SOURCE_REPLAY)
         except SnapshotError:
             continue
+        if src.is_replay:
+            return src
     return None
+
+
+def replay_roots(settings: ApiSettings) -> list[Path]:
+    """Where private test looks for replays: the private store and its test-only folder.
+
+    The public store is never one of them (D-124): a replay there is ignored, and
+    production never reads a replay from anywhere.
+    """
+    return [settings.private_predictions_dir, settings.test_replays_dir]
+
+
+def public_store_replays(settings: ApiSettings) -> list[PredictionSource]:
+    """Replay runs left in the public store (reported at startup; never served)."""
+    return find_replays([settings.predictions_dir])
 
 
 def _private_test(settings: ApiSettings) -> ApprovalState:
@@ -416,13 +456,7 @@ def _private_test(settings: ApiSettings) -> ApprovalState:
     candidates: list[tuple[str, Any]] = [
         ("private_test", lambda: load_latest(settings.private_predictions_dir, SOURCE_PRIVATE)),
         ("replay_pinned", lambda: _pinned_replay(settings)),
-        (
-            "replay",
-            lambda: next(
-                iter(find_replays([settings.private_predictions_dir, settings.predictions_dir])),
-                None,
-            ),
-        ),
+        ("replay", lambda: next(iter(find_replays(replay_roots(settings))), None)),
     ]
     if settings.api_fixture_predictions_dir is not None:
         fixture_root = Path(settings.api_fixture_predictions_dir)
@@ -505,4 +539,7 @@ __all__ = [
     "manifest_field",
     "manifest_has",
     "manifest_is_approved",
+    "public_store_replays",
+    "replay_roots",
+    "test_data_label",
 ]

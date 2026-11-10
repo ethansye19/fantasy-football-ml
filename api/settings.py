@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 
 PRODUCTION = "production"
 PRIVATE_TEST = "private_test"
+#: Folder of test-only replay runs inside the private store (D-124).
+TEST_REPLAYS_DIRNAME = "replays_test_only"
 AppEnv = Literal["production", "private_test"]
 
 
@@ -53,6 +55,14 @@ class ApiSettings(BaseSettings):
     # private_test only: optional extra sources (never read in production)
     api_fixture_predictions_dir: Path | None = None
     api_replay_run: str | None = None  # "<season>/<week>/<run_id>" pins one replay run
+    # private_test only: test-only replay runs (D-124); None = <private store>/replays_test_only
+    api_test_replays_dir: Path | None = None
+
+    # current season and week (D-124, api.services.season): Sleeper's state endpoint,
+    # cross-checked with the nflverse schedule; False = the schedule alone (tests opt in)
+    season_sleeper_enabled: bool = True
+    season_ttl_seconds: float = 180.0
+    season_sleeper_timeout_seconds: float = 5.0
 
     # interactive docs (/docs, /redoc, /openapi.json): None = private_test only (QA-F08)
     docs_enabled: bool | None = None
@@ -135,6 +145,13 @@ class ApiSettings(BaseSettings):
         return Path(value) if value is not None else settings.data_dir / "predictions_private"
 
     @property
+    def test_replays_dir(self) -> Path:
+        """Where private test reads test-only replays (never the public store, D-124)."""
+        if self.api_test_replays_dir is not None:
+            return Path(self.api_test_replays_dir)
+        return self.private_predictions_dir / TEST_REPLAYS_DIRNAME
+
+    @property
     def processed_dir(self) -> Path:
         return get_settings().processed_dir
 
@@ -161,6 +178,7 @@ def reset_api_settings_cache() -> None:
 __all__ = [
     "PRIVATE_TEST",
     "PRODUCTION",
+    "TEST_REPLAYS_DIRNAME",
     "ApiSettings",
     "get_api_settings",
     "reset_api_settings_cache",

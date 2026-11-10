@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import __version__
-from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate
+from api.approval import HEADER, HEADER_NOT_APPROVED, ApprovalGate, public_store_replays
 from api.db.session import Database
 from api.deps import SleeperHolder
 from api.errors import install_error_handlers
@@ -35,6 +35,31 @@ from ffml.data.sleeper import SleeperClient
 log = logging.getLogger(__name__)
 
 
+def report_test_sources(settings: ApiSettings) -> list[str]:
+    """Log test-only settings production ignores, and replays left in the public store (D-124)."""
+    notes: list[str] = []
+    if not settings.is_private_test:
+        for name, value in (
+            ("FFML_API_REPLAY_RUN", settings.api_replay_run),
+            ("FFML_API_FIXTURE_PREDICTIONS_DIR", settings.api_fixture_predictions_dir),
+            ("FFML_API_TEST_REPLAYS_DIR", settings.api_test_replays_dir),
+        ):
+            if value:
+                notes.append(f"{name} is set but ignored in production (private_test only)")
+    try:
+        stray = public_store_replays(settings)
+    except Exception:  # noqa: BLE001 - a startup report never blocks the API
+        stray = []
+    for src in stray:
+        notes.append(
+            f"replay {src.run_id} is in the public store {settings.predictions_dir}; it is never "
+            f"served there (move it to {settings.test_replays_dir})"
+        )
+    for note in notes:
+        log.warning(note)
+    return notes
+
+
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
     """Build the app. Tests pass their own settings; production reads the environment."""
     ensure_utf8()
@@ -43,6 +68,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("ffml api %s starting in %s mode", __version__, settings.app_env)
+        report_test_sources(settings)
         if settings.db_auto_migrate:
             app.state.db.migrate()
         try:
@@ -67,7 +93,16 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.players = DirectoryHolder(settings.processed_dir)
     app.state.sleeper_factory = SleeperClient
     app.state.sleeper = SleeperHolder()  # one client and token bucket per process (D-025)
-    app.state.season = SeasonService(settings.raw_dir)
+    app.state.season = SeasonService(
+        settings.raw_dir,
+        sleeper_state=(
+            (lambda: app.state.sleeper.get(app.state.sleeper_factory).get_state())
+            if settings.season_sleeper_enabled
+            else None
+        ),
+        ttl_seconds=settings.season_ttl_seconds,
+        sleeper_timeout_seconds=settings.season_sleeper_timeout_seconds,
+    )
     app.state.projections = ProjectionService(settings.scoring_cache_size)
     app.state.rate_limiter = limiter_from_settings(settings)
 

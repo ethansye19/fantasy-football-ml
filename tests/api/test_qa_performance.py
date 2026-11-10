@@ -1,8 +1,8 @@
 """QA-4.1 performance: projection routes warm under 300 ms on a real replay in private_test.
 
-Uses the newest local replay snapshot (``data/predictions*/season=*/week=*/run=*-replay``,
-567 entities x 2,000 simulations for 2024 weeks 10 and 11) copied into a temporary
-store, the real player directory from ``data/processed``, and a 10-team league built
+Uses the newest local replay snapshot (``data/predictions_private/season=*/week=*/run=*-replay``
+or the test-only folder ``data/predictions_private/replays_test_only/``, D-124; 567 entities x
+2,000 simulations for 2024 weeks 10 and 11) copied into a temporary test-only replay folder, the real player directory from ``data/processed``, and a 10-team league built
 from the replay's players. Skipped where no replay exists (CI); docs/SECURITY.md
 section 6 records a run. The timings are in-process (TestClient); the HTTP numbers
 through uvicorn are in the same section.
@@ -29,8 +29,9 @@ WARM_RUNS = 30
 
 def _newest_replay() -> Path | None:
     found = []
-    for store in ("predictions_private", "predictions"):
-        for manifest in (REPO / "data" / store).glob("season=*/week=*/run=*/_manifest.json"):
+    private = REPO / "data" / "predictions_private"
+    for store in (private, private / "replays_test_only"):
+        for manifest in store.glob("season=*/week=*/run=*/_manifest.json"):
             try:
                 m = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -84,7 +85,7 @@ def _timed(fn, runs: int) -> list[float]:
 
 def test_projection_routes_warm_under_300ms_on_a_real_replay(make_client, api_dirs):
     assert REPLAY is not None
-    target = api_dirs["predictions"] / REPLAY.parent.parent.name / REPLAY.parent.name / REPLAY.name
+    target = api_dirs["test_replays"] / REPLAY.parent.parent.name / REPLAY.parent.name / REPLAY.name
     shutil.copytree(REPLAY, target)
     client = make_client(app_env="private_test")
     client.app.state.players.set(PlayerDirectory.from_store(REPO / "data" / "processed"))

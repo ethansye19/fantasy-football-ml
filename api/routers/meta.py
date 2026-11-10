@@ -84,6 +84,7 @@ def run_info(request: Request) -> dict[str, Any]:
         "serving": state.serving,
         "approval_status": state.approval_status,
         "label": state.label,
+        "test_data_label": state.test_data_label,
         "run": run,
         "message": state.message,
     }
@@ -91,7 +92,7 @@ def run_info(request: Request) -> dict[str, Any]:
 
 @router.get("/season")
 def season(request: Request) -> dict[str, Any]:
-    """Season mode for the offseason banner (resolved from the schedule, not the calendar)."""
+    """Current season, week and season type: Sleeper, cross-checked with the schedule (D-124)."""
     return request.app.state.season.describe()
 
 

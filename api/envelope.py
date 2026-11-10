@@ -15,9 +15,12 @@ NO_GUARANTEES = (
 
 def notices(state: ApprovalState) -> list[str]:
     out: list[str] = []
+    src = state.source
+    label = src.test_data_label if src is not None else None
+    if label:  # replays and fixtures: "TEST DATA: ..." first (D-124)
+        out.append(label)
     if state.environment == PRIVATE_TEST:
         out.append(NOT_APPROVED_NOTICE)
-    src = state.source
     if src is not None and src.is_replay:
         out.append(
             f"Historical replay of {src.season} week {src.week}: the model only saw information "

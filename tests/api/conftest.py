@@ -44,12 +44,18 @@ def api_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[s
     monkeypatch.setenv("FFML_DATA_DIR", str(dirs["data"]))
     monkeypatch.setenv("FFML_ARTIFACTS_DIR", str(dirs["artifacts"]))
     monkeypatch.setenv("FFML_REPORTS_DIR", str(dirs["reports"]))
-    for name in ("FFML_APP_ENV", "FFML_API_FIXTURE_PREDICTIONS_DIR", "FFML_API_REPLAY_RUN"):
+    for name in (
+        "FFML_APP_ENV",
+        "FFML_API_FIXTURE_PREDICTIONS_DIR",
+        "FFML_API_REPLAY_RUN",
+        "FFML_API_TEST_REPLAYS_DIR",
+    ):
         monkeypatch.delenv(name, raising=False)
     reset_settings_cache()
     reset_api_settings_cache()
     dirs["predictions"] = dirs["data"] / "predictions"
     dirs["private"] = dirs["data"] / "predictions_private"
+    dirs["test_replays"] = dirs["private"] / "replays_test_only"  # D-124 test-only replays
     dirs["fixtures"] = tmp_path / "fixture_predictions"
     yield dirs
     reset_settings_cache()
@@ -74,6 +80,7 @@ def make_client(api_dirs: dict[str, Path]) -> Iterator[Callable[..., TestClient]
             "approval_ttl_seconds": 0,
             "database_url": url,
             "rate_limit_enabled": False,  # QA-F03 limiter: tests opt in explicitly
+            "season_sleeper_enabled": False,  # D-124: no Sleeper call unless a test opts in
         }
         values.update(overrides)
         client = TestClient(create_app(ApiSettings(**values)))

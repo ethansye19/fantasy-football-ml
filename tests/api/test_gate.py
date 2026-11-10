@@ -64,8 +64,11 @@ def test_production_ignores_private_replay_and_fixture_sources(make_client, api_
     write_registry(api_dirs["artifacts"], [live_entry()])
     write_snapshot(api_dirs["private"], labels=PRIVATE_LABELS)
     write_snapshot(api_dirs["predictions"], mode="replay", update_latest=False)
+    write_snapshot(api_dirs["test_replays"], week=11, mode="replay", update_latest=False)
     write_snapshot(api_dirs["fixtures"], labels=APPROVED_LABELS)
-    client = make_client(api_fixture_predictions_dir=api_dirs["fixtures"])
+    client = make_client(
+        api_fixture_predictions_dir=api_dirs["fixtures"], api_replay_run="2024/11/2024w11-test-replay"
+    )
     for method, template in ROUTES:
         _assert_blocked(call(client, method, template))
     assert client.get("/meta/approval").json()["reason"] == "no_latest"
@@ -268,7 +271,8 @@ def test_private_test_source_order(make_client, api_dirs):
     client = make_client(app_env="private_test", api_fixture_predictions_dir=api_dirs["fixtures"])
     assert client.get("/meta/approval").json()["run"]["source"] == "fixture"
 
-    write_snapshot(api_dirs["predictions"], run_id="old-replay", mode="replay", update_latest=False)
+    write_snapshot(api_dirs["test_replays"], run_id="old-replay", mode="replay",
+                   update_latest=False)
     assert client.get("/meta/approval").json()["run"]["source"] == "replay"
     assert client.get("/meta/approval").json()["run"]["run_id"] == "old-replay"
 
@@ -278,17 +282,35 @@ def test_private_test_source_order(make_client, api_dirs):
 
 
 def test_private_test_pinned_replay(make_client, api_dirs):
-    write_snapshot(api_dirs["predictions"], week=9, run_id="a-replay", mode="replay",
+    write_snapshot(api_dirs["test_replays"], week=9, run_id="a-replay", mode="replay",
                    update_latest=False)
-    write_snapshot(api_dirs["predictions"], week=10, run_id="b-replay", mode="replay",
+    write_snapshot(api_dirs["private"], week=10, run_id="b-replay", mode="replay",
                    update_latest=False)
     client = make_client(app_env="private_test", api_replay_run="2024/9/a-replay")
     run = client.get("/meta/approval").json()["run"]
     assert (run["source"], run["run_id"], run["week"]) == ("replay", "a-replay", 9)
 
 
+def test_private_test_never_reads_replays_from_the_public_store(make_client, api_dirs):
+    """D-124: the public store holds no replay; one left there is ignored, even when pinned."""
+    write_snapshot(api_dirs["predictions"], week=11, run_id="pub-replay", mode="replay",
+                   update_latest=False)
+    client = make_client(app_env="private_test")
+    r = client.get("/meta/approval").json()
+    assert r["serving"] is False and r["reason"] == "no_private_test_snapshot"
+    pinned = make_client(app_env="private_test", api_replay_run="2024/11/pub-replay")
+    assert pinned.get("/meta/approval").json()["serving"] is False
+
+
+def test_pinned_run_must_be_a_replay(make_client, api_dirs):
+    write_snapshot(api_dirs["test_replays"], week=9, run_id="plain-run", labels=PRIVATE_LABELS,
+                   update_latest=False)
+    client = make_client(app_env="private_test", api_replay_run="2024/9/plain-run")
+    assert client.get("/meta/approval").json()["serving"] is False
+
+
 def test_private_test_ignores_published_latest(make_client, api_dirs):
-    """private_test reads replays from the public store but never its LATEST live run."""
+    """private_test never reads the public store, its LATEST live run included."""
     write_registry(api_dirs["artifacts"], [live_entry()])
     _published(api_dirs)
     client = make_client(app_env="private_test")

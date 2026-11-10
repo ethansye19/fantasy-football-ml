@@ -215,15 +215,18 @@ def test_warm_projections_under_300ms(env):
     assert sorted(times)[2] < 0.3, times
 
 
-REPLAY = Path(__file__).resolve().parents[2] / "data" / "predictions" / "season=2024" / "week=10"
+REPLAY = (
+    Path(__file__).resolve().parents[2]
+    / "data" / "predictions_private" / "replays_test_only" / "season=2024" / "week=10"
+)
 
 
 @pytest.mark.skipif(not REPLAY.is_dir(), reason="no local 2024 week 10 replay snapshot")
 def test_warm_projections_under_300ms_on_real_replay(make_client, api_dirs):
-    """The real 2024 week 10 replay (567 entities x 2,000 simulations)."""
+    """The real 2024 week 10 replay (567 entities x 2,000 simulations), test-only (D-124)."""
     import shutil
 
-    target = api_dirs["predictions"] / "season=2024" / "week=10"
+    target = api_dirs["test_replays"] / "season=2024" / "week=10"
     shutil.copytree(REPLAY, target)
     client = make_client(app_env="private_test")
     assert client.get("/meta/approval").json()["run"]["source"] == "replay"
