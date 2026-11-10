@@ -690,3 +690,71 @@ The hash, ancestry, CLI and integrity-check evidence above was produced by direc
 - F5-F7 are wording.
 
 None of them needs a change to frozen code, so X = 2872d13 can stand. The freeze line follows Part 2.
+
+### Candidate X = 071c3a4 (D-125): audit, 12e2faa and 891f56a (EV-4.10, 2026-11-10)
+
+**Frozen paths since the earlier candidate.** `git diff --name-only 2872d13 071c3a4` touches these frozen paths only:
+- `ffml/eval/livetest_score.py`: my D-121 (686fbb5) and `pinned_datasets` (f5a2ff2) commits;
+- `ffml/sim/predict.py`: 12e2faa.
+
+The D-124 app work (`api/`, `web/`, docs) and D-122 (`ffml/data/`) are on allowed paths. Part 1's F1/F2 went to D-120,
+F3-F7 to 1943195, R1/R3 to b31a11e and d9e8b79, and R2 to D-121 (686fbb5). Part 2 re-reads the pre-registration at X.
+
+**Inputs audit at X: passes (D-123).**
+- `pytest tests/eval/test_inputs_audit.py` gives 8 passed on a clean export of 071c3a4 (`git archive`, run with that
+  tree's `ffml`). It also gives 8 passed in the main checkout.
+- No file under `scripts/` names the restricted dataset any more: the runner reads `pinned_datasets` from
+  `--data-cutoff`.
+- The audit itself is unchanged.
+
+**12e2faa (replays default to `data/predictions_private/replays_test_only`): cannot change a commitment or a
+verdict.**
+- The new branch runs only when `replay=True` and no `root` is given. It changes the directory written to, nothing
+  that is computed.
+- Every call site:
+  - The build (`ffml/sim/livetest.py` `build_week`) calls `run_predict(private_test=True, ...)`, which sets
+    `root = private_store(rehearsal)`. `run_predict` refuses `replay` together with `private_test`.
+  - `ffml/cli.py` never passes `replay`.
+  - The scorer, the comparators run and the walk-forward history (`recompute_week`) do not call `run_predict`.
+- So no commitment's rows, files, paths or hashes change, and nothing the scorer reads changes.
+- `tests/sim/test_predict.py -k replay`: 3 passed.
+
+**891f56a (D-122: skip a newest season that is not published yet).**
+- *What changed.* Only the `SeasonNotAvailable` branch of `ingest_dataset` is new. A missing season that is newer than
+  every season in the dataset's LATEST manifest (`seasons`) and every season loaded in this run is now skipped. It is
+  recorded as `not_yet_published` and is not a D-028 gap. A later season loading after the skip still fails as a
+  gap. Published seasons load exactly as before. `tests/data -k publish`: 3 passed.
+- *Commitments.* The new branch fires only when a requested season has no file upstream. That never happens for the
+  2026 weeks: the runner requests `first_season`-2026, all published. From 2027 week 1 the refresh now succeeds with
+  exactly the published data, where the old code failed and the runbook's manual per-dataset workaround produced the
+  same seasons. No row of a published season changes, so I confirm it cannot change a commitment beyond what the
+  documented procedure already produced.
+- *Verdict: one new path, F8 below.*
+
+**F8. D-122 can let 2027 week 1 be scored against a snapshot without 2027 stats. Fix before 2027 week 1 is scored
+(about 2027-09-17); not a blocker for this freeze.**
+
+How it happens:
+1. Before D-122, a requested season with no file upstream failed the ingest step. `run_refresh` stops at the first
+   failed step, so no processed snapshot was written, and the scorer waited (exit 4).
+2. With D-122, suppose the 2027 player or team stats file is still not published at the refresh after 2027 week 1's
+   data cutoff (at least 72 h after the Monday game; nflverse is usually hours late, not days). The refresh then
+   succeeds and writes `fact_player_game` / `fact_dst_game` without 2027 rows.
+3. `choose_week_pins` pins the first `dim_game` snapshot at or after the cutoff in which the week is final. The
+   schedule is final, so it pins this snapshot.
+4. `join_outcomes` gives every row `actual` null and `active` False, and nothing in the scorer checks that the
+   week's outcomes exist. Because the pins are fixed, the week is either refused against the same pins on every
+   retry, or sealed against empty outcomes.
+
+It can only happen in the first scored week of a season, because once a 2027 file is published a later missing 2027
+is a gap again. It is rare, but it lands on a binding week. Options:
+- (a) In `ffml/data/` (allowed path): skip a season as "not yet published" only while no regular-season game of that
+  season is final in the schedule. After that the old failure returns.
+- (b) In the runner (`scripts/`): the Friday scoring refresh requires the scored week's season for the stats
+  datasets. This needs a flag from (a)'s module.
+- (c) In the scorer (frozen; a new X and a new rehearsal): treat "no outcome rows for the week in the pinned
+  snapshots" as not final yet, and pin a later snapshot.
+
+I recommend (a), logged in the change log under the `ffml/data/` rule. The recomputed feature rows of committed
+weeks stay byte-identical, because the change can only make an ingest fail. It must land before 2027 week 1's cutoff.
+Until then nothing can trigger it.
