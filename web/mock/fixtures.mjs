@@ -22,6 +22,7 @@ export const FIXTURE_RUN = {
   n_sims: 2000,
   is_replay: false,
   has_rest_of_season: true,
+  test_data_label: "TEST DATA: fixture data, not approved, not a recommendation",
 };
 
 export const REMAINING_WEEKS = [10, 11, 12, 13, 14, 15, 16, 17, 18];

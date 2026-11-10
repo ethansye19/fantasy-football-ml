@@ -1,5 +1,5 @@
 /**
- * Types for the API contract in docs/API.md (contract v1, 2026-11-04).
+ * Types for the API contract in docs/API.md (contract v1.5, 2026-11-10).
  *
  * Field names follow the JSON exactly. Optional (`?`) marks fields the
  * contract lists as absent in some cases or that belong to planned endpoints
@@ -30,6 +30,8 @@ export interface RunInfo {
   n_sims: number;
   is_replay: boolean;
   has_rest_of_season: boolean;
+  /** "TEST DATA: <season> week <week> replay, not approved, not a recommendation" for replays and fixtures (v1.5, D-124). */
+  test_data_label?: string | null;
 }
 
 /** Fields at the top of every projection-derived response (section 3.4). */
@@ -86,6 +88,8 @@ export interface ApprovalResponse {
   message: string;
   checked_at: string;
   run: RunInfo | null;
+  /** Set when a replay or fixture is served (private test only, v1.5). */
+  test_data_label?: string | null;
   live_model_version?: string | null;
 }
 
@@ -144,13 +148,42 @@ export interface RunInfoResponse {
   approval_status: ApprovalStatus;
   label: string;
   run: (RunInfo & Record<string, unknown>) | null;
+  test_data_label?: string | null;
   message: string;
 }
 
 export type SeasonMode = "regular" | "postseason" | "offseason" | "unknown";
 
+export type SeasonType = "preseason" | "regular" | "postseason" | "offseason" | "unknown";
+
+/** Where the season and week came from (v1.5, D-124). */
+export type SeasonSource = "sleeper" | "schedule" | "none";
+
+export type CrossCheckStatus = "agree" | "disagree" | "sleeper_unavailable" | "schedule_unavailable" | "unavailable";
+
+export interface SeasonCrossCheck {
+  status: CrossCheckStatus;
+  differences: string[];
+  message: string;
+  sleeper: { season: number; season_type: string; week: number | null; display_week?: number | null; raw_season_type?: string | null } | null;
+  schedule: {
+    season: number;
+    season_type: string;
+    week: number | null;
+    week_in_progress?: boolean;
+    last_completed_week?: number | null;
+    games_final?: number | null;
+    games_total?: number | null;
+    snapshot_id?: string | null;
+  } | null;
+  sleeper_error?: string;
+}
+
 export interface SeasonResponse {
   season: number | null;
+  /** Current week in the regular season (v1.5); null otherwise. */
+  week?: number | null;
+  season_type?: SeasonType;
   mode: SeasonMode;
   projection_week: number | null;
   week_in_progress: boolean;
@@ -159,7 +192,10 @@ export interface SeasonResponse {
   /** True in the postseason and offseason, false in the regular season, null when the mode is unknown (v1.3). */
   offseason: boolean | null;
   banner: string | null;
+  /** v1.5: "sleeper" when Sleeper and the schedule agree (or the schedule is missing), "schedule" otherwise. */
+  source?: SeasonSource;
   as_of: string;
+  cross_check?: SeasonCrossCheck;
 }
 
 /* ------------------------------------------------------------------ */

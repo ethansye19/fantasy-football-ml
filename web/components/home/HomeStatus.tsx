@@ -5,6 +5,7 @@ import { useStatus } from "@/components/status/StatusProvider";
 import type { ApprovalMode } from "@/components/status/approval-mode";
 import { useLeague } from "@/lib/league";
 import { NAV_ITEMS } from "@/lib/nav";
+import { seasonLabel } from "@/lib/season";
 
 function projectionChip(mode: ApprovalMode): { text: string; className: string } {
   switch (mode.kind) {
@@ -71,14 +72,8 @@ export function StatusSummary() {
 
   let seasonText = "Season status unavailable.";
   if (season) {
-    const year = season.season ? `${season.season} ` : "";
-    if (season.mode === "regular" && season.projection_week) {
-      seasonText = `${year}season, week ${season.projection_week}${season.week_in_progress ? " (in progress)" : ""}.`;
-    } else if (season.mode === "unknown" || season.mode === "regular") {
-      seasonText = "Schedule not loaded yet.";
-    } else {
-      seasonText = `${year}${season.mode}.`;
-    }
+    const label = seasonLabel(season);
+    seasonText = label ? `${label}.` : "Schedule not loaded yet.";
   }
 
   let leagueText = "No league yet.";

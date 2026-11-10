@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useStatus } from "./StatusProvider";
+import { testDataLabel } from "@/lib/season";
 import { NotApprovedPill } from "./NotApprovedPill";
+import { TestDataLabel } from "./TestDataLabel";
 
 /** Split "First sentence. The rest" so the first sentence can be bold. */
 export function splitLead(message: string): { lead: string; rest: string } {
@@ -21,6 +23,7 @@ export function ApprovalBanner() {
   if (approval.kind === "loading" || approval.kind === "approved") return null;
 
   if (approval.kind === "not_approved") {
+    const testData = approval.serving ? testDataLabel(approval.run) : null;
     return (
       <div
         role="region"
@@ -45,6 +48,7 @@ export function ApprovalBanner() {
           >
             Model status
           </Link>
+          {testData ? <TestDataLabel label={testData} className="order-4 basis-full" /> : null}
         </div>
       </div>
     );

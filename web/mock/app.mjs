@@ -108,7 +108,7 @@ export function createMockApi(options = {}) {
       label: "not approved",
       environment: "private_test",
       run: FIXTURE_RUN,
-      notices: [NOT_APPROVED_NOTICE, FIXTURE_NOTICE],
+      notices: [FIXTURE_RUN.test_data_label, NOT_APPROVED_NOTICE, FIXTURE_NOTICE],
       ...payload,
     };
   }
@@ -503,16 +503,29 @@ export function createMockApi(options = {}) {
 
   function seasonBody() {
     const m = opts.seasonMode;
+    const season = m === "unknown" ? null : 2026;
+    const week = m === "regular" ? 10 : null;
+    const view = season === null ? null : { season, season_type: m, week };
     return {
-      season: m === "unknown" ? null : 2026,
+      season,
+      week,
+      season_type: m,
       mode: m,
-      projection_week: m === "regular" ? 10 : null,
+      projection_week: week,
       week_in_progress: false,
       last_completed_week: m === "regular" ? 9 : null,
       next_kickoff_utc: m === "regular" ? "2026-11-13T01:15:00Z" : null,
       offseason: m === "unknown" ? null : m !== "regular",
       banner: m === "regular" ? null : m === "offseason" ? "Offseason: weekly features are paused; rankings are season-level." : "Postseason: weekly features are paused; rankings are season-level.",
+      source: view ? "sleeper" : "none",
       as_of: new Date().toISOString(),
+      cross_check: {
+        status: view ? "agree" : "unavailable",
+        differences: [],
+        message: view ? "Sleeper and the nflverse schedule agree." : "Neither Sleeper nor the nflverse schedule is available.",
+        sleeper: view ? { ...view, display_week: week, raw_season_type: m === "postseason" ? "post" : m === "offseason" ? "off" : "regular" } : null,
+        schedule: view ? { ...view, week_in_progress: false, last_completed_week: m === "regular" ? 9 : null, games_final: 140, games_total: 272, snapshot_id: "20261110T000000Z" } : null,
+      },
     };
   }
 
@@ -527,6 +540,7 @@ export function createMockApi(options = {}) {
       message: privateTest ? (opts.snapshot ? NOT_APPROVED_NOTICE : NO_PRIVATE_SNAPSHOT_MESSAGE) : NO_APPROVED_MODEL_MESSAGE,
       checked_at: new Date().toISOString(),
       run: serving ? FIXTURE_RUN : null,
+      test_data_label: serving ? FIXTURE_RUN.test_data_label : null,
     };
     if (!privateTest) body.live_model_version = null;
     return body;
@@ -556,7 +570,7 @@ export function createMockApi(options = {}) {
       }
       if (b === "run-info" && opts.planned) {
         const ap = approvalBody();
-        return { status: 200, body: { environment: mode, serving, approval_status: "not approved", label: "not approved", run: serving ? { ...FIXTURE_RUN, seeds: [1, 2], as_of: FIXTURE_RUN.written_at, rest_of_season_weeks: REMAINING_WEEKS } : null, message: ap.message } };
+        return { status: 200, body: { environment: mode, serving, approval_status: "not approved", label: "not approved", run: serving ? { ...FIXTURE_RUN, seeds: [1, 2], as_of: FIXTURE_RUN.written_at, rest_of_season_weeks: REMAINING_WEEKS } : null, test_data_label: ap.test_data_label, message: ap.message } };
       }
       return err(404, "not_found", "Not Found");
     }

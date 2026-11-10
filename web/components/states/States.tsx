@@ -86,7 +86,7 @@ export function UnreachableState({ message, onRetry }: { message: string; onRetr
  * Production without an approved model. A calm, expected state, not an
  * error: projection features are intentionally off (D-097, D-099).
  */
-export function NoApprovedModelState({ message, feature }: { message: string; feature?: string }) {
+export function NoApprovedModelState({ message, feature, season }: { message: string; feature?: string; season?: string | null }) {
   return (
     <StatePanel
       title="No approved model"
@@ -104,6 +104,12 @@ export function NoApprovedModelState({ message, feature }: { message: string; fe
       }
     >
       <p>{message}</p>
+      {season ? (
+        <p data-testid="gated-season-context">
+          Current week: <strong>{season}</strong>. Nothing is projected for it here until a model passes its
+          pre-registered test.
+        </p>
+      ) : null}
       <p>
         {feature ? `${feature} ` : "This view "}
         uses model projections, so it stays off until a model passes its pre-registered test. The most recent

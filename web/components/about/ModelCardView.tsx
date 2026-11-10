@@ -120,7 +120,6 @@ export function ModelCardView() {
               <thead>
                 <tr>
                   <th scope="col">Model</th>
-                  <th scope="col">Version</th>
                   <th scope="col">Status</th>
                   <th scope="col">Created</th>
                 </tr>
@@ -129,7 +128,6 @@ export function ModelCardView() {
                 {data.models.map((m) => (
                   <tr key={`${m.name}-${m.version}`}>
                     <td>{m.name ?? "Unnamed"}</td>
-                    <td className="break-all font-mono text-xs">{m.version ?? "n/a"}</td>
                     <td>{registryStatusLabel(m.registry_status, m.serving === true)}</td>
                     <td className="num whitespace-nowrap">{m.created_at ? m.created_at.slice(0, 10) : "n/a"}</td>
                   </tr>

@@ -58,6 +58,38 @@ export async function importLeagueViaUi(page: Page, t: Target): Promise<void> {
   await expect(page.getByTestId("import-done")).toBeVisible();
 }
 
+/** Every page of the app (D-124 checks: production shows the current season and never 2024). */
+export const ALL_PAGES = [
+  { path: "/", ready: "approval-banner" },
+  { path: "/setup", ready: "approval-banner" },
+  { path: "/projections", ready: "no-approved-model" },
+  { path: "/start-sit", ready: "no-approved-model" },
+  { path: "/waivers", ready: "no-approved-model" },
+  { path: "/trade", ready: "no-approved-model" },
+  { path: "/rankings", ready: "no-approved-model" },
+  { path: "/about", ready: "approval-banner" },
+  { path: "/about/model-card", ready: "model-status" },
+  { path: "/about/limitations", ready: "model-limitations" },
+  { path: "/about/attribution", ready: "source-nflverse" },
+] as const;
+
+/** Production page check (D-124): the current season (2026) is shown and "2024" appears nowhere. */
+export async function expectCurrentSeasonOnly(page: Page, season = "2026"): Promise<void> {
+  await expect(page.getByTestId("season-context")).toContainText(`${season} `);
+  await page.waitForLoadState("networkidle");
+  const text = await page.locator("body").innerText();
+  expect(text, "the page shows the current season").toContain(season);
+  expect(text, "no 2024 anywhere in production").not.toMatch(/2024/);
+}
+
+/** "TEST DATA: <season> week <week> replay, not approved, not a recommendation" (API v1.5). */
+export function expectedTestDataLabel(run: { source: string; season: number; week: number; is_replay: boolean } | null): string | null {
+  if (!run) return null;
+  if (run.is_replay) return `TEST DATA: ${run.season} week ${run.week} replay, not approved, not a recommendation`;
+  if (run.source === "fixture") return "TEST DATA: fixture data, not approved, not a recommendation";
+  return null;
+}
+
 export const PROJECTION_PAGES = [
   { path: "/projections", heading: "Weekly projections" },
   { path: "/start-sit", heading: "Start/sit" },

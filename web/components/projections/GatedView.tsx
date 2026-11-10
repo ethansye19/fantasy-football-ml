@@ -12,6 +12,7 @@ import {
 import { useStatus } from "@/components/status/StatusProvider";
 import type { League, LeagueTeam } from "@/lib/api/types";
 import { useLeague } from "@/lib/league";
+import { seasonLabel } from "@/lib/season";
 
 /**
  * Wraps every projection-derived view. Production without an approved model
@@ -29,11 +30,13 @@ export function GatedView({
   league?: "none" | "optional" | "required" | "team";
   children: (ctx: { league: League | null; myTeam: LeagueTeam | null }) => ReactNode;
 }) {
-  const { approval } = useStatus();
+  const { approval, season } = useStatus();
   const { hydrated, leagueId, league, myTeam, result, loading, reload } = useLeague();
 
   if (approval.kind === "loading") return <LoadingState label="Checking the model status" />;
-  if (approval.kind === "no_approved_model") return <NoApprovedModelState message={approval.message} feature={feature} />;
+  if (approval.kind === "no_approved_model") {
+    return <NoApprovedModelState message={approval.message} feature={feature} season={seasonLabel(season)} />;
+  }
   if (approval.kind === "not_approved" && !approval.serving && approval.reason === "no_private_test_snapshot") {
     return <NoPrivateSnapshotState message={approval.message} label={approval.label} />;
   }

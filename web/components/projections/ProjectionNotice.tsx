@@ -1,9 +1,11 @@
 "use client";
 
 import { NotApprovedPill } from "@/components/status/NotApprovedPill";
+import { TestDataLabel } from "@/components/status/TestDataLabel";
 import type { ApprovalObservation } from "@/lib/api/result";
 import type { RunInfo } from "@/lib/api/types";
 import { shortDate } from "@/lib/format";
+import { testDataLabel } from "@/lib/season";
 
 const SOURCE_LABEL: Record<string, string> = {
   published: "Published run",
@@ -46,9 +48,11 @@ export function ProjectionNotice({ approval }: { approval: ApprovalObservation |
     ) : null;
   }
 
-  const notices = a.notices.length
+  const testData = testDataLabel(a.run);
+  const notices = (a.notices.length
     ? a.notices
-    : ["Not approved: these numbers come from a model that has not passed its pre-registered test. Private test environment only; not a recommendation."];
+    : ["Not approved: these numbers come from a model that has not passed its pre-registered test. Private test environment only; not a recommendation."]
+  ).filter((n) => n !== testData);
 
   return (
     <section
@@ -61,6 +65,7 @@ export function ProjectionNotice({ approval }: { approval: ApprovalObservation |
         <NotApprovedPill label={a.label} />
         <p className="text-sm font-semibold">Private test environment only, not a recommendation.</p>
       </div>
+      {testData ? <TestDataLabel label={testData} className="mt-2" /> : null}
       <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
         {notices.map((n) => (
           <li key={n}>{n}</li>

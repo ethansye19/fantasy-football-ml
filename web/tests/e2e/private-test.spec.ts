@@ -1,6 +1,14 @@
 /** Private test rules (D-099): labeled "not approved" data, notices on every view. */
 import { expect, test, type Page } from "@playwright/test";
-import { expectCopyRules, importLeagueViaUi, resetMock, target } from "./helpers";
+import { expectCopyRules, expectedTestDataLabel, importLeagueViaUi, resetMock, target } from "./helpers";
+
+/** The served run's "TEST DATA" label (replays and fixtures), or null for a private-test run. */
+async function servedTestDataLabel(page: Page): Promise<string | null> {
+  const body = await (await page.request.get("/api/meta/approval")).json();
+  const expected = expectedTestDataLabel(body.run);
+  expect(body.test_data_label ?? null, "the API labels test data").toBe(expected);
+  return expected;
+}
 
 async function expectNotApprovedView(page: Page) {
   const notice = page.getByTestId("projection-notice");
@@ -8,6 +16,9 @@ async function expectNotApprovedView(page: Page) {
   await expect(notice).toHaveAttribute("data-approval", "not-approved");
   await expect(notice.getByTestId("not-approved-label")).toBeVisible();
   await expect(notice).toContainText(/not a recommendation/i);
+  const label = await servedTestDataLabel(page);
+  if (label) await expect(notice.getByTestId("test-data-label")).toHaveText(label);
+  else await expect(notice.getByTestId("test-data-label")).toHaveCount(0);
   await expectCopyRules(page);
 }
 
@@ -20,6 +31,27 @@ test("the global banner is a persistent 'not approved' label", async ({ page }) 
   // sticky: still on screen after scrolling
   await page.mouse.wheel(0, 1500);
   await expect(banner).toBeInViewport();
+});
+
+test("a replay is labeled TEST DATA next to the not-approved label (D-124)", async ({ page }, info) => {
+  const label = await servedTestDataLabel(page);
+  const body = await (await page.request.get("/api/meta/approval")).json();
+  if (target(info).target === "real" && body.run?.is_replay) {
+    expect(label).toBe(`TEST DATA: ${body.run.season} week ${body.run.week} replay, not approved, not a recommendation`);
+  }
+  await page.goto("/");
+  const banner = page.getByTestId("approval-banner");
+  await expect(banner.getByTestId("not-approved-label")).toBeVisible();
+  if (label) await expect(banner.getByTestId("test-data-label")).toHaveText(label);
+  // the live season is still the context, whatever season the test data is from
+  await expect(page.getByTestId("season-context")).toContainText("2026");
+  await page.goto("/projections");
+  await expect(page.getByTestId("projections-table")).toBeVisible();
+  if (label) {
+    await expect(page.getByTestId("projection-notice").getByTestId("test-data-label")).toHaveText(label);
+    const res = await page.request.get("/api/projections?scoring=ppr&limit=5");
+    expect((await res.json()).notices[0]).toBe(label);
+  }
 });
 
 test("every response is labeled not-approved", async ({ request }) => {

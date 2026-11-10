@@ -6,6 +6,7 @@ import { SiteFooter } from "@/components/shell/SiteFooter";
 import { SiteHeader } from "@/components/shell/SiteHeader";
 import { ApprovalBanner } from "@/components/status/ApprovalBanner";
 import { SeasonBanner } from "@/components/status/SeasonBanner";
+import { SeasonContext } from "@/components/status/SeasonContext";
 import { StatusProvider } from "@/components/status/StatusProvider";
 import { LeagueProvider } from "@/lib/league";
 import { APP_NAME } from "@/lib/nav";
@@ -49,6 +50,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <ErrorBoundary name="banners">
               <ApprovalBanner />
               <SeasonBanner />
+              <SeasonContext />
             </ErrorBoundary>
             <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 outline-none sm:py-8">
               {children}
