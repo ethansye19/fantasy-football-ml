@@ -611,10 +611,25 @@ def test_score_week_refreshes_only_without_a_snapshot_at_or_after_the_cutoff(env
     assert env.main_(env.argv("score-week", late, week=None), deps) == runner.EXIT_RETRY
     assert len(refreshes) == len(runner.REFRESH_STEPS)
     assert '"lacking": ["fact_player_game", "fact_dst_game", "restricted/fact_ecr_weekly"]' in env.logs()
-    # the scorer's own list of pinned datasets is the runner's
+    # D-123: the runner checks exactly the datasets the scorer reports, and keeps no list of its own
     score = pytest.importorskip("ffml.eval.livetest_score")
-    theirs = tuple(n if tier == "processed" else f"restricted/{n}" for tier, n in score.PINNED_DATASETS)
-    assert theirs == runner.PINNED_DATASETS
+    theirs = [d["path"] for d in score.pinned_dataset_list()]
+    read = [json.loads(line) for line in env.logs().splitlines() if '"status": "cutoff read"' in line]
+    assert read and all(r["pinned_datasets"] == theirs for r in read)
+    assert not hasattr(runner, "PINNED_DATASETS")
+
+
+def test_score_week_refuses_without_the_scorers_pinned_datasets(env, monkeypatch):
+    """D-123: no pinned_datasets in --data-cutoff: refuse, never fall back to a list of the runner's own."""
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK
+    env.mark_final(10)
+    for value in ("omit", "[]", '[{"tier": "processed"}]', '[{"path": "../outside"}]'):
+        monkeypatch.setenv("FFML_STUB_PINNED_DATASETS", value)
+        code = env.main_(env.argv("score-week", CUTOFF10 + timedelta(hours=1), "--skip-refresh", week=None))
+        assert code == runner.EXIT_REFUSED, value
+        assert env.alerts()[-1]["kind"] == "scoring_failure" and "pinned_datasets" in env.alerts()[-1]["message"]
+    assert env.scorer_calls("--week") == [] and env.remote_blob("2026w10/sealed_hashes.json") is None
+    assert runner.pinned_paths_from({"pinned_datasets": [{"path": "dim_game"}, {"path": "a/b"}]}) == ["dim_game", "a/b"]
 
 
 def _cutoff(week: int) -> datetime:

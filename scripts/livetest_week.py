@@ -117,8 +117,6 @@ SCORER_MODULE = "ffml.eval.livetest_score"
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000  # Windows; the scorer runs above normal priority (A7)
 PREBUILD_BLOCKED = 5  # scorer --prebuild-check exit code for "blocked"
 SCORER_NOT_YET = 4  # scorer exit code for "not yet, retry" (no alert)
-#: the datasets the scorer pins (ffml.eval.livetest_score.PINNED_DATASETS), as paths under data/processed
-PINNED_DATASETS: tuple[str, ...] = ("dim_game", "fact_player_game", "fact_dst_game", "restricted/fact_ecr_weekly")
 MAX_SCORE_REFRESHES = 2  # refreshes per week and pin point (R1: a straddling refresh is repeated once)
 
 
@@ -1858,8 +1856,28 @@ def week_is_final(cfg: Config, wk: core.WeekKickoff) -> tuple[bool, list[str]]:
 
 
 
-def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> tuple[datetime, datetime | None] | None:
-    """``(cutoff, exclusion_after)`` from ``--data-cutoff`` (A3, D-121); ``None`` on "not yet" (exit 4)."""
+def pinned_paths_from(result: dict[str, Any] | None) -> list[str] | None:
+    """The scorer's ``pinned_datasets`` as paths relative to ``data/processed`` (D-123); ``None`` if absent or invalid.
+
+    The runner keeps no list of its own: the scorer owns which datasets it pins.
+    """
+    items = (result or {}).get("pinned_datasets")
+    if not isinstance(items, list) or not items:
+        return None
+    paths = []
+    for item in items:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            return None
+        clean = path.strip().replace("\\", "/")
+        if clean.startswith("/") or ".." in clean.split("/"):
+            return None
+        paths.append(clean)
+    return paths
+
+
+def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> tuple[datetime, datetime | None, list[str]] | None:
+    """``(cutoff, exclusion_after, pinned paths)`` from ``--data-cutoff`` (A3, D-121, D-123); ``None`` on exit 4."""
     code, out, err = run_scorer(run, ["--data-cutoff", wk.key], timeout_minutes=10)
     result = parse_json_output(out)
     run.log.event("score", "data cutoff", week=wk.key, returncode=code, result=result, stderr_tail=_tail(err, 400))
@@ -1891,9 +1909,14 @@ def data_cutoff_for(run: Run, wk: core.WeekKickoff) -> tuple[datetime, datetime 
             exclusion_after = core.parse_time(raw_exclusion)
         except ValueError:
             exclusion_after = None
+    pinned = pinned_paths_from(result)
+    if pinned is None:
+        raise run.abort(EXIT_REFUSED, "score", f"{wk.key}: the scorer's --data-cutoff output has no valid "
+                        "pinned_datasets; refusing to guess which datasets the scorer pins (D-123)",
+                        alert_kind="scoring_failure", key=f"{wk.key}:pinned")
     run.log.event("score", "cutoff read", week=wk.key, data_cutoff=core.iso(cutoff),
-                  exclusion_after=core.iso(exclusion_after) if exclusion_after else None)
-    return cutoff, exclusion_after
+                  exclusion_after=core.iso(exclusion_after) if exclusion_after else None, pinned_datasets=pinned)
+    return cutoff, exclusion_after, pinned
 
 
 def _snapshot_time(snapshot_id: str) -> datetime | None:
@@ -1903,10 +1926,10 @@ def _snapshot_time(snapshot_id: str) -> datetime | None:
         return None
 
 
-def pinned_coverage(cfg: Config, at: datetime) -> dict[str, str | None]:
+def pinned_coverage(cfg: Config, at: datetime, datasets: list[str]) -> dict[str, str | None]:
     """For each dataset the scorer pins, the first snapshot taken at or after ``at`` (``None``: none yet)."""
     out: dict[str, str | None] = {}
-    for name in PINNED_DATASETS:
+    for name in datasets:
         root = cfg.data_dir / "processed" / name
         ids = sorted(p.name.split("=", 1)[1] for p in root.glob("snapshot=*") if p.is_dir()) if root.is_dir() else []
         timed = sorted((t, sid) for sid in ids if (t := _snapshot_time(sid)) is not None)
@@ -1947,7 +1970,7 @@ def score_one(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> i
     if got is None:
         run.log.event("score", "not yet", week=key, message="the scorer's --data-cutoff exited 4; retry later")
         return EXIT_RETRY
-    cutoff, exclusion_after = got
+    cutoff, exclusion_after, pinned = got
     now = run.now()
     if now < cutoff:
         run.log.event("score", "before the data cutoff", week=key, data_cutoff=core.iso(cutoff),
@@ -1957,7 +1980,7 @@ def score_one(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> i
     past_exclusion = exclusion_after is not None and now >= exclusion_after
     pin_point = exclusion_after if (not final and past_exclusion) else cutoff
     state = load_state(cfg, wk)
-    coverage = pinned_coverage(cfg, pin_point)
+    coverage = pinned_coverage(cfg, pin_point, pinned)
     lacking = [name for name, sid in coverage.items() if sid is None]
     refreshes = state.setdefault("score_refreshes", {})
     if cfg.skip_refresh:
@@ -2041,6 +2064,8 @@ def score_week(run: Run) -> int:
     codes = set(results.values())
     if EXIT_INTEGRITY in codes:
         return EXIT_INTEGRITY
+    if EXIT_REFUSED in codes:
+        return EXIT_REFUSED
     return EXIT_OK if codes <= {EXIT_OK} else EXIT_RETRY
 
 
