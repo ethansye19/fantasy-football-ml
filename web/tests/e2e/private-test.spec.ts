@@ -81,6 +81,8 @@ test.describe("projection views with a league", () => {
     await expect(firstK.getByTestId("boom-bust").last()).toHaveAttribute("data-confidence", "low");
 
     await page.getByRole("group", { name: "Position" }).getByRole("button", { name: "All", exact: true }).click();
+    // the K table stays on screen while "All" loads; wait for it, or "Why" opens a kicker's row
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
     await page.getByRole("button", { name: /^Why/ }).first().click();
     await expect(page.getByTestId("drivers").first()).toBeVisible();
   });

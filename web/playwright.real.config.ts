@@ -7,6 +7,8 @@
  * E2E_PYTHON overrides the interpreter (default: the repo's .venv).
  * E2E_SLEEPER_USER is the Sleeper account used for the import flow (default:
  * the project's test user, D-020); the import calls Sleeper read-only.
+ * E2E_SLEEPER_LEAGUE is the league imported when the user has several
+ * (default: the D-020 test league 1389750342958223360).
  */
 import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,6 +20,7 @@ const REPO = resolve(__dirname, "..");
 const DATA = resolve(__dirname, ".e2e-data");
 const PY = process.env.E2E_PYTHON ?? (process.platform === "win32" ? join(REPO, ".venv", "Scripts", "python.exe") : join(REPO, ".venv", "bin", "python"));
 const SLEEPER_USER = process.env.E2E_SLEEPER_USER ?? "ethanye19";
+const SLEEPER_LEAGUE = process.env.E2E_SLEEPER_LEAGUE ?? "1389750342958223360";
 
 // Fresh databases every run. The config is evaluated again in each worker,
 // so the run directory is chosen once in the main process and inherited.
@@ -56,13 +59,13 @@ export default defineConfig({
     {
       name: "real-production",
       testMatch: /(shared|production)\.spec\.ts/,
-      metadata: { mode: "production", api: `http://127.0.0.1:${PORTS.prodApi}`, target: "real", sleeperUser: SLEEPER_USER },
+      metadata: { mode: "production", api: `http://127.0.0.1:${PORTS.prodApi}`, target: "real", sleeperUser: SLEEPER_USER, sleeperLeague: SLEEPER_LEAGUE },
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORTS.prodWeb}` },
     },
     {
       name: "real-private_test",
       testMatch: /(shared|private-test)\.spec\.ts/,
-      metadata: { mode: "private_test", api: `http://127.0.0.1:${PORTS.privApi}`, target: "real", sleeperUser: SLEEPER_USER },
+      metadata: { mode: "private_test", api: `http://127.0.0.1:${PORTS.privApi}`, target: "real", sleeperUser: SLEEPER_USER, sleeperLeague: SLEEPER_LEAGUE },
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORTS.privWeb}` },
     },
   ],

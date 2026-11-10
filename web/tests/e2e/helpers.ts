@@ -1,10 +1,12 @@
-import { expect, type Page, type TestInfo } from "@playwright/test";
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 export interface Target {
   mode: "production" | "private_test";
   api: string;
   target: "mock" | "real";
   sleeperUser: string;
+  /** Sleeper league id to import when the user has several (real API: the D-020 test league). */
+  sleeperLeague?: string;
 }
 
 export function target(info: TestInfo): Target {
@@ -41,17 +43,36 @@ export async function resetMock(t: Target): Promise<void> {
   await fetch(`${t.api}/__mock/reset`, { method: "POST" });
 }
 
+/**
+ * Click `button` until `done` shows. The real API limits Sleeper routes to
+ * 10 a minute with a burst of 5 per client (QA-F03), and every test imports a
+ * league, so a 429 "Too many sleeper requests. Try again in N s." is waited out.
+ */
+async function clickPastSleeperLimit(page: Page, button: string, done: Locator, timeout = 30_000): Promise<void> {
+  const limited = page.getByText(/Too many sleeper requests/i);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (await done.isVisible()) return;
+    await page.getByRole("button", { name: button }).click();
+    await expect(done.or(limited).first()).toBeVisible({ timeout });
+    if (await done.isVisible()) return;
+    const wait = Number(/again in (\d+)/i.exec((await limited.first().innerText()) ?? "")?.[1] ?? "6");
+    await page.waitForTimeout((wait + 1) * 1000);
+  }
+  await expect(done).toBeVisible({ timeout });
+}
+
 /** Import a Sleeper league through the UI and make it this browser's league. */
 export async function importLeagueViaUi(page: Page, t: Target): Promise<void> {
   await page.goto("/setup");
   await page.getByLabel("Sleeper username").fill(t.sleeperUser);
-  await page.getByRole("button", { name: "Find my leagues" }).click();
   const leagues = page.getByRole("group", { name: /Leagues for/ });
-  await expect(leagues).toBeVisible();
-  await leagues.getByRole("radio").first().check();
-  await page.getByRole("button", { name: "Import league" }).click();
+  await clickPastSleeperLimit(page, "Find my leagues", leagues);
+  // the user may have several leagues (a new one may still be drafting, with empty rosters)
+  const wanted = t.sleeperLeague ? leagues.locator(`input[type="radio"][value="${t.sleeperLeague}"]`) : null;
+  if (wanted && (await wanted.count()) > 0) await wanted.check();
+  else await leagues.getByRole("radio").first().check();
   const teams = page.getByRole("group", { name: "Which team is yours?" });
-  await expect(teams).toBeVisible({ timeout: 30_000 });
+  await clickPastSleeperLimit(page, "Import league", teams);
   // keep the preselected "my team" when Sleeper marked one, else take the first
   if ((await teams.getByRole("radio", { checked: true }).count()) === 0) await teams.getByRole("radio").first().check();
   await page.getByRole("button", { name: "Use this team" }).click();
