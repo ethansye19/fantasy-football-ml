@@ -127,6 +127,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-125 | 2026-11-10 | decided (orchestrator, D-117) | Candidate X = 071c3a4 (HEAD after D-121 to D-124; contains every required commit); the freeze is approved only on QA's full rehearsal at X and the Evaluator's pass |
 | D-126 | 2026-11-10 | decided (orchestrator, D-117) | F8: a season is skipped as not yet published only while none of its regular-season games is final; fixed now in ffml/data (allowed path, after X, hand-written change-log row with the Evaluator's verification); X stays 071c3a4 |
 | D-127 | 2026-11-11 | decided (orchestrator, D-117, applying the owner's D-098 item 4) | The live test starts at Week 11: window 2026 weeks 11-18 plus 2027 weeks 1-10 (18 weeks, all rules unchanged); Week 10 runs end to end as a labeled real-data rehearsal on the dry-run branch, not part of the test |
+| D-128 | 2026-11-11 | decided (orchestrator, D-117) | QA-F31 (comparators extension ignored the D-121 exclusion, so a week with an excluded game and every later week could never be sealed) and QA-F32 (traceback for an unscheduled season) are fixed in the scorer before the freeze; X moves to that commit; the full rehearsal runs there with two workers |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
