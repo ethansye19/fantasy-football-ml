@@ -129,6 +129,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-127 | 2026-11-11 | decided (orchestrator, D-117, applying the owner's D-098 item 4) | The live test starts at Week 11: window 2026 weeks 11-18 plus 2027 weeks 1-10 (18 weeks, all rules unchanged); Week 10 runs end to end as a labeled real-data rehearsal on the dry-run branch, not part of the test |
 | D-128 | 2026-11-11 | decided (orchestrator, D-117) | QA-F31 (comparators extension ignored the D-121 exclusion, so a week with an excluded game and every later week could never be sealed) and QA-F32 (traceback for an unscheduled season) are fixed in the scorer before the freeze; X moves to that commit; the full rehearsal runs there with two workers |
 | D-129 | 2026-11-11 | decided (orchestrator, D-117) | X = 4799913 (QA-F31, QA-F32 fixed; no default window, a missing or broken window refuses); an earlier week never sealed (pre-window or missed) with a game still not final counts as done for the comparators once past its cutoff plus 14 days, its unfinished games excluded |
+| D-130 | 2026-11-11 | decided (owner, 2026-11-11 resume instructions) | Run 6's partial evidence archived and hashed (reports/evidence/rehearsal/); it cannot verify the suite's checks, so all ten worlds are rerun at X = 4799913 (run 7); agent processes are never suspended, a pause stops at a clean checkpoint; the owner confirms D-127 (Week 11 to 2027 Week 10, 18 scored weeks, Week 10 not a miss), made before the freeze and before any Week 10 result; stale window text fixed in the app and docs |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1198,6 +1199,69 @@ Decision:
   the design the owner approved, and changes only which weeks are in it.
 - This decision was made before any Week 10 data existed, and nothing in it
   depends on outcomes.
+
+## D-130 Rehearsal evidence after the pause, and the Week 11 start confirmed (owner, 2026-11-11)
+
+The owner said "pause" at about 20:20 UTC on 2026-11-11 while QA's full
+rehearsal at X = 4799913 (run 6) was running. I suspended its processes
+(NtSuspendProcess) instead of stopping at a checkpoint. The QA agent then
+stalled ("no progress for 600s") and its suspended processes were killed,
+so run 6 never finished: nine of ten worlds were done, B2 had just started.
+On resume the owner gave five instructions; this records how each was
+applied.
+
+1. **Evidence archived and checked.** The partial file was copied
+   byte-identically to
+   `reports/evidence/rehearsal/run6_X4799913_partial.jsonl`. SHA-256 of
+   the bytes as written (CRLF line ends, Windows text-mode append):
+   `4174e4e4d7444100956198c16f892a09030e932c13b7f8bfdd966dd72cb8ccad`;
+   SHA-256 with LF line ends (the form git stores, `* text=auto eol=lf`):
+   `0362c4868b4a15929566b60cba43c5cc0c8b4c9def10a6915048834709290ee9`.
+   Integrity: 70 records, every line parses as JSON with exactly the keys
+   `at, world, key, result`, the last line is terminated, the timestamps
+   run in order from 17:44:06 to 20:19:30 UTC. Nine worlds have a
+   `world_done` with no error, and their finals are as designed: A, G, E,
+   P, D1 and D2 `APPROVED` with all 22 lines passed; B `NOT APPROVED` with
+   only L17 not passed; C `NOT APPROVED` with only L07 not passed; D3
+   `INVALID` (three misses). B2 has only its freeze record.
+2. **Commit and independence.** Every world's records name X = 4799913, and
+   every clone's freeze lists the base Z = 765fb1a. The worlds are
+   independent: each is built in its own temporary directory with its own
+   clone, bare `origin` and simulated calendar; they share only the
+   read-only source repository and the worker pool.
+   **Why all ten are rerun anyway.** The partial file cannot verify the
+   nine worlds. It holds compacted finals, refusals and tagged steps only.
+   The suite's 45 checks also read each world's weekly step outputs, its
+   metric-leak scans and the sealed files in its temporary clone, and they
+   run only once every world is in memory, so none ran in run 6. Using the
+   nine results would mean new replay code, written and reviewed at the
+   last minute. Under the owner's rule ("If you can't verify a world, rerun
+   it"; "If any doubt remains, rerun all ten") all ten are rerun: run 7,
+   started 2026-11-11 22:16:33 UTC with the same settings (base 765fb1a,
+   X 4799913, two workers). Run 6's nine verdicts serve as a cross-check:
+   run 7 must reproduce them.
+3. **Pauses.** Agent processes are never suspended again. A pause stops at
+   a clean checkpoint: a running rehearsal is either left to finish or
+   stopped between worlds, and the owner is told what is lost.
+4. **Week 11 start.** This was already decided as D-127 (2026-11-11, under
+   D-117, applying the owner's D-098 item 4); the owner now directs it
+   explicitly. Confirmed in the pre-registration at 765fb1a: window 2026
+   weeks 11-18 plus 2027 weeks 1-10, 18 scored weeks; good-model pass rate
+   0.580 (variance-corrected; 0.736 uncorrected), 0.540 with one miss,
+   0.498 with two; a no-edge model 0 of 5,000 (95% upper bound 0.0006);
+   verdict about 2027-11-19. Week 10 is not part of the test and is not a
+   miss; it runs as a labeled real-data rehearsal on `livetest-dryrun`.
+   The change was made before the freeze (the pre-registration's `commit`
+   field still reads `<frozen commit>`) and before any Week 10 result
+   (Week 10's first kickoff is 2026-11-13 01:15 UTC). Text that still gave
+   the old window, the 2027-11-12 date or the 56% figure was corrected: the
+   app's status summary (`api/services/meta_content.py`), README.md,
+   docs/LIMITATIONS.md, docs/RUNBOOK.md and the change log's header prose
+   (only its table rows are parsed). The pre-registration's own
+   original-window figures are labeled as history and were not touched.
+5. **Next.** Run 7, then QA's report, the Evaluator's review ("Freeze at
+   X = 4799913: pass" or "fail"), the freeze (D-120), and the owner's
+   summary.
 
 ## Owner answers received 2026-11-01
 
