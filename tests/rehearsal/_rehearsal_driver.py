@@ -181,7 +181,7 @@ def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_se
     if record is None:
         record = LS._week_record(season, week)
     try:
-        plan = LS.plan_week(season, week, LS.load_dim_game([season]), now=now, record=record)
+        plan = LS.plan_week(season, week, LS.season_dim_game(season), now=now, record=record)
     except LS.RetryLater as exc:
         return {"exit": 4, "message": f"retry later: {exc}"}
     except LS.ScoreRefused as exc:
@@ -192,7 +192,8 @@ def weekly_hook(season: int, week: int, n_boot: int, sens_n_boot: int, weekly_se
     source = LS.BranchSource(Path(LS.DEFAULT_WORKTREE))
     try:
         baselines = LS.ensure_comparators(season, week, dim_game, run=LS.COMPARATORS_RUN,
-                                          actuals_fn=lambda s_: LS.load_actuals(s_, stores["processed"]))
+                                          actuals_fn=lambda s_: LS.load_actuals(s_, stores["processed"]),
+                                          excluded_games=plan.excluded, now=now, root=root)
     except LS.ScoreRefused as exc:
         return {"exit": 3, "message": f"refused: {exc}"}
     consensus = None

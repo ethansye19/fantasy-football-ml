@@ -484,9 +484,21 @@ def test_prereg_window_and_week_parsing():
     assert LS.prereg_window({"window": [[2026, 10], [2027, 1]]}) == [(2026, 10), (2027, 1)]
     assert LS.prereg_window({"window": {"seasons": [2026, 2027], "weeks": {"2026": [10, 11], "2027": [1]}}}) == [
         (2026, 10), (2026, 11), (2027, 1)]
-    assert LS.prereg_window({"season": 2026, "weeks": list(range(10, 19))}) == list(LS.DEFAULT_WINDOW)
-    assert LS.prereg_window({"season": 2026, "weeks": list(range(10, 19)),
-                             "extension": {"season": 2027, "weeks": list(range(1, 10))}}) == list(LS.DEFAULT_WINDOW)
+    d127 = [(2026, w) for w in range(11, 19)] + [(2027, w) for w in range(1, 11)]
+    real = {"window": {"seasons": [2026, 2027], "weeks": {"2026": list(range(11, 19)), "2027": list(range(1, 11))},
+                       "weeks_total": 18}}
+    assert LS.prereg_window(real) == d127
+    assert LS.prereg_window({"season": 2026, "weeks": list(range(11, 19)),
+                             "extension": {"season": 2027, "weeks": list(range(1, 11))}}) == d127
+    # no built-in fallback (D-127): a missing, unreadable, repeating or short window refuses
+    for bad, why in (({}, "states no window"), ({"window": None}, "states no window"),
+                     ({"window": {"weeks": {"2026": list(range(11, 19))}, "weeks_total": 18}}, "weeks_total"),
+                     ({"window": [[2026, 11], [2026, 11]]}, "repeats a week"),
+                     ({"window": [["x", 11]]}, "cannot be read"),
+                     ({"window": {"weeks": {"2026": [11]}, "weeks_total": True}}, "weeks_total")):
+        with pytest.raises(LS.ScoreRefused, match=why):
+            LS.prereg_window(bad)
+    assert not hasattr(LS, "DEFAULT_WINDOW")
     assert LS.parse_week("2026w10") == (2026, 10) and LS.week_key(2027, 9) == "2027w09"
     with pytest.raises(ValueError):
         LS.parse_week("week10")
@@ -842,6 +854,24 @@ def test_week_exit_4_before_cutoff_without_snapshot_or_not_final(tmp_path, monke
         assert printed["data_cutoff_utc"] == LS.iso(cutoff) and printed["week"] == f"{season}w{week:02d}"
         assert printed["last_kickoff_utc"] and "Friday" in printed["rule"]
         assert LS.main(["--data-cutoff", f"{season}w{week + 1:02d}"]) == LS.EXIT_RETRY_LATER
+    finally:
+        reset_settings_cache()
+
+
+def test_unscheduled_season_or_week_exits_4_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """QA-F32: a season without a dim_game partition (or no dim_game at all) is "not yet" for both modes."""
+    from ffml.config import reset_settings_cache
+
+    _settings(monkeypatch, tmp_path)
+    try:
+        for with_store in (False, True):
+            if with_store:
+                _write_processed(tmp_path, 2024, 5)
+            for argv in (["--data-cutoff", "2027w01"], ["--week", "2027w01"]):
+                assert LS.main(argv) == LS.EXIT_RETRY_LATER, (with_store, argv)
+                assert "2027w01 has no regular-season game in dim_game" in capsys.readouterr().err
+        assert LS.main(["--week", "2024w19"]) == LS.EXIT_RETRY_LATER  # the season exists, the week does not
+        assert "2024w19 has no regular-season game in dim_game" in capsys.readouterr().err
     finally:
         reset_settings_cache()
 

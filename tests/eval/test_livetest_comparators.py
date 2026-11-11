@@ -95,3 +95,102 @@ def test_extending_the_run_by_one_week_keeps_earlier_calibrated_rows(tmp_setting
     assert cal, "the run has calibrated rows"
     for col in [c for c in ("pred_q10", "pred_q50", "pred_q90", "boom_prob", "pred_cdf_at_actual") if c in a.columns]:
         assert a[col].fill_null(-1.0).to_list() == b[col].fill_null(-1.0).to_list(), col
+
+
+# --------------------------------------------------------------------------- #
+# QA-F31: the comparators extension follows the D-121 exclusion
+# --------------------------------------------------------------------------- #
+
+OPEN = "2026_10_0"  # never final; teams H0 and A0
+
+
+def _dg_kick(season, weeks, open_games=()):
+    from datetime import UTC, datetime, timedelta
+
+    base = datetime(2026, 11, 13, 1, 15, tzinfo=UTC)
+    rows = []
+    for w in weeks:
+        for g in range(2):
+            gid = f"{season}_{w}_{g}"
+            rows.append({"season": season, "week": w, "game_type": "REG", "game_id": gid,
+                         "home_team": f"H{g}", "away_team": f"A{g}",
+                         "kickoff_utc": base + timedelta(days=7 * (w - 10), hours=g),
+                         "status": "scheduled" if gid in open_games else "final"})
+    return pl.DataFrame(rows)
+
+
+def _actuals(season, weeks):
+    rows = [{"season": season, "week": w, "game_id": f"{season}_{w}_{g}", "team": team, "entity_id": f"{team}-p{w}",
+             "position": "WR", "x": 1}
+            for w in weeks for g in range(2) for team in (f"H{g}", f"A{g}")]
+    return pl.DataFrame(rows, schema_overrides={"season": pl.Int32, "week": pl.Int32})
+
+
+def _fake_cmp(run_dir, calls):
+    def runner(actuals, run_id):
+        calls.append(actuals)
+        s, w = max(actuals.select("season", "week").unique().rows())
+        rows = [{"entity_id": f"e{i}", "position": "QB", "season": s, "week": w, "scoring": "ppr", "model": m,
+                 "pred_q50": float(i)} for i in range(3) for m in LS.COMPARATOR_LABELS]
+        path = run_dir / "predictions.parquet"
+        frame = pl.DataFrame(rows)
+        if path.is_file():
+            frame = pl.concat([pl.read_parquet(path), frame], how="diagonal_relaxed")
+        frame.write_parquet(path)
+        return run_dir
+    return runner
+
+
+def test_comparators_extension_follows_the_d121_exclusion(tmp_path):
+    import json
+    from datetime import timedelta
+
+    run_dir, root = tmp_path / "cmp", tmp_path / "scoring"
+    run_dir.mkdir()
+    calls = []
+    runner = _fake_cmp(run_dir, calls)
+    dg = _dg_kick(2026, [9, 10, 11, 12], open_games={OPEN})
+    actuals = _actuals(2026, [9, 10, 11, 12])
+    cut10 = LS.data_cutoff(dg, 2026, 10)
+    after10 = LS.exclusion_after(cut10)
+    kw = dict(run=run_dir, runner=runner, actuals_fn=lambda s: actuals, root=root)
+
+    # the week itself: refused while not final, extended without exactly its excluded game (as plan_week decided)
+    with pytest.raises(LS.ScoreRefused, match="2026w10 is not final"):
+        LS.ensure_comparators(2026, 10, dg, now=after10, **kw)
+    with pytest.raises(LS.ScoreRefused, match="2026w10 is not final"):
+        LS.ensure_comparators(2026, 10, dg, excluded_games=("2026_10_1",), now=after10, **kw)
+    rows = LS.ensure_comparators(2026, 10, dg, excluded_games=(OPEN,), now=after10, **kw)
+    assert set(rows["model"].unique()) == set(LS.COMPARATOR_LABELS)
+    sent = calls[-1]
+    assert sorted(sent.select("season", "week").unique().rows()) == [(2026, 9), (2026, 10)]
+    wk10 = sent.filter(pl.col("week") == 10)
+    assert wk10.filter(pl.col("game_id") == OPEN).height == 0 and wk10.filter(pl.col("team").is_in(["H0", "A0"])).height == 0
+    assert wk10.height == 2 and sent.filter((pl.col("week") == 9) & pl.col("team").is_in(["H0", "A0"])).height == 2
+
+    # a later week: week 10 never sealed and before its cutoff plus 14 days still holds it
+    with pytest.raises(LS.ScoreRefused, match=r"earlier weeks not final in dim_game: \['2026w10'\]"):
+        LS.ensure_comparators(2026, 11, dg, now=after10 - timedelta(hours=1), **kw)
+    # week 10 sealed with its D-121 exclusion: done, and its excluded game stays out of the history
+    rp = LS.record_path(root, 2026, 10)
+    rp.parent.mkdir(parents=True, exist_ok=True)
+    rp.write_text(json.dumps({"excluded_games": [{"game_id": OPEN, "reason": LS.EXCLUSION_REASON}]}), encoding="utf-8")
+    LS.ensure_comparators(2026, 11, dg, now=after10 - timedelta(hours=1), **kw)
+    sent = calls[-1]
+    assert sorted(sent.select("season", "week").unique().rows()) == [(2026, 9), (2026, 10), (2026, 11)]
+    assert sent.filter((pl.col("week") == 10) & (pl.col("game_id") == OPEN)).height == 0
+    # a sealed week whose record does not cover the open game is not done
+    rp.write_text(json.dumps({"excluded_games": []}), encoding="utf-8")
+    with pytest.raises(LS.ScoreRefused, match="2026w10"):
+        LS.ensure_comparators(2026, 12, dg, now=after10 + timedelta(days=1), **kw)
+    # never sealed (a missed week, or one before the window): done once past its own cutoff plus 14 days
+    rp.unlink()
+    LS.ensure_comparators(2026, 12, dg, now=after10 + timedelta(hours=1), **kw)
+    sent = calls[-1]
+    assert sorted(sent.select("season", "week").unique().rows())[-1] == (2026, 12)
+    assert sent.filter((pl.col("week") == 10) & pl.col("team").is_in(["H0", "A0"])).height == 0
+    assert LS.comparator_exclusions(2026, 12, dg, now=after10 + timedelta(hours=1), root=root) == {(2026, 10): (OPEN,)}
+    # an all-final season: no exclusion, the filter keeps every row (unchanged behaviour)
+    done = _dg_kick(2026, [9, 10, 11])
+    assert LS.comparator_exclusions(2026, 11, done, root=root) == {}
+    assert LS.final_week_filter(actuals, done, (2026, 11), {}).equals(LS.final_week_filter(actuals, done, (2026, 11)))

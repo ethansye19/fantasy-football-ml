@@ -96,8 +96,6 @@ PURPOSE = "livetest_score"
 SCORING = "ppr"
 POSITIONS: tuple[str, ...] = RB.POSITIONS
 VERSION_RE = re.compile(r"^chain_v2-primary-c(\d{4})w(\d{2})-\d{8}T\d{6}Z$")
-#: the fallback window (D-110) when the pre-registration JSON carries no explicit ``window``
-DEFAULT_WINDOW: tuple[tuple[int, int], ...] = (*((2026, w) for w in range(10, 19)), *((2027, w) for w in range(1, 10)))
 WEEK_RE = re.compile(r"^(\d{4})w(\d{1,2})$")
 #: sealed interim results (D-111): weekly metrics go here, never into a report before the final
 SEALED_DIR = "sealed"
@@ -348,6 +346,18 @@ def load_dim_game(seasons: Iterable[int] | None = None) -> pl.DataFrame:  # prag
     from ffml.data.store import SnapshotStore
 
     return SnapshotStore(get_settings().processed_dir).read("dim_game", seasons=list(seasons) if seasons else None)
+
+
+def season_dim_game(season: int) -> pl.DataFrame:
+    """LATEST ``dim_game`` for one season; empty when the season has no partition yet (QA-F32).
+
+    The store raises ``FileNotFoundError`` for a season it does not hold (a 2027 week before the
+    schedule is published, or no ``dim_game`` at all); the CLI reports that as "not yet" (exit 4).
+    """
+    try:
+        return load_dim_game([season])
+    except FileNotFoundError:
+        return pl.DataFrame({"season": [], "week": []}, schema={"season": pl.Int32, "week": pl.Int32})
 
 
 def dim_game_snapshot_id() -> str | None:  # pragma: no cover - reads data
@@ -802,21 +812,83 @@ def final_pairs(dim_game: pl.DataFrame) -> tuple[set[tuple[int, int]], set[int]]
     return pairs, {int(x) for x in g["season"].unique().to_list()}
 
 
-def final_week_filter(actuals: pl.DataFrame, dim_game: pl.DataFrame, upto: tuple[int, int]) -> pl.DataFrame:
+def final_week_filter(actuals: pl.DataFrame, dim_game: pl.DataFrame, upto: tuple[int, int],
+                      exclusions: Mapping[tuple[int, int], Sequence[str]] | None = None) -> pl.DataFrame:
     """Actual rows of weeks that are fully final in ``dim_game`` and not after ``upto``.
 
     Seasons that ``dim_game`` does not cover are kept whole (history). This is
     what the comparators run is scheduled from, so a partially final week can
     never enter the baselines' history, and the schedule ends at the week
     being scored (later weeks are added when their turn comes).
+
+    ``exclusions`` (D-121, QA-F31; from :func:`comparator_exclusions`) admits a
+    week that is not fully final without its excluded games: their rows are
+    dropped, exactly as the scorer drops them from the chain.
     """
+    exclusions = dict(exclusions or {})
     pairs, seasons = final_pairs(dim_game)
+    done = pairs | set(exclusions)
     s, w = upto
     key = pl.col("season") * 100 + pl.col("week")
     ok = pl.struct("season", "week").map_elements(
-        lambda r: int(r["season"]) not in seasons or (int(r["season"]), int(r["week"])) in pairs,
+        lambda r: int(r["season"]) not in seasons or (int(r["season"]), int(r["week"])) in done,
         return_dtype=pl.Boolean)
-    return actuals.filter(ok & (key <= s * 100 + w))
+    out = actuals.filter(ok & (key <= s * 100 + w))
+    for (es, ew), ids in sorted(exclusions.items()):
+        out = without_games(out, ids, excluded_teams(dim_game, es, ew, ids), es, ew)
+    return out
+
+
+def comparator_exclusions(season: int, week: int, dim_game: pl.DataFrame, *, excluded_games: Sequence[str] = (),
+                          now: datetime | None = None, root: Path | None = None
+                          ) -> dict[tuple[int, int], tuple[str, ...]]:
+    """D-121 for the comparators run (QA-F31): the games left out of its actuals, by week, up to the week scored.
+
+    - The week scored: when it is not final, exactly its ``excluded_games`` (the same decision as
+      :func:`plan_week`); any other unfinished game refuses.
+    - An earlier week of the season that is not final counts as done when it is sealed and every game
+      still not final was excluded when it was scored (the sealed record's exclusions are used), or,
+      when it was never sealed (a week before the window, or a missed week), once ``now`` is past its
+      own data cutoff plus 14 days (the games still not final in this ``dim_game``).
+    - Any other earlier week that is not final refuses: its outcomes would enter the baselines'
+      history incomplete, and the written parts are never recomputed.
+    """
+    clock = now or utcnow()
+    root = Path(root) if root is not None else scoring_root()
+    g = dim_game.filter(pl.col("game_type") == "REG") if "game_type" in dim_game.columns else dim_game
+    weeks = sorted({(int(a), int(b)) for a, b in g.select("season", "week").unique().rows()})
+    out: dict[tuple[int, int], tuple[str, ...]] = {}
+    pending: list[str] = []
+    for s_, w_ in weeks:
+        if (s_, w_) >= (season, week):
+            continue
+        st = week_status(dim_game, s_, w_)
+        if st.is_final:
+            continue
+        rp = record_path(root, s_, w_)
+        if rp.is_file():
+            ex = tuple(str(x.get("game_id")) for x in json.loads(rp.read_text(encoding="utf-8")).get("excluded_games") or [])
+            if ex and set(st.unfinished) <= set(ex):
+                out[(s_, w_)] = ex
+                continue
+        else:
+            c = data_cutoff(dim_game, s_, w_)
+            if c is not None and clock >= exclusion_after(c) and st.final > 0 and st.unfinished \
+                    and len(st.unfinished) == st.games - st.final:
+                out[(s_, w_)] = tuple(st.unfinished)
+                continue
+        pending.append(week_key(s_, w_))
+    if pending:
+        raise ScoreRefused(f"comparators cannot be extended to {week_key(season, week)}: earlier weeks not final "
+                           f"in dim_game: {pending[:6]} (an earlier week counts once it is sealed with its D-121 "
+                           "exclusions, or is past its data cutoff plus 14 days)")
+    st = week_status(dim_game, season, week)
+    if not st.is_final:
+        ex = tuple(str(x) for x in excluded_games)
+        if not (ex and st.final > 0 and set(ex) == set(st.unfinished)):
+            raise ScoreRefused(f"comparators cannot be extended: {week_key(season, week)} is not final in dim_game")
+        out[(season, week)] = ex
+    return out
 
 
 def earlier_weeks_not_final(dim_game: pl.DataFrame, season: int, week: int) -> list[str]:
@@ -845,23 +917,23 @@ def load_actuals(season: int, store: Any = None) -> pl.DataFrame:  # pragma: no 
 
 def ensure_comparators(season: int, week: int, dim_game: pl.DataFrame, *, run: str | Path | None = None,
                        runner: Callable[[pl.DataFrame, str], Path] = run_comparators,
-                       actuals_fn: Callable[[int], pl.DataFrame] = load_actuals) -> pl.DataFrame:
+                       actuals_fn: Callable[[int], pl.DataFrame] = load_actuals,
+                       excluded_games: Sequence[str] = (), now: datetime | None = None,
+                       root: Path | None = None) -> pl.DataFrame:
     """The comparators' rows for the week; runs or extends ``livetest_comparators`` when they are missing.
 
-    Refuses when an earlier regular-season week is not fully final (its
-    outcomes would enter the baselines' history incomplete and the written
-    parts are never recomputed) or when the week itself is not final.
+    Finality follows the week's own scoring decision (D-121, QA-F31): the week may be extended
+    without exactly its ``excluded_games`` (``plan_week``), and an earlier week that is not final
+    counts as done under :func:`comparator_exclusions`. Every excluded game's rows are left out of
+    the actuals the run is scheduled from. Refuses otherwise (an earlier week's outcomes would enter
+    the baselines' history incomplete, and the written parts are never recomputed). The scorer drops
+    the excluded games' comparator rows from the sealed week as it drops the chain's.
     """
     run_id = str(run or COMPARATORS_RUN)
     if comparators_available(run_id, season, week):
         return baseline_rows(run_id, season, week)
-    pending = earlier_weeks_not_final(dim_game, season, week)
-    if pending:
-        raise ScoreRefused(f"comparators cannot be extended to {week_key(season, week)}: earlier weeks not final "
-                           f"in dim_game: {pending[:6]}")
-    if not week_status(dim_game, season, week).is_final:
-        raise ScoreRefused(f"comparators cannot be extended: {week_key(season, week)} is not final in dim_game")
-    actuals = final_week_filter(actuals_fn(season), dim_game, (season, week))
+    exclusions = comparator_exclusions(season, week, dim_game, excluded_games=excluded_games, now=now, root=root)
+    actuals = final_week_filter(actuals_fn(season), dim_game, (season, week), exclusions)
     runner(actuals, run_id)
     if not comparators_available(run_id, season, week):
         raise ScoreRefused(f"the comparators run holds no calibrated rows for {week_key(season, week)} after extension")
@@ -1187,14 +1259,14 @@ def plan_week(season: int, week: int, latest_dim_game: pl.DataFrame, *, now: dat
     """The scoring plan of ``--week`` (D-116 A3, D-121). ``record`` is the week's sealed JSON when it is rescored.
 
     Raises :class:`RetryLater` (exit 4) before the cutoff, while a dataset has no snapshot at or after
-    the pin point, and while a game waits; :class:`ScoreRefused` (exit 3) for a week not in ``dim_game``.
+    the pin point, while a game waits, and for a week not in ``dim_game`` yet (QA-F32).
     """
     wk = week_key(season, week)
     record = dict(record or {})
     rescore = bool(record.get("data_snapshots"))
     cutoff = (parse_time(record.get("data_cutoff")) if rescore else None) or data_cutoff(latest_dim_game, season, week)
     if cutoff is None:
-        raise ScoreRefused(f"{wk} has no regular-season game in dim_game")
+        raise RetryLater(f"{wk} has no regular-season game in dim_game")
     if now < cutoff:
         raise RetryLater(f"the data cutoff for {wk} is {iso(cutoff)}")
     wp = choose_week_pins(season, week, cutoff, now=now, roots=roots, recorded=record if rescore else None)
@@ -1523,19 +1595,40 @@ def load_records(root: Path, weeks: Iterable[tuple[int, int]]) -> dict[tuple[int
 
 
 def prereg_window(data: Mapping[str, Any]) -> list[tuple[int, int]]:
-    """The scored window: an explicit ``window`` list, else ``season``/``weeks`` plus ``extension``, else D-110."""
+    """The scored window: the weeks the pre-registration states, sorted; there is no built-in fallback.
+
+    Read from an explicit ``window`` (``{"weeks": {"2026": [...], "2027": [...]}, "weeks_total": n}`` or a
+    list of ``[season, week]`` pairs), else from ``season``/``weeks`` plus ``extension``. Raises
+    :class:`ScoreRefused` when no window is stated, when it cannot be read, when a week repeats, or when
+    it disagrees with ``weeks_total``: no window, no score and no final (D-127; a stale default could
+    otherwise stand in for a broken field).
+    """
     win = data.get("window")
-    if isinstance(win, Mapping) and win.get("weeks"):  # {"seasons": [...], "weeks": {"2026": [...], "2027": [...]}}
-        return [(int(s), int(w)) for s, ws in win["weeks"].items() for w in ws]
-    if win:
-        return [(int(s), int(w)) for s, w in win]
-    out: list[tuple[int, int]] = []
-    if data.get("season") and data.get("weeks"):
-        out += [(int(data["season"]), int(w)) for w in data["weeks"]]
-    ext = data.get("extension") or {}
-    if ext.get("season") and ext.get("weeks"):
-        out += [(int(ext["season"]), int(w)) for w in ext["weeks"]]
-    return out if len(out) >= 18 else list(DEFAULT_WINDOW)
+    total: Any = None
+    try:
+        if isinstance(win, Mapping) and win.get("weeks"):
+            out = [(int(s), int(w)) for s, ws in win["weeks"].items() for w in ws]
+            total = win.get("weeks_total")
+        elif win:
+            out = [(int(s), int(w)) for s, w in win]
+        else:
+            out = []
+            if data.get("season") and data.get("weeks"):
+                out += [(int(data["season"]), int(w)) for w in data["weeks"]]
+            ext = data.get("extension") or {}
+            if ext.get("season") and ext.get("weeks"):
+                out += [(int(ext["season"]), int(w)) for w in ext["weeks"]]
+            total = data.get("weeks_total")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ScoreRefused(f"the pre-registration's window cannot be read: {exc}") from None
+    if not out:
+        raise ScoreRefused("the pre-registration states no window: no window, no score and no final")
+    if len(set(out)) != len(out):
+        raise ScoreRefused(f"the pre-registration's window repeats a week: {sorted(out)}")
+    if total is not None:
+        if isinstance(total, bool) or not str(total).isdigit() or int(total) != len(out):
+            raise ScoreRefused(f"the pre-registration's window holds {len(out)} weeks but weeks_total is {total!r}")
+    return sorted(out)
 
 
 def load_prereg(path: Path | str | None = None) -> H.Prereg | None:
@@ -1599,6 +1692,7 @@ def score_week(
     if rec.refusals:
         raise ScoreRefused("; ".join(rec.refusals))
     assert raw_path is not None and summary is not None
+    window = prereg_window(prereg.data if prereg else {})  # refuses before any computation when none is stated
     import io
 
     cal_rows = pl.read_parquet(io.BytesIO(summary))
@@ -1619,7 +1713,6 @@ def score_week(
                               excluded, teams, season, week) \
         if consensus is not None and not consensus.is_empty() else None
     scored = score_frames(week_all, week_cons, n_boot=n_boot)
-    window = prereg_window(prereg.data if prereg else {})
     earlier_weeks = [w for w in window if w != (season, week)]
     earlier, found = load_parts(root, earlier_weeks)
     this_ppr = week_all.filter(pl.col("scoring") == SCORING) if "scoring" in week_all.columns else week_all
@@ -2112,8 +2205,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
 
     if args.data_cutoff:
         season, week = parse_week(args.data_cutoff)
-        games = load_dim_game([season])
-        cutoff = data_cutoff(games, season, week)
+        games = season_dim_game(season)
+        cutoff = data_cutoff(games, season, week) if games.height else None
         if cutoff is None:  # not in dim_game yet (a 2027 week before the schedule is published)
             print(f"retry later: {week_key(season, week)} has no regular-season game in dim_game", file=sys.stderr)
             return EXIT_RETRY_LATER
@@ -2156,7 +2249,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     season, week = parse_week(args.week)
     wk = week_key(season, week)
     try:
-        plan = plan_week(season, week, load_dim_game([season]), now=utcnow(), record=_week_record(season, week))
+        plan = plan_week(season, week, season_dim_game(season), now=utcnow(), record=_week_record(season, week))
     except RetryLater as exc:
         print(f"retry later: {exc}", file=sys.stderr)
         return EXIT_RETRY_LATER
@@ -2171,7 +2264,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - wiring
     if not args.no_comparators:
         try:
             baselines = ensure_comparators(season, week, dim_game, run=args.baselines_run,
-                                           actuals_fn=lambda s_: load_actuals(s_, stores["processed"]))
+                                           actuals_fn=lambda s_: load_actuals(s_, stores["processed"]),
+                                           excluded_games=plan.excluded, now=utcnow())
         except ScoreRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_REFUSED
