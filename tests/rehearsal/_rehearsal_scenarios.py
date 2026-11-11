@@ -750,38 +750,24 @@ def pipeline_unfinal(root: Path) -> dict[str, Any]:
 
 
 def comparators_gap(world: W.World) -> dict[str, Any]:
-    """The real ``--week`` CLI when the comparators run must be extended to the week (as each week in production):
-    the predictions file is cut before 2026w14 and the week's own sealed files are removed (a first scoring);
-    everything is put back afterwards."""
-    import polars as pl
-
+    """QA-F31 recheck: ``ensure_comparators`` for 2026w14 (its game excluded) and 2026w17 (a later week) when the
+    comparators run must be extended, in-process with a stub runner (see the driver's ``comparators-probe``)."""
+    s, w, g = UNFINAL_NEVER
+    gid = W.game_id(s, w, g)
     pred = world.data_dir / "backtests" / "livetest_comparators" / "predictions.parquet"
-    assert pred.is_file(), pred
     keep = pred.read_bytes()
     dirs = (world.sealed_dir, world.weeks_dir, world.weekly_reports_dir)
-    backup = world.root / "gap-backup"
-    listing_before = [W.tree_listing(d) for d in dirs]
-    for i, d in enumerate(dirs):
-        shutil.copytree(d, backup / str(i))
-    out: dict[str, Any] = {}
+    before = [W.tree_listing(d) for d in dirs]
+    cases = [{"label": "unfinal_week", "season": s, "week": w, "at": iso(W.data_cutoff(s, w) + 14 * D + 2 * H)},
+             {"label": "later_week", "season": s, "week": 17, "at": iso(W.data_cutoff(s, 17) + 2 * H)}]
     try:
-        frame = pl.read_parquet(pred)
-        frame.filter(pl.col("season") * 100 + pl.col("week") < 2026 * 100 + 14).write_parquet(pred)
-        cases = (("unfinal_week", 2026, 14, W.data_cutoff(2026, 14) + 14 * D + 2 * H),
-                 ("later_week", 2026, 17, W.data_cutoff(2026, 17) + 2 * H))
-        for label, s, w, when in cases:
-            wk = W.week_key(s, w)
-            for q in world.sealed_dir.glob(f"{wk}*"):
-                q.unlink()
-            p = W.scorer_cli(world, "--week", wk, now=when)
-            out[label] = {"week": wk, "at": iso(when), "returncode": p.returncode, "stderr": p.stderr[-1500:],
-                          "stdout": p.stdout[-500:], "sealed_written": sorted(q.name for q in world.sealed_dir.glob(f"{wk}*"))}
+        p, out = W.driver(world, "comparators-probe", {"cases": cases, "excluded_game": {
+            "season": s, "week": w, "game_id": gid, "teams": sorted(gid.split("_")[2:])}})
     finally:
+        restored = pred.read_bytes() == keep
         pred.write_bytes(keep)
-        for i, d in enumerate(dirs):
-            shutil.rmtree(d)
-            shutil.copytree(backup / str(i), d)
-    out["restored"] = [W.tree_listing(d) for d in dirs] == listing_before
+    out.update(returncode=p.returncode, stderr_tail=p.stderr[-2000:],
+               restored=restored and [W.tree_listing(d) for d in dirs] == before)
     return record(world.spec.name, "comparators_gap", out)
 
 

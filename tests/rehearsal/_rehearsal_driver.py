@@ -526,7 +526,71 @@ def cmd_dim_game_unfinished(payload):
     return {"old": old, "new": new, "game": target}
 
 
-COMMANDS = {"probe": cmd_probe, "build": cmd_build, "weekly": cmd_weekly, "final-forced": cmd_final_forced,
+def cmd_comparators_probe(payload):
+    """QA-F31: ``ensure_comparators`` when the comparators run must be extended to the week, with a stub runner.
+
+    The predictions file is cut before each week; the stub records the actuals the run would be scheduled
+    from and puts the full run back (the "extension"). The real ``run_comparators`` (the full walk-forward)
+    runs on real data at the comparators pre-warm after the freeze and in the Week 10 rehearsal (D-127)."""
+    import inspect
+
+    import polars as pl
+
+    from ffml.eval.harness import PREDICTIONS
+
+    pred = LS.comparators_run_dir(LS.COMPARATORS_RUN) / PREDICTIONS
+    full = pl.read_parquet(pred)
+    eg = payload["excluded_game"]
+    params = inspect.signature(LS.ensure_comparators).parameters
+    latest = getattr(LS, "season_dim_game", None) or (lambda s_: LS.load_dim_game([s_]))
+
+    def game_rows(a: pl.DataFrame) -> dict:
+        wk = a.filter((pl.col("season") == eg["season"]) & (pl.col("week") == eg["week"]))
+        hits = []
+        if "game_id" in wk.columns:
+            hits.append(pl.col("game_id").cast(pl.String) == eg["game_id"])
+        if "team" in wk.columns:
+            hits.append(pl.col("team").cast(pl.String).is_in(eg["teams"]))
+        hit = hits[0]
+        for h in hits[1:]:
+            hit = hit | h
+        return {"week_rows": wk.height, "game_rows": wk.filter(hit).height,
+                "columns": [c for c in ("game_id", "team") if c in wk.columns]}
+
+    out = {"signature": sorted(params)}
+    for case in payload["cases"]:
+        s, w, now = case["season"], case["week"], _t(case["at"])
+        res: dict = {"week": W.week_key(s, w), "at": case["at"]}
+        seen: dict = {}
+
+        def stub(actuals, run_id, _seen=seen):
+            _seen.update(rows=actuals.height, last_week=max(int(a) * 100 + int(b) for a, b in
+                                                            actuals.select("season", "week").unique().rows()),
+                         **game_rows(actuals))
+            full.write_parquet(pred)  # the extension: the run now holds the week
+            return LS.comparators_run_dir(run_id)
+
+        full.filter(pl.col("season") * 100 + pl.col("week") < s * 100 + w).write_parquet(pred)
+        try:
+            plan = LS.plan_week(s, w, latest(s), now=now, record={})  # a first scoring of the week
+            res.update(excluded=list(plan.excluded), pin_from=LS.iso(plan.pin_from))
+            kw = {"run": LS.COMPARATORS_RUN, "runner": stub,
+                  "actuals_fn": lambda s_, st=plan.stores["processed"]: LS.load_actuals(s_, st)}
+            if "excluded_games" in params:
+                kw["excluded_games"] = plan.excluded
+            if "now" in params:
+                kw["now"] = now
+            rows = LS.ensure_comparators(s, w, plan.dim_game, **kw)
+            res.update(ok=True, rows=rows.height, runner_called=bool(seen), actuals=dict(seen))
+        except (LS.ScoreRefused, LS.RetryLater) as exc:
+            res.update(ok=False, refused=f"{type(exc).__name__}: {exc}", runner_called=bool(seen))
+        finally:
+            full.write_parquet(pred)
+        out[case["label"]] = res
+    return out
+
+
+COMMANDS = {"probe": cmd_probe, "comparators-probe": cmd_comparators_probe, "build": cmd_build, "weekly": cmd_weekly, "final-forced": cmd_final_forced,
             "hook-part": cmd_hook_part, "latest-pins": cmd_latest_pins, "repro-pinned-dirty": cmd_repro_pinned_dirty,
             "integrity": cmd_integrity, "dim-game-unfinished": cmd_dim_game_unfinished, "seals": cmd_seals}
 

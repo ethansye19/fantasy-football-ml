@@ -683,12 +683,19 @@ def test_unfinal_world_verdict_equals_the_all_final_world(results):
 
 def test_comparators_gap_probe_left_the_world_as_it_was(results):
     gap = world(results, "G_unfinal_game")["comparators_gap"]
+    assert gap["returncode"] == 0, gap["stderr_tail"]
     assert gap["restored"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="QA-F31: ensure_comparators ignores the D-121 exclusion; when the comparators "
-                   "run must be extended, the week with the excluded game and every later week of its season are refused")
 def test_comparators_extension_honours_the_excluded_game(results):
+    """QA-F31, fixed: when the comparators run must be extended, the week with the excluded game and a later
+    week are extended without that game's rows (stub runner; the real run_comparators runs on real data at the
+    pre-warm and in the Week 10 rehearsal)."""
     gap = world(results, "G_unfinal_game")["comparators_gap"]
     for case in ("unfinal_week", "later_week"):
-        assert "comparators cannot be extended" not in gap[case]["stderr"], gap[case]
+        r = gap[case]
+        assert r["ok"] is True and r["runner_called"] is True, r
+        a = r["actuals"]
+        assert a["game_rows"] == 0 and a["week_rows"] > 0, r  # the excluded game left out, its week's others kept
+        assert a["last_week"] == int(r["week"].replace("w", "")), r  # scheduled up to the week scored
+    assert gap["unfinal_week"]["excluded"] == [GAME_NEVER] and gap["later_week"]["excluded"] == []
