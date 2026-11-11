@@ -372,15 +372,31 @@ def write_text_eol(path: Path, text: str, eol: str) -> None:
     path.write_bytes(text.replace("\n", eol).encode("utf-8"))
 
 
-def fill_preregistration(clone: Path, x: str, stored_digest: str) -> None:
-    """The freeze edit (commit field), plus the rehearsal-only stored-parts digest of the synthetic parts."""
+def write_rehearsal_digest(clone: Path, stored_digest: str) -> None:
+    """Rehearsal only, in its own commit before the fill: the stored-parts digest of the 97 synthetic parts
+    (the real digest pins 97 real files the rehearsal may not read; the field is outside ``rules``)."""
+    p = clone / PREREG_DOC
+    text, eol = read_text_lf(p)
+    old_digest = '"digest": "309ca749e087c9facd0beec9a63fba23f5d1596ea039ce33853c9a67369ffa54",'
+    assert text.count(old_digest) == 1, "stored-parts digest not found once"
+    write_text_eol(p, text.replace(old_digest, f'"digest": "{stored_digest}",'), eol)
+
+
+def fill_commit_field(clone: Path, x: str) -> None:
+    """The freeze fill (D-120 step a): the pre-registration's ``commit`` set to X, nothing else."""
     p = clone / PREREG_DOC
     text, eol = read_text_lf(p)
     old_commit = '"commit": "<frozen commit>",'
-    old_digest = '"digest": "309ca749e087c9facd0beec9a63fba23f5d1596ea039ce33853c9a67369ffa54",'
-    assert text.count(old_commit) == 1 and text.count(old_digest) == 1, "pre-registration fields not found once"
-    text = text.replace(old_commit, f'"commit": "{x}",').replace(old_digest, f'"digest": "{stored_digest}",')
-    write_text_eol(p, text, eol)
+    assert text.count(old_commit) == 1, "commit field not found once"
+    write_text_eol(p, text.replace(old_commit, f'"commit": "{x}",'), eol)
+
+
+def hand_row(info: Mapping[str, Any], first_week: str | None = None) -> str:
+    """A hand-written change-log row for a commit the helper refuses (pinned code: ffml/data/, scripts/)."""
+    paths = ", ".join(f"`{q}`" for q in info["paths"][:12]) + (" (+more)" if len(info["paths"]) > 12 else "")
+    subject = str(info["subject"]).replace("|", "/")
+    return (f"| {info['date']} | `{info['sha'][:12]}` | {paths} | {subject} | pinned code on an allowed path; "
+            f"verified by Evaluator (rehearsal) | Evaluator (rehearsal) | {first_week or week_key(*FIRST_WEEK)} |")
 
 
 def changelog_row(sha: str, paths: str, reason: str, first_week: str | None = None, date: str = "2026-11-12") -> str:

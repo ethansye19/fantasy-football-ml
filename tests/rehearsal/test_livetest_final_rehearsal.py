@@ -126,6 +126,17 @@ def common_world_asserts(ev):
     assert probe["scorer_cutoffs_2026"] == probe["world_cutoffs_2026"]
     assert ev["diff_x_head_frozen_code"] == "", ev["diff_x_head"]
     assert ev["window"] == ev["prereg_window"] and len(ev["window"]) == 18
+    # the freeze as D-120 does it (steps a to d): every commit in X..fill rowed in one append-only commit Y,
+    # by the helper or by hand; the real pre-build check passes at Y and blocks without one row
+    fr, y = ev["freeze"], ev["commits"]["Y_log"]
+    assert fr["needs_owner"] == [] and fr["helper_after_y"] == {"returncode": 0, "missing": []}, fr
+    assert sorted(fr["appended_by_helper"] + fr["hand_rows"]) == sorted(m["sha"] for m in fr["listed"])
+    assert ev["commits"]["F_fill"] in fr["appended_by_helper"]
+    assert all(m["status"] == "needs_hand_row" for m in fr["listed"] if m["sha"] in fr["hand_rows"])
+    assert fr["prebuild_y"]["exit"] == 0 and fr["prebuild_y"]["json"]["ok"] is True, fr["prebuild_y"]
+    assert fr["prebuild_y"]["json"]["x"] == ev["x"] and fr["prebuild_y"]["json"]["to"] == y
+    assert fr["prebuild_dropped"]["exit"] == 5, fr["prebuild_dropped"]
+    assert fr["prebuild_dropped"]["json"]["uncovered"] == [fr["dropped"]]
     for step in ev["weekly"]:
         if step.get("required", True):
             assert step["exit"] == 0, {k: v for k, v in step.items() if k not in ("snapshots",)}
@@ -147,6 +158,8 @@ def common_world_asserts(ev):
         # the sealed file lists the part, the week's consensus rows and the record (up to three files)
         names = sorted(line.split()[-1] for line in info["local_sha256_file"].splitlines() if line.strip())
         assert names == sorted([f"{wk}.json", f"{wk}.parquet", f"{wk}_consensus.parquet"]), names
+        if not ev["spec"]["prebuild"]:  # the builds ran at Y (D-120 step c); world P commits during the season
+            assert info["code_commit"] and y.startswith(info["code_commit"]), (wk, info["code_commit"], y)
     return scored
 
 
@@ -372,10 +385,11 @@ def test_change_log_only_commits_need_no_entry(results):
     ev = world(results, "A_pass")
     fin = ev["final_pass"]
     log = ev["git_scenarios"]["valid_base"]["log"].splitlines()
-    assert len(log) == 4  # F (fill), L1 (log F), A (scripts/, logged), L2 (log A)
+    # the commits from X to Z, then S (rehearsal digest), F (fill), Y (rows), A (scripts/, logged), L2 (log A)
+    assert len(log) == int(ev["base_commits"]) + 5, log
     assert "every commit in X..HEAD is logged" in check(fin["checks"], "final evaluation change log")[2]
     assert ev["commits"]["L2_log_A"].startswith(check(fin["checks"], "final evaluation commit")[2].split("HEAD ")[1][:12])
-    # A2: every build (at L1) had each commit since X in the change log as it stood at the build commit
+    # A2: every build (at Y) had each commit since X in the change log as it stood at the build commit
     for c in fin["checks"]:
         if c[0].endswith(" change log") and re.match(r"^\d{4}w\d\d ", c[0]):
             assert c[1] == "PASS" and "was in the change log at the build commit" in c[2], c
@@ -561,10 +575,13 @@ def test_weekly_scoring_leaves_the_pinned_worktree_clean(results):
     assert not Path(r["default_reports_dir"]).resolve().is_relative_to(Path(r["project_root"]).resolve())
 
 
-def test_final_from_the_pinned_worktree_at_x_is_invalid(results):
-    r = world(results, "A_pass")["repro_pinned"]["final_at_x"]
-    v = single_verdict(r)
-    assert v.startswith("Verdict: INVALID (frozen commit: pre-registered commit '<frozen commit>'"), v
+def test_final_from_the_worktree_pinned_at_y_gives_the_same_verdict(results):
+    """D-120: the code worktree is pinned at Y, which holds the filled pre-registration and every row."""
+    ev = world(results, "A_pass")
+    r = ev["repro_pinned"]
+    assert r["pinned_commit"] == ev["commits"]["Y_log"]
+    assert single_verdict(r["final_pinned"]) == single_verdict(ev["final_pass"]) == APPROVED
+    assert r["final_pinned"]["final_lines"]["binding"] == ev["final_pass"]["final_lines"]["binding"]
 
 
 # --------------------------------------------------------------------------- #

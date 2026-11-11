@@ -227,16 +227,19 @@ def prepare(spec: W.WorldSpec, root: Path) -> dict[str, Any]:
     p, probe = W.driver(world, "probe")
     assert p.returncode == 0, p.stderr[-3000:]
     ev["probe"] = probe
-    # the freeze: fill the commit field (and, for the rehearsal only, the synthetic stored-parts digest)
-    W.fill_preregistration(world.clone, x, built["stored_digest"])
+    # the freeze as D-120 does it, from Z: (rehearsal only: the synthetic stored-parts digest), the fill commit,
+    # one append-only change-log commit Y; the builds then run at Y
+    ev["base"] = W.git(world.clone, "rev-parse", "HEAD")
+    ev["base_commits"] = W.git(world.clone, "rev-list", "--count", f"{x}..HEAD")
+    W.write_rehearsal_digest(world.clone, built["stored_digest"])
+    sd = W.commit_paths(world.clone, [W.PREREG_DOC], "Rehearsal only: synthetic stored-parts digest",
+                        _t("2026-11-11T23:30:00+00:00"))
+    W.fill_commit_field(world.clone, x)
     f = W.commit_paths(world.clone, [W.PREREG_DOC], "Freeze: pre-registration commit field (synthetic rehearsal)",
                        _t("2026-11-12T00:00:00+00:00"))
-    W.append_changelog(world.clone, [W.changelog_row(f, W.PREREG_DOC, "freeze: commit field filled")])
-    l1 = W.commit_paths(world.clone, [W.CHANGELOG_DOC], "Change log: entry for the freeze commit",
-                        _t("2026-11-12T00:05:00+00:00"))
-    ev["commits"] = {"X": x, "F_fill": f, "L1_log_F": l1}
+    ev["freeze"] = freeze_changelog(world, x, f)
+    ev["commits"] = {"X": x, "S_rehearsal_digest": sd, "F_fill": f, "Y_log": ev["freeze"]["y"]}
     # Z may change allowed paths after X (ffml/data, scripts, docs); no frozen path may differ from X
-    ev["base"] = W.git(world.clone, "rev-parse", "HEAD~2")
     ev["diff_x_head"] = W.git(world.clone, "diff", "--name-only", x, "HEAD").splitlines()
     prereg = W.prereg_data((world.clone / W.PREREG_DOC).read_text(encoding="utf-8"))
     ev["diff_x_head_frozen_code"] = "\n".join(f for f in ev["diff_x_head"] if W.path_frozen(f, prereg))
@@ -266,6 +269,63 @@ def prepare(spec: W.WorldSpec, root: Path) -> dict[str, Any]:
 #: a simulated time after the window for finals that need one (world G: its excluded game is never final, so
 #: the final must run after that week's cutoff plus 14 days, as the real final will)
 FINAL_NOW = datetime(2027, 12, 2, 12, 0, tzinfo=UTC)
+
+
+def freeze_changelog(world: W.World, x: str, fill: str) -> dict[str, Any]:
+    """D-120 steps b to d: rows for every commit in X..fill in one append-only commit Y (the helper for the
+    commits outside the pinned build, hand-written rows for the ones it refuses), then the real
+    ``--prebuild-check`` at Y (exit 0) and at a Y without one row (exit 5)."""
+    import sys
+
+    clone = world.clone
+    helper = [sys.executable, str(clone / "scripts" / "livetest_changelog.py"), "--from", x, "--repo", str(clone),
+              "--json"]
+    out: dict[str, Any] = {}
+    p = W.run(world, [*helper, "--to", fill])
+    assert p.returncode in (0, 1), p.stderr[-2000:]
+    listed = json.loads(p.stdout)["missing"]
+    out["listed"] = [{k: m[k] for k in ("sha", "status", "subject", "paths", "why")} for m in listed]
+    p = W.run(world, [*helper, "--to", fill, "--append"])
+    assert p.returncode in (0, 1), p.stderr[-2000:]
+    out["appended_by_helper"] = json.loads(p.stdout)["appended"]
+    hand = [m for m in listed if m["status"] == "needs_hand_row"]
+    out["hand_rows"] = [m["sha"] for m in hand]
+    out["needs_owner"] = [m for m in listed if m["status"] not in ("auto", "needs_hand_row")]
+    if hand:
+        W.append_changelog(clone, [W.hand_row(m) for m in hand])
+    y = W.commit_paths(clone, [W.CHANGELOG_DOC], "Live-test change log: rows for every commit in X..fill (D-120)",
+                       _t("2026-11-12T00:05:00+00:00"))
+    out["y"] = y
+    p = W.run(world, [*helper, "--to", y])
+    out["helper_after_y"] = {"returncode": p.returncode, "missing": json.loads(p.stdout)["missing"] if p.stdout else None}
+    p = W.scorer_cli(world, "--prebuild-check", "--from", "", "--to", y)
+    out["prebuild_y"] = {"exit": p.returncode, "json": _last_json(p.stdout), "stderr": p.stderr[-800:]}
+    # the same commit Y without one row, on a side commit from the fill
+    drop = (hand or listed)[0]["sha"] if (hand or listed) else None
+    out["dropped"] = drop
+    if drop:
+        text, eol = W.read_text_lf(clone / W.CHANGELOG_DOC)
+        W.git(clone, "checkout", "-q", "--detach", fill)
+        lines = [ln for ln in text.split("\n") if not (ln.startswith("|") and drop[:12] in ln)]
+        assert len(lines) == len(text.split("\n")) - 1, "the dropped commit is not on exactly one row"
+        W.write_text_eol(clone / W.CHANGELOG_DOC, "\n".join(lines), eol)
+        y_drop = W.commit_paths(clone, [W.CHANGELOG_DOC], "Live-test change log: one row left out (rehearsal check)",
+                                _t("2026-11-12T00:06:00+00:00"))
+        W.git(clone, "checkout", "-q", "main")
+        p = W.scorer_cli(world, "--prebuild-check", "--from", "", "--to", y_drop)
+        out["prebuild_dropped"] = {"exit": p.returncode, "y_drop": y_drop, "json": _last_json(p.stdout),
+                                   "stderr": p.stderr[-800:]}
+    assert W.git(clone, "rev-parse", "HEAD") == y
+    return record(world.spec.name, "freeze", out)
+
+
+def _last_json(text: str) -> Any:
+    for line in reversed(text.strip().splitlines()):
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return None
 
 
 def final(world: W.World, *flags: str, label: str, env: dict[str, str] | None = None,
@@ -428,7 +488,7 @@ def pipeline_pass(root: Path, spawn: Callable[[str, Callable[[], dict[str, Any]]
                                    "differing": (forced.get("final_lines") or {}).get("sensitivity", {}).get("differing"),
                                    "final_md": forced["final_md"]}
     ev["git_scenarios"] = git_scenarios(world, ev["commits"])
-    ev["repro_pinned"] = record(spec.name, "repro_pinned", repro_pinned(world, ev["x"]))
+    ev["repro_pinned"] = record(spec.name, "repro_pinned", repro_pinned(world, ev["commits"]["Y_log"]))
     # last (they push to the branch): a stray MISSED marker on a committed week, then the QA-F28 attack
     ev["stray_marker"] = record(spec.name, "stray_marker", stray_marker(world, 2026, 13))
     return ev
@@ -566,7 +626,8 @@ def git_scenarios(world: W.World, commits: dict[str, str]) -> dict[str, Any]:
 
 
 def repro_pinned(world: W.World, x: str) -> dict[str, Any]:
-    """QA-F27 recheck: weekly scoring from a worktree pinned at X, then the runner's pin check; the final at X."""
+    """QA-F27 recheck: weekly scoring from the worktree pinned at the build commit (Y, D-120 step c), then the
+    runner's pin check; then the final run from that worktree."""
     pinned = world.root / "ffml-livetest-code"
     W.git(world.clone, "worktree", "add", "-q", "--detach", str(pinned), x)
     env = world.env(PYTHONPATH=str(pinned), FFML_REHEARSAL_CLONE=str(pinned))
@@ -577,7 +638,8 @@ def repro_pinned(world: W.World, x: str) -> dict[str, Any]:
                       cwd=pinned, env=env)
     res["returncode"] = p.returncode
     res["stderr_tail"] = p.stderr[-1500:]
-    res["final_at_x"] = final(world, "--no-sensitivity", label="final_at_x", env=env, cwd=pinned)
+    res["pinned_commit"] = x
+    res["final_pinned"] = final(world, "--no-sensitivity", label="final_from_pinned_worktree", env=env, cwd=pinned)
     return res
 
 
