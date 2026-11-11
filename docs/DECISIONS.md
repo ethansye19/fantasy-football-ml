@@ -126,6 +126,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-124 | 2026-11-10 | accepted (owner) | The real app uses the current 2026 season and week from Sleeper's state endpoint, cross-checked with the nflverse schedule; data refreshed through 2026 week 9; 2024 replays only in private test, labeled as test data; gated features stay on no approved model and show the 2026 context |
 | D-125 | 2026-11-10 | decided (orchestrator, D-117) | Candidate X = 071c3a4 (HEAD after D-121 to D-124; contains every required commit); the freeze is approved only on QA's full rehearsal at X and the Evaluator's pass |
 | D-126 | 2026-11-10 | decided (orchestrator, D-117) | F8: a season is skipped as not yet published only while none of its regular-season games is final; fixed now in ffml/data (allowed path, after X, hand-written change-log row with the Evaluator's verification); X stays 071c3a4 |
+| D-127 | 2026-11-11 | decided (orchestrator, D-117, applying the owner's D-098 item 4) | The live test starts at Week 11: window 2026 weeks 11-18 plus 2027 weeks 1-10 (18 weeks, all rules unchanged); Week 10 runs end to end as a labeled real-data rehearsal on the dry-run branch, not part of the test |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1161,6 +1162,40 @@ retries. `ffml/data/` is an allowed path, so the fix lands after X with a
 hand-written change-log row verified by the Evaluator. It changes no row of
 any published season and no committed week (none exists yet), so X stays
 071c3a4 and QA's rehearsal at X remains the freeze evidence.
+
+## D-127 The live test starts at Week 11 (orchestrator under D-117, applying D-098 item 4; 2026-11-11)
+
+At 17:00 UTC on 2026-11-11 the freeze was not done. Still to run: QA's full
+rehearsal at X (2-3 hours), the Evaluator's pass/fail, the freeze steps, the
+pinned setup, and the owner's task registration and logged-off dry run
+(D-107). D-106 requires each week's run to start at least 24 hours before
+its deadline, so Week 10's run would have had to start by about 2026-11-12
+01:00 UTC. Meeting that would have meant rushing the review or bending the
+24-hour rule. The owner fixed the answer in advance (D-098 item 4): "Freeze
+and pre-register v2 before Week 10 kickoff, unless that review needs more
+time. If so, start the live test at the next full week."
+
+Decision:
+- The test starts at 2026 Week 11 (first kickoff 2026-11-20 01:15 UTC).
+- The window keeps the pre-registered length of 18 weeks: 2026 weeks 11-18
+  plus 2027 weeks 1-10.
+- The 22 rules, the bootstrap, the miss rule (two excluded, a third
+  INVALID), sealing, the Friday cutoff and every other rule are unchanged.
+- The pass-rate estimates are recomputed for the shifted window and stated
+  in the pre-registration before the freeze.
+- The expected verdict moves one week later, to about 2027-11-19 (the
+  Friday cutoff after 2027 week 10).
+- Week 10 is not part of the test and does not count as a miss. It runs end
+  to end as a real-data rehearsal on the dry-run branch, labeled "rehearsal":
+  the build before its kickoff on 2026-11-13, and scoring after its Friday
+  cutoff on 2026-11-20. That exercises the real refresh, comparators,
+  weekly sensitivity step and sealing on live data before the first counted
+  week.
+- Why 18 weeks rather than 17: the D-105 fallback and its pass-rate
+  estimate (0.557) were set for an 18-week window. Keeping the length keeps
+  the design the owner approved, and changes only which weeks are in it.
+- This decision was made before any Week 10 data existed, and nothing in it
+  depends on outcomes.
 
 ## Owner answers received 2026-11-01
 
