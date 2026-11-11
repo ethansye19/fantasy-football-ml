@@ -1,14 +1,14 @@
 # Known limitations and next improvements
 
-Last updated 2026-11-07 (OR-6.2). This list is ordered by priority: P1
+Last updated 2026-11-11 (OR-6.2; D-127 window). This list is ordered by priority: P1
 matters most. Each item gives the evidence, what limits the damage today,
 and the next improvement.
 
 **How to read it.** Every number is copied from a committed report or
 decision, and the file is named next to it. The chain_v2 live test freezes
 the model, feature, simulation, scoring and scorer code from the freeze until
-the verdict, about 2027-11-12 (docs/status/livetest-preregistration-2026.md;
-D-111, D-119). So any improvement to those paths must wait for the verdict or
+the verdict, about 2027-11-19 (docs/status/livetest-preregistration-2026.md;
+D-111, D-127). So any improvement to those paths must wait for the verdict or
 be built as a separate v3. A v3 lives on its own branch or outside every
 frozen path, never reads the sealed results, and needs its own pre-registered
 test on weeks it has not seen (pre-registration, "A separate v3 during the
@@ -18,14 +18,14 @@ before first use.
 
 The model card (reports/MODEL_CARD.md) gives the metrics behind P1 to P5.
 
-## P1. No approved model; the app serves no projections until about 2027-11-12
+## P1. No approved model; the app serves no projections until about 2027-11-19
 
 - **Evidence.**
   - chain_v1 was NOT APPROVED on the one-time 2025 holdout, because L17 (QB tie-aware coverage) was 0.739, outside [0.75, 0.85]. Gate 3 failed (D-097; docs/status/gate-3.md; reports/evaluator_release_chain_v1-primary-c2024w19-20261102T222634Z.md).
-  - No resized nine-week design met the pre-set limits; the best good-model pass rate was 0.614, below 0.70. The fallback therefore applies: the unchanged 22 lines over 2026 weeks 10-18 and 2027 weeks 1-9, with no provisional tier (D-110).
-  - The verdict is expected about 2027-11-12 (D-119).
+  - No resized nine-week design met the pre-set limits; the best good-model pass rate was 0.614, below 0.70. The fallback therefore applies: the unchanged 22 lines over 18 weeks, with no provisional tier (D-110). The window is 2026 weeks 11-18 and 2027 weeks 1-10 (D-127).
+  - The verdict is expected about 2027-11-19 (D-127).
 - **Effect.**
-  - In production, every projection route answers `no_approved_model`. The real app shows no projections, start/sit, waivers, trades or rest-of-season rankings through the rest of 2026, the 2027 draft and 2027 weeks 1-9 (D-099, D-100, D-101).
+  - In production, every projection route answers `no_approved_model`. The real app shows no projections, start/sit, waivers, trades or rest-of-season rankings through the rest of 2026, the 2027 draft and 2027 weeks 1-10 (D-099, D-100, D-101, D-127).
   - Gate 4 stays open until a model passes and is connected end to end (D-099).
 - **Mitigation now.**
   - chain_v2 is under the pre-registered live test (D-098).
@@ -97,10 +97,10 @@ The model card (reports/MODEL_CARD.md) gives the metrics behind P1 to P5.
   - A smoother calibrator for K and DST is on the improvements list (D-089).
   - Boom and bust are not among the 22 lines, so removing a flag needs its own pre-registered check.
 
-## P6. The live test is small: even a good model passes only about 56% of the time
+## P6. The live test is small: even a good model passes only about 58% of the time
 
 - **Evidence.**
-  - Over 18 scored weeks, a good model (the validated accuracy, exactly calibrated) passes the 22 lines with probability 0.557. With one missed week the figure is 0.518, and with two it is 0.500.
+  - Over 18 scored weeks, a good model (the validated accuracy, exactly calibrated) passes the 22 lines with probability 0.580 in the D-127 window (2026 weeks 11-18, then 2027 weeks 1-10). With one missed week the figure is 0.540, and with two it is 0.498 (5,000 replicates each; data/reports/live_test_power_shifted_window.json). The original window gave 0.557, 0.518 and 0.500.
   - A model with no edge passed in none of 5,000 replicates (95% upper bound 0.0006) (pre-registration, "Missed weeks").
   - Any nine-week design that changes only the accuracy lines tops out near 61%, because the start/sit and coverage lines set that limit (D-110).
   - The 500-draw bootstrap's fixed weights move the estimate by about 5 points, depending on the calendar order of the weeks (D-111; docs/status/livetest-power-reconciliation.md).

@@ -8,13 +8,13 @@ with custom scoring and roster rules applied at request time (no retraining).
 
 **Status:** no approved model. The app shows "no approved model" and serves
 no projections until a model passes its pre-registered test, expected about
-2027-11-12. See [Current status](#current-status) below,
+2027-11-19. See [Current status](#current-status) below,
 [docs/PLAN.md](docs/PLAN.md) for phases and gates, and
 [docs/DECISIONS.md](docs/DECISIONS.md) for the decision log.
 
 ## Current status
 
-As of 2026-11-07:
+As of 2026-11-11:
 
 - **Gates.**
   - Gate 2 (Data) passed on 2026-11-02 ([docs/status/gate-2.md](docs/status/gate-2.md)).
@@ -25,9 +25,9 @@ As of 2026-11-07:
   - chain_v1 was NOT APPROVED on its one-time 2025 holdout test. QB tie-aware coverage of the 80% range was 0.739, outside [0.75, 0.85]. The other 21 of 22 pre-registered lines passed (D-097).
   - In production every projection route answers `no_approved_model`. Projections, start/sit, waivers, trades and rest-of-season rankings are off. Labeled private tests are the exception (D-099, D-100, D-101).
 - **The chain_v2 live test.**
-  - chain_v2 adds 2025 to training and updates its calibration weekly (D-098). It is under a pre-registered live test: the unchanged 22 lines over 2026 weeks 10-18 and 2027 weeks 1-9, with one verdict expected about 2027-11-12 ([docs/status/livetest-preregistration-2026.md](docs/status/livetest-preregistration-2026.md); D-110, D-111, D-119).
-  - Even a good model has only about a 56% chance of passing.
-  - The freeze must happen before the Week 10 kickoff (2026-11-13 01:15 UTC). It waits for a full rehearsal at candidate X (2872d13) and the Evaluator's review (D-118).
+  - chain_v2 adds 2025 to training and updates its calibration weekly (D-098). It is under a pre-registered live test: the unchanged 22 lines over 2026 weeks 11-18 and 2027 weeks 1-10 (18 scored weeks), with one verdict expected about 2027-11-19 ([docs/status/livetest-preregistration-2026.md](docs/status/livetest-preregistration-2026.md); D-110, D-111, D-127).
+  - Even a good model has only about a 58% chance of passing (54% with one missed week, 50% with two).
+  - The test starts at Week 11 (D-127). Week 10 is not part of it and is not a miss; it runs as a labeled rehearsal on the dry-run branch. The freeze waits for a full rehearsal at candidate X (4799913) and the Evaluator's review (D-129, D-130).
 - **Against the transparent baselines.**
   - On 2025 the chain beat the 4-game rolling average, the prior-season average and the 8-game rolling median on MAE and pinball loss at QB, RB, WR and TE (lines L01-L12).
   - At K it did not beat the prior-season average on MAE.

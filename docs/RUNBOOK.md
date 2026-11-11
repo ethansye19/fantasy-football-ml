@@ -802,7 +802,7 @@ sealed yet (locally or on the branch), and 6 on any difference. The scoring
 itself, the weekly reports and the final verdict are the Evaluator's; the
 runner never reads a sealed part.
 
-The final (Evaluator, once, after 2027 week 9) runs **from the main checkout,
+The final (Evaluator, once, after 2027 week 10) runs **from the main checkout,
 never from the pinned worktree** (D-120): `python -m
 ffml.eval.livetest_score --final`. **Exit 75 means the GitHub fetch of
 `livetest-2026` failed** (D-116, A4): no verdict was recorded, no `Verdict:`

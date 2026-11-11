@@ -121,10 +121,10 @@ MODEL_CARD: dict[str, Any] = {
         "2025 holdout test: its quarterback 80% ranges were too narrow (tie-aware coverage "
         "0.739, required 0.75 to 0.85); the other 21 of 22 pre-registered checks passed (D-097). "
         "A second version (chain_v2) adds 2025 to training and updates its calibration weekly; "
-        "it must pass a pre-registered live test over 2026 weeks 10-18 and 2027 weeks 1-9 "
-        "before any projections are published (D-098, D-110). The verdict is expected about "
-        "2027-11-12; even a well-calibrated model with the validated accuracy has only about a "
-        "56% chance of passing that test (D-111)."
+        "it must pass a pre-registered live test over 2026 weeks 11-18 and 2027 weeks 1-10 "
+        "before any projections are published (D-098, D-110, D-127). The verdict is expected "
+        "about 2027-11-19; even a well-calibrated model with the validated accuracy has only "
+        "about a 58% chance of passing that test (D-111, D-127)."
     ),
     "definitions": {
         "floor": "10th percentile of simulated points under your scoring.",

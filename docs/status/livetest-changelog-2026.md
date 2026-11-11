@@ -1,7 +1,7 @@
 # Live-test change log (companion to docs/status/livetest-preregistration-2026.md)
 
 Every change to the repository that a build, a data refresh or the scorer
-uses during the chain_v2 live test (2026 weeks 10-18 and 2027 weeks 1-9)
+uses during the chain_v2 live test (2026 weeks 11-18 and 2027 weeks 1-10, D-127)
 is listed here before its first use. Allowed paths and the verification each
 change needs are defined in the pre-registration ("Frozen code policy").
 Any path not listed as allowed in the pre-registration is frozen.
