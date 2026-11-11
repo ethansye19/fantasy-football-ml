@@ -69,6 +69,21 @@ def add_weekly(registry, loader, name="fake_weekly", **overrides) -> DatasetSpec
     return spec
 
 
+def add_schedule(registry, final: set[int] = frozenset(), name="schedules") -> DatasetSpec:
+    """A fake schedule: one REG game per season, final (``result`` set) for the seasons in ``final``."""
+
+    def loader(season=None, **kwargs):
+        return pl.DataFrame({
+            "game_id": [f"{season}_01_A_B"], "season": [season], "week": [1], "game_type": ["REG"],
+            "result": [3 if season in final else None],
+        }, schema_overrides={"result": pl.Int64})
+
+    spec = DatasetSpec(name=name, loader=loader, min_season=2016, key_columns=["game_id"], casts={},
+                       drop_null_keys=["game_id"])
+    registry[name] = spec
+    return spec
+
+
 class Loader:
     """Configurable fake loader that records its calls."""
 
@@ -226,16 +241,39 @@ def test_seasons_to_load_and_the_plan_for_2016_2026_are_unchanged(registry, stor
 
 
 def test_newest_season_not_yet_published_is_skipped_not_a_gap(registry, store, pin_path, caplog) -> None:
+    """D-122 with D-126: 2027 has no final game yet, so its absent file is skipped."""
     not_found = ConnectionError("Failed to download https://x/2027.parquet: 404 Client Error")
     add_weekly(registry, Loader(fail={2027: not_found}), min_season=2016)
-    run_ingest(list(range(2024, 2027)), ["fake_weekly"], store=store, pin_path=pin_path)  # 2024-2026 published
+    add_schedule(registry, final={2024, 2025, 2026})
+    both = ["fake_weekly", "schedules"]
+    run_ingest(list(range(2024, 2027)), both, store=store, pin_path=pin_path)  # 2024-2026 published
     with caplog.at_level("WARNING"):
-        result = run_ingest(list(range(2024, 2028)), ["fake_weekly"], store=store, pin_path=pin_path)["fake_weekly"]
+        result = run_ingest(list(range(2024, 2028)), both, store=store, pin_path=pin_path)["fake_weekly"]
     assert result.not_yet_published == [2027] and result.skipped_seasons == [] and result.latest_updated
     assert sorted(result.rows_per_partition) == ["2024", "2025", "2026"]
     assert "not published yet" in caplog.text
     manifest = store.read_manifest("fake_weekly")
     assert manifest["seasons"] == [2024, 2025, 2026] and manifest["extra"]["not_yet_published_seasons"] == [2027]
+
+
+def test_newest_season_with_a_final_game_and_no_file_is_a_gap(registry, store, pin_path, caplog) -> None:
+    """D-126: once a 2027 regular-season game is final, an absent 2027 file fails the dataset as a gap."""
+    not_found = ConnectionError("Failed to download https://x/2027.parquet: 404 Client Error")
+    add_weekly(registry, Loader(fail={2027: not_found}), min_season=2016)
+    add_schedule(registry, final={2024, 2025, 2026, 2027})
+    both = ["fake_weekly", "schedules"]  # schedules is ingested first whatever the order asked
+    with caplog.at_level("INFO"):
+        with pytest.raises(IngestError, match="gap") as excinfo:
+            run_ingest(list(range(2024, 2028)), both, store=store, pin_path=pin_path)
+    assert set(excinfo.value.failures) == {"fake_weekly"}
+    assert "a regular-season game of that season is final (D-126)" in str(excinfo.value)
+    assert store.latest_id("fake_weekly") is None and store.latest_id("schedules") is not None
+    assert caplog.text.index("schedules season 2024") < caplog.text.index("fake_weekly season 2024")
+    # with no schedule at all, nothing is skipped as not yet published
+    registry.clear()
+    add_weekly(registry, Loader(fail={2027: not_found}), min_season=2016, name="other_weekly")
+    with pytest.raises(IngestError, match="gap"):
+        run_ingest([2026, 2027], ["other_weekly"], store=SnapshotStore(store.root / "empty"), pin_path=pin_path)
 
 
 def test_missing_season_before_the_newest_published_is_still_a_gap(registry, store, pin_path) -> None:

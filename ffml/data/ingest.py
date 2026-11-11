@@ -39,9 +39,15 @@ one exception (D-122): a season newer than every season the source has
 published for the dataset (every season in its current ``LATEST`` snapshot
 and every season loaded in this run) whose file does not exist yet is
 skipped with a warning as "not yet published" (``extra.not_yet_published_seasons``
-and :attr:`DatasetResult.not_yet_published`). If any later requested season
-then loads, the skipped one was not the newest and the dataset fails as a gap.
-Every published season loads exactly as before.
+and :attr:`DatasetResult.not_yet_published`), but only while none of that
+season's regular-season games is final in the schedule loaded in the same
+run (D-126). ``schedules`` is therefore ingested first, and the final seasons
+are read from its ``LATEST`` snapshot (the previous one when it is not part
+of the run; with no schedule at all nothing is skipped). Once a game of the
+season is final, a missing file fails the dataset as a gap, so the refresh
+stops before any processed snapshot is written and the runner retries. If
+any later requested season loads, the skipped one was not the newest and the
+dataset fails as a gap. Every published season loads exactly as before.
 
 Failures are per dataset: the run continues with the remaining datasets and
 raises at the end (``SchemaDriftError`` when every failure was drift, otherwise
@@ -57,6 +63,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import polars as pl
 
 from ffml.data.nflverse import (
     DATASETS,
@@ -287,13 +295,33 @@ def _published_seasons(store: SnapshotStore, spec: DatasetSpec) -> list[int]:
         return []
 
 
+SCHEDULES_DATASET = "schedules"
+
+
+def final_seasons(store: SnapshotStore) -> set[int] | None:
+    """Seasons with at least one final regular-season game in the ``LATEST`` schedule (D-126); ``None``: no schedule."""
+    try:
+        frame = store.read(SCHEDULES_DATASET, columns=["season", "game_type", "result"])
+    except (FileNotFoundError, OSError, ValueError, pl.exceptions.PolarsError):
+        return None
+    done = frame.filter((pl.col("game_type") == "REG") & pl.col("result").is_not_null())
+    return {int(s) for s in done["season"].unique().to_list()}
+
+
 def ingest_dataset(
     spec: DatasetSpec,
     seasons: list[int],
     store: SnapshotStore,
     pins: dict[str, Any],
+    *,
+    final: set[int] | None = None,
 ) -> DatasetResult:
-    """Download, clean, snapshot, and schema-check one dataset."""
+    """Download, clean, snapshot, and schema-check one dataset.
+
+    ``final`` holds the seasons with a final regular-season game (D-126); a
+    season in it, or any season when it is ``None``, is never skipped as not
+    yet published.
+    """
     started = time.perf_counter()
     result = DatasetResult(dataset=spec.name, store_path=spec.store_path)
     fetched_at = _fetched_at()
@@ -314,7 +342,8 @@ def ingest_dataset(
                 try:
                     df = fetch(spec, season)
                 except SeasonNotAvailable as exc:
-                    if latest_key is not None and season > max([*published, int(latest_key)]):
+                    if (latest_key is not None and season > max([*published, int(latest_key)])
+                            and final is not None and season not in final):
                         log.warning(
                             "%s: season %s is newer than every published season and not published yet; "
                             "skipped (%s)", spec.name, season, exc,
@@ -322,9 +351,11 @@ def ingest_dataset(
                         result.not_yet_published.append(season)
                         continue
                     if latest_key is not None:
+                        why = (" although a regular-season game of that season is final (D-126)"
+                               if final is not None and season in final else "")
                         raise IngestError(
                             f"{spec.name}: season {season} missing upstream after season "
-                            f"{latest_key} loaded (gap): {exc}"
+                            f"{latest_key} loaded (gap){why}: {exc}"
                         ) from exc
                     log.warning(
                         "%s: season %s not published upstream; skipped (%s)", spec.name, season, exc
@@ -446,7 +477,8 @@ def run_ingest(
     if not seasons:
         raise ValueError("seasons is empty")
     seasons = sorted(set(int(s) for s in seasons))
-    specs = select_specs(datasets)
+    # schedules first, so the other datasets see the schedule loaded in this run (D-126)
+    specs = sorted(select_specs(datasets), key=lambda s: s.name != SCHEDULES_DATASET)
     store = store or SnapshotStore()
     mirror_to_working = pin_path is None
     pin_path = resolve_pin_path(pin_path, update_tracked=update_schema_pin)
@@ -465,9 +497,10 @@ def run_ingest(
 
     results: dict[str, DatasetResult] = {}
     failures: dict[str, Exception] = {}
+    final = final_seasons(store)
     for spec in specs:
         try:
-            results[spec.name] = ingest_dataset(spec, seasons, store, pins)
+            results[spec.name] = ingest_dataset(spec, seasons, store, pins, final=final)
         except Exception as exc:  # keep going; report at the end
             failures[spec.name] = exc
             results[spec.name] = DatasetResult(
@@ -475,6 +508,8 @@ def run_ingest(
             )
             log.error("%s failed: %s", spec.name, exc, exc_info=not isinstance(exc, IngestError))
         finally:
+            if spec.name == SCHEDULES_DATASET:
+                final = final_seasons(store)
             if json.dumps(pins, sort_keys=True) != pins_before:
                 save_pins(pin_path, pins)
                 pins_before = json.dumps(pins, sort_keys=True)
@@ -518,12 +553,14 @@ def _log_summary(results: dict[str, DatasetResult]) -> None:
 
 
 __all__ = [
+    "SCHEDULES_DATASET",
     "SCHEMA_PIN_PATH",
     "DatasetResult",
     "DriftReport",
     "IngestError",
     "SchemaDriftError",
     "check_schema",
+    "final_seasons",
     "ingest_dataset",
     "load_pins",
     "resolve_pin_path",

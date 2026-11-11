@@ -142,9 +142,56 @@ def test_refresh_ingest_succeeds_when_the_newest_season_is_not_published(tmp_set
     import dataclasses
 
     fake_registry["fake_weekly"] = dataclasses.replace(fake_registry["fake_weekly"], loader=loader_2027)
-    (result,) = refresh.run_refresh("ingest", seasons=[2025, 2026, 2027])
+    fake_registry["schedules"] = _schedule_spec(final={2025, 2026})  # no 2027 game final yet (D-126)
+    pins = tmp_settings.data_dir / "pins.json"  # fresh pins: the fake schedule is not the real one
+    (result,) = refresh.run_refresh("ingest", seasons=[2025, 2026, 2027], pin_path=pins)
     assert result.ok, result.error
     assert result.info["not_yet_published"] == {"fake_weekly": [2027]}
+
+
+def _schedule_spec(final: set[int]) -> DatasetSpec:
+    def loader(season=None, **kwargs):
+        return pl.DataFrame({
+            "game_id": [f"{season}_01_A_B"], "season": [season], "week": [1], "game_type": ["REG"],
+            "result": [3 if season in final else None],
+        }, schema_overrides={"result": pl.Int64})
+
+    return DatasetSpec(name="schedules", loader=loader, min_season=2016, key_columns=["game_id"], casts={},
+                       drop_null_keys=["game_id"])
+
+
+def test_refresh_stops_before_process_when_a_final_season_file_is_missing(tmp_settings, fake_registry):
+    """D-126: 2027 has a final game but no stats file: the ingest step fails as a gap and process never runs."""
+    import contextlib
+    import dataclasses
+    import io
+
+    loader = fake_registry["fake_weekly"].loader
+
+    def loader_2027(season=None, **kwargs):
+        if season == 2027:
+            raise ConnectionError("Failed to download https://x/2027.parquet: 404 Client Error")
+        return loader(season=season, **kwargs)
+
+    fake_registry["fake_weekly"] = dataclasses.replace(fake_registry["fake_weekly"], loader=loader_2027)
+    fake_registry["schedules"] = _schedule_spec(final={2025, 2026, 2027})
+    steps: list[str] = []
+
+    def in_process(argv, **kwargs):  # runs each step here, against the fake registry
+        steps.append(argv[argv.index("--step") + 1])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = refresh.main(argv[3:])
+        return subprocess.CompletedProcess(argv, code, out.getvalue(), "")
+
+    with pytest.raises(refresh.RefreshError, match="gap") as excinfo:
+        refresh.run_refresh("all", seasons=[2025, 2026, 2027], runner=in_process,
+                            pin_path=tmp_settings.data_dir / "pins.json")
+    assert steps == ["ingest"]  # stopped before process: no processed snapshot is written
+    assert "a regular-season game of that season is final (D-126)" in str(excinfo.value)
+    assert "schema drift" not in str(excinfo.value)
+    assert [r.step for r in excinfo.value.results] == ["ingest"]
+    assert not (tmp_settings.processed_dir / "dim_game").exists()
 
 
 def test_all_runs_each_step_in_its_own_process_and_stops_at_a_failure(tmp_settings):
