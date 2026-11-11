@@ -1,7 +1,9 @@
 # Weekly operations runbook (OR-5.1)
 
-This runbook covers the chain_v2 live test over 2026 weeks 10-18 (D-098,
-D-105). Each week's projections are saved and hashed before that week's
+This runbook covers the chain_v2 live test over an 18-week window: 2026
+weeks 11-18 and 2027 weeks 1-10 (D-127; D-098, D-105). Week 10 is not part of
+the test: it runs as a labeled real-data rehearsal on the dry-run branch
+(section 19). Each week's projections are saved and hashed before that week's
 official first kickoff. They are scored only after the games finish. The
 runbook also covers the alerts that support the test (QA-5.1), the operating
 rules for missed weeks (D-106, revisited in D-111: up to two misses), the
@@ -71,11 +73,11 @@ shared with `main`. It is checked out in `../ffml-livetest-commitments`.
 ```
 README.md, .gitattributes (* -text: bytes are committed exactly)
 STATUS.md                             per-week state, misses and the test state; regenerated at every push
-2026w10/commitment.json
-2026w10/player_summary.parquet        copy when under 5 MB; its SHA-256 is in the commitment
+2026w11/commitment.json
+2026w11/player_summary.parquet        copy when under 5 MB; its SHA-256 is in the commitment
 2026w11/MISSED.json                   the week was missed: reason, log excerpt, miss number, test state
 2026w11/late/commitment.json          built before kickoff, pushed after it; not part of the test
-2026w10/sealed_hashes.json            SHA-256 of the week's sealed metric parts, after scoring (section 15)
+2026w11/sealed_hashes.json            SHA-256 of the week's sealed metric parts, after scoring (section 15)
 rehearsal/2026w10-<created stamp>/... rehearsals, not part of the test
 ```
 
@@ -122,7 +124,7 @@ Run everything from the repository root in PowerShell. Set
 2. **Record the window and the pin.**
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_week.py init --season 2026 --weeks 10-18 `
+   .venv\Scripts\python scripts\livetest_week.py init --season 2026 --weeks 11-18 `
      --code-worktree ..\ffml-livetest-code --python ..\ffml-livetest-code\.venv\Scripts\python.exe `
      --expected-commit <Y> --note "pinned at Y, the change-log commit after the fill commit (D-120)"
    ```
@@ -135,7 +137,9 @@ Run everything from the repository root in PowerShell. Set
    repository, where the pre-registration carries the filled commit and the
    change log is complete (section 15).
 
-   If the design starts at the next full week, use `--weeks 11-18`. With
+   The test starts at week 11 (D-127), so the 2026 weeks are 11-18; the
+   miss count, `STATUS.md` and `status` follow the pre-registration's
+   `window` (2026 weeks 11-18 and 2027 weeks 1-10), never these flags. With
    `--force` the config is replaced. The old values are kept under `history`.
    `init` also records the pre-registration it found
    (`docs/status/livetest-preregistration-2026.md`, or `--preregistration`)
@@ -222,8 +226,8 @@ attempts are used up or K - 3 h passes, and then uses the newest snapshots.
 The same applies when earlier weeks' games are still not final in the data.
 
 Schedule examples (UTC):
-- week 10: K = 2026-11-13 01:15; the run starts 2026-11-12 01:00 (Wednesday
-  20:00 ET) and repeats until 2026-11-13 01:10.
+- week 11, the first test week: K = 2026-11-20 01:15; the run starts
+  2026-11-19 01:00 (Wednesday 20:00 ET) and repeats until 2026-11-20 01:10.
 - week 12 is on Thanksgiving eve: K = 2026-11-26 01:00 (Wednesday 20:00 ET);
   the run starts 2026-11-25 00:45 (Tuesday 19:45 ET).
 - week 18 is tentative in the current schedule (all games 2027-01-10 18:00);
@@ -233,8 +237,8 @@ Schedule examples (UTC):
 Manual run, the same command the task uses:
 
 ```powershell
-.venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 10
-.venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 10 --dry-run   # changes nothing
+.venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 11
+.venv\Scripts\python scripts\livetest_week.py run --season 2026 --week 11 --dry-run   # changes nothing
 .venv\Scripts\python scripts\livetest_week.py run --retry-every-minutes 30            # keep retrying in one process
 ```
 
@@ -268,7 +272,7 @@ Manual run, the same command the task uses:
    ```
 
    Find the entry whose `after` is the commit sha, in
-   `data/livetest/runner/2026w10/push_record.json`. Compare its `timestamp`
+   `data/livetest/runner/2026w11/push_record.json`. Compare its `timestamp`
    with K.
 
    The push record also stores:
@@ -281,10 +285,10 @@ Manual run, the same command the task uses:
 3. **Bytes on the remote equal the local files and the manifest:**
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_week.py verify --season 2026 --week 10
+   .venv\Scripts\python scripts\livetest_week.py verify --season 2026 --week 11
    git fetch origin livetest-2026
-   git show origin/livetest-2026:2026w10/commitment.json > $env:TEMP\c.json; Get-FileHash $env:TEMP\c.json
-   ..\ffml-livetest-code\.venv\Scripts\python -m ffml.cli livetest verify data\livetest\2026w10\commitment.json
+   git show origin/livetest-2026:2026w11/commitment.json > $env:TEMP\c.json; Get-FileHash $env:TEMP\c.json
+   ..\ffml-livetest-code\.venv\Scripts\python -m ffml.cli livetest verify data\livetest\2026w11\commitment.json
    ```
 
    `verify` recomputes the digest, re-hashes every listed file, compares the
@@ -447,8 +451,8 @@ Useful one-off commands:
 ```powershell
 .venv\Scripts\ffml refresh --step all                               # the five refresh steps, one child process each
 .venv\Scripts\python scripts\livetest_week.py plan                  # the week plan and trigger times
-.venv\Scripts\python scripts\livetest_week.py watchdog --season 2026 --week 10
-.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 10   # branch copy vs local sealed file
+.venv\Scripts\python scripts\livetest_week.py watchdog --season 2026 --week 11
+.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 11   # branch copy vs local sealed file
 .venv\Scripts\python scripts\alert.py tail -n 20
 .venv\Scripts\python scripts\alert.py send --kind push_failure --message "forced failure test" --severity warning
 .venv\Scripts\python scripts\alert.py check-stale --now 2026-11-21T12:00:00Z
@@ -529,7 +533,7 @@ Two GitHub behaviours that can silence this watchdog (QA-F25), and what to do:
 
 Manual run (Actions, `livetest watchdog`, Run workflow): `branch`
 (`livetest-dryrun` for the dry run), `now` (a clock override such as
-`2026-11-12T19:00:00Z`, which is K - 6 h 15 min for week 10) and
+`2026-11-19T19:00:00Z`, which is K - 6 h 15 min for week 11) and
 `force_window` (check even outside the windows). The same from a shell:
 
 ```powershell
@@ -570,7 +574,7 @@ it down on kickoff days (or turn Fast Startup off), and keep wake timers
 enabled on AC. Settings are changed by the owner in Power Options, not by any
 script here.
 
-## 13. Logged-off dry run before Week 10 (D-107)
+## 13. Logged-off dry run before Week 11 (D-107)
 
 The dry run proves, while the owner is logged off: the scheduled task starts,
 the build runs, the push lands on a test branch, a failure raises an alert,
@@ -635,7 +639,7 @@ Step by step (about two hours):
    ```powershell
    .venv\Scripts\python scripts\livetest_week.py status --dry-run-branch livetest-dryrun    # pushed True
    git ls-remote origin livetest-dryrun livetest-2026                                       # only livetest-dryrun moved
-   .venv\Scripts\python scripts\livetest_week.py verify --season 2026 --week 10 --dry-run-branch livetest-dryrun
+   .venv\Scripts\python scripts\livetest_week.py verify --season 2026 --week 11 --dry-run-branch livetest-dryrun
    ```
 
    The run log shows `build: commitment written` only in the first run and
@@ -658,8 +662,8 @@ Step by step (about two hours):
 A dry run can also be done logged on, by hand, without the scheduler:
 
 ```powershell
-.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 10 --force-fail push
-.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 10
+.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 11 --force-fail push
+.venv\Scripts\python scripts\livetest_week.py run --dry-run-branch livetest-dryrun --season 2026 --week 11
 ```
 
 ## 14. Registration command and least privilege (D-107)
@@ -683,7 +687,7 @@ Every part, in plain words:
 | (implicit) `WakeToRun` | the task may wake the laptop from sleep (needs wake timers enabled, section 12); `-NoWake` turns this off |
 | (implicit) `IgnoreNew`, 5-hour limit, 2 restarts | no overlapping runs; a run is stopped after 5 hours; a crashed task is restarted twice, 10 minutes apart |
 | `-TaskFolder "\ffml\"` (default) | the tasks live in the `ffml` folder of Task Scheduler. If registration fails with "Access is denied" for the folder, use `-TaskFolder "\"` (the root folder); no administrator rights are needed either way |
-| `-Weeks 10-18 -Season 2026` | only if `init` has not been run yet; otherwise the window comes from `data\livetest\config.json` |
+| `-Weeks 11-18 -Season 2026` | only if `init` has not been run yet; otherwise the window comes from `data\livetest\config.json` (D-127: the test starts at week 11; week 10 is the rehearsal of section 19 and gets no task) |
 | `-DailyCheckTime 15:00` (default) | the daily check's local time |
 
 What the registered tasks can and cannot do:
@@ -701,8 +705,8 @@ Check after registering:
 
 ```powershell
 Get-ScheduledTask -TaskPath "\ffml\" | Format-Table TaskName, State
-(Get-ScheduledTask -TaskPath "\ffml\" -TaskName "livetest-2026w10-run").Principal   # LogonType Password, RunLevel Limited
-Get-ScheduledTaskInfo -TaskPath "\ffml\" -TaskName "livetest-2026w10-run"            # NextRunTime
+(Get-ScheduledTask -TaskPath "\ffml\" -TaskName "livetest-2026w11-run").Principal   # LogonType Password, RunLevel Limited
+Get-ScheduledTaskInfo -TaskPath "\ffml\" -TaskName "livetest-2026w11-run"            # NextRunTime
 ```
 
 To remove everything: `scripts\livetest_schedule.ps1 -Unregister`.
@@ -787,9 +791,9 @@ By hand:
 
 ```powershell
 .venv\Scripts\python scripts\livetest_week.py score-week                          # the Friday job, oldest unsealed week
-.venv\Scripts\python scripts\livetest_week.py seal --season 2026 --week 10        # publish the hashes of an already scored week
-.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 10  # branch copy vs local sealed file and parts
-git fetch origin livetest-2026; git show origin/livetest-2026:2026w10/sealed_hashes.json
+.venv\Scripts\python scripts\livetest_week.py seal --season 2026 --week 11        # publish the hashes of an already scored week
+.venv\Scripts\python scripts\livetest_week.py seal-check --season 2026 --week 11  # branch copy vs local sealed file and parts
+git fetch origin livetest-2026; git show origin/livetest-2026:2026w11/sealed_hashes.json
 ```
 
 `seal-check` exits 0 when the branch copy matches the local sealed file and
@@ -809,10 +813,10 @@ Check the network and `gh auth status`, then simply run the final again.
 > processed snapshots between the freeze and the final evaluation: each sealed week pins the
 > first processed snapshot at or after its data cutoff, and a rescore must find it.
 
-## 16. Re-initialising for 2027 weeks 1-9 (R3)
+## 16. Re-initialising for 2027 weeks 1-10 (R3, D-127)
 
-The window is 2026 weeks 10-18 and 2027 weeks 1-9 (the pre-registration's
-`window`). The runner targets one season at a time (`init --season`), so it
+The window is 2026 weeks 11-18 and 2027 weeks 1-10 (the pre-registration's
+`window`, 18 weeks). The runner targets one season at a time (`init --season`), so it
 is re-initialised for 2027 once the NFL publishes the 2027 schedule (usually
 in May). The miss count, `STATUS.md` and the `status` footer already span the
 whole window (QA-F30): misses from 2026 carry over, and the allowed count (2)
@@ -841,22 +845,22 @@ When the 2027 schedule is published (and before 2027 week 1):
 2. **Re-initialise** (keeps the old values under `history`):
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_week.py init --force --season 2027 --weeks 1-9 `
+   .venv\Scripts\python scripts\livetest_week.py init --force --season 2027 --weeks 1-10 `
      --code-worktree ..\ffml-livetest-code --python ..\ffml-livetest-code\.venv\Scripts\python.exe `
      --expected-commit <the pinned commit> --note "2027 re-initialisation (R3)"
    ```
 
-   The printed JSON shows `"season": 2027`, `"weeks": [1, ..., 9]`, the
+   The printed JSON shows `"season": 2027`, `"weeks": [1, ..., 10]`, the
    pre-registration path and `"misses_allowed": 2`.
 3. **Verify:**
 
    ```powershell
-   .venv\Scripts\python scripts\livetest_week.py plan            # 2027w01..2027w09 with kickoffs, none tentative except week 9 if unset
-   .venv\Scripts\python scripts\livetest_week.py status          # rows 2026w10..2027w09; footer "misses: N (...); allowed 2"
+   .venv\Scripts\python scripts\livetest_week.py plan            # 2027w01..2027w10 with kickoffs
+   .venv\Scripts\python scripts\livetest_week.py status          # rows 2026w11..2027w10; footer "misses: N (...); allowed 2"
    ```
 
    `status` must show the 2026 misses (if any) in the footer; `STATUS.md` on
-   the branch shows "Window 2026w10 to 2027w09 (18 weeks)" at the next push.
+   the branch shows "Window 2026w11 to 2027w10 (18 weeks)" at the next push.
 4. **Re-export the tracked schedule** for the GitHub watchdog and commit it
    on `main` with a change-log row (section 17; the file keeps its name):
 
@@ -952,3 +956,53 @@ every page and response that uses a replay is labeled "TEST DATA: 2024 week
 label. `ffml predict` in replay mode writes to the public store by default,
 so move a new replay into the test-only folder (or pass its `root`) before
 starting the API.
+
+## 19. Week 10 rehearsal on real data (D-127)
+
+Week 10 is not part of the test and does not count as a miss. It runs end to
+end on real data as a labeled rehearsal on the dry-run branch
+`livetest-dryrun`, to exercise the real refresh, the build, the comparators,
+the weekly sensitivity step and the sealing before the first counted week.
+Nothing of it touches `livetest-2026`: the runner refuses `livetest-2026` as a
+dry-run branch, and every file goes to the dry-run worktree
+(`..\ffml-livetest-dryrun-commitments`), the rehearsal sandbox
+(`data\livetest\rehearsal\2026w10\`) and `data\livetest\runner\dryrun\`.
+
+1. **Build, before Week 10's first kickoff (2026-11-13 01:15 UTC).** The
+   runner applies no deadline to a rehearsal, but run it before the kickoff
+   so the build sees the same information a counted week would:
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py run --rehearsal --dry-run-branch livetest-dryrun --season 2026 --week 10
+   ```
+
+   The commitment is built by `build-week --rehearsal`, labeled
+   `"rehearsal": true`, and pushed as `2026w10/commitment.json` on
+   `livetest-dryrun` with a "DRY RUN" commit message. The pre-build check runs
+   as for every build; it passes only once the pre-registration's `commit`
+   field is filled (the freeze). If the freeze is not done yet, add
+   `--stub-score` to this build command only, so the pre-build check uses the
+   stub; this is acceptable here because the rehearsal is not part of the
+   test.
+2. **Score, after Week 10's data cutoff (Friday 2026-11-20 12:00 UTC)**, on
+   the same branch:
+
+   ```powershell
+   .venv\Scripts\python scripts\livetest_week.py score-week --dry-run-branch livetest-dryrun --season 2026 --week 10
+   ```
+
+   It works as the Friday job (section 15): the cutoff from the scorer, a
+   refresh at or after it, the scorer, then `2026w10/sealed_hashes.json` on
+   `livetest-dryrun`. For a dry-run branch the runner passes the scorer
+   `--worktree <the dry-run worktree> --allow-rehearsal --push-record
+   <data\livetest\runner\dryrun\livetest-dryrun\2026w10\push_record.json>`,
+   so it reads that branch and labels the result information only.
+3. **Check:**
+
+   ```powershell
+   git ls-remote origin livetest-dryrun livetest-2026      # only livetest-dryrun moved
+   .venv\Scripts\python scripts\livetest_week.py status --dry-run-branch livetest-dryrun
+   ```
+
+The Friday task (section 14) scores only the test window on `livetest-2026`,
+so it never picks up Week 10; step 2 is run by hand.

@@ -56,8 +56,8 @@ BRANCH_GITATTRIBUTES = "* -text\n"
 BRANCH_README = """# livetest-2026: pre-kickoff commitments for the chain_v2 live test
 
 This orphan branch holds only commitments for the live test of chain_v2 over
-2026 weeks 10-18 (D-098, D-099, D-105 to D-107). It shares no history with
-`main`. The test design and the frozen code commit are pre-registered on `main`.
+the pre-registered window (2026 weeks 11-18 and 2027 weeks 1-10, D-127; D-098,
+D-099, D-105 to D-107). It shares no history with `main`. The test design and the frozen code commit are pre-registered on `main`.
 
 Layout:
 
@@ -201,7 +201,7 @@ def week_key(season: int, week: int) -> str:
 
 
 def parse_weeks(spec: str) -> list[int]:
-    """'10-18' or '10,11,12' into a sorted list."""
+    """'11-18' or '11,12,13' into a sorted list."""
     weeks: set[int] = set()
     for part in str(spec).split(","):
         part = part.strip()
@@ -419,7 +419,7 @@ def verify_descends_from_frozen(
 
 
 def window_from(prereg: Mapping[str, Any]) -> list[tuple[int, int]]:
-    """The pre-registered window as ordered ``(season, week)`` pairs (D-110: 2026 w10-18, 2027 w1-9)."""
+    """The pre-registered window as ordered ``(season, week)`` pairs (D-127: 2026 w11-18, 2027 w1-10)."""
     block = prereg.get("window")
     if not isinstance(block, Mapping) or not isinstance(block.get("weeks"), Mapping):
         raise ValueError("the pre-registration has no window.weeks")

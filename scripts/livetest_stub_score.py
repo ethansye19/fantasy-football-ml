@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from", dest="from_commit", default=None)
     parser.add_argument("--to", dest="to_commit", default=None)
     parser.add_argument("--weekly-sensitivity", action="store_true")
+    parser.add_argument("--worktree", default=None)
+    parser.add_argument("--allow-rehearsal", action="store_true")
+    parser.add_argument("--push-record", default=None)
     args = parser.parse_args(argv)
 
     calls = os.environ.get("FFML_STUB_SCORE_CALLS")

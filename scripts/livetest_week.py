@@ -19,7 +19,7 @@ commitment that was built but not pushed is pushed as is, never rebuilt.
 
 Commands::
 
-    python scripts/livetest_week.py init --season 2026 --weeks 10-18 \
+    python scripts/livetest_week.py init --season 2026 --weeks 11-18 \
         [--code-worktree P --python P --expected-commit SHA]
     python scripts/livetest_week.py run [--season S --week W] [--rehearsal] [--dry-run]
     python scripts/livetest_week.py watchdog [--season S --week W]
@@ -863,8 +863,8 @@ def missed_marker(run: Run, wk: core.WeekKickoff, t: dict[str, datetime], local:
 def window_weeks(cfg: Config, plan: list[core.WeekKickoff]) -> list[tuple[str, core.WeekKickoff | None]]:
     """Every week of the test window in order, with its schedule entry (``None`` while not yet scheduled).
 
-    The window spans both seasons of the pre-registration (2026 w10-18 and
-    2027 w1-9), so miss numbers, ``STATUS.md`` and the ``status`` footer count
+    The window spans both seasons of the pre-registration (2026 w11-18 and
+    2027 w1-10 under D-127), so miss numbers, ``STATUS.md`` and the ``status`` footer count
     across the season boundary and the 2027 re-init (QA-F30).
     """
     by_key = {w.key: w for w in plan}
@@ -2012,6 +2012,9 @@ def score_one(run: Run, wk: core.WeekKickoff, plan: list[core.WeekKickoff]) -> i
     sealed_path = cfg.sealed_dir / f"{key}.sha256"
     if not sealed_path.exists():
         args = ["--week", key, "--weekly-sensitivity"]
+        if cfg.dry_run_branch:  # a rehearsal week (D-127): the scorer reads this branch and labels it
+            args += ["--worktree", str(cfg.commitments_worktree), "--allow-rehearsal",
+                     "--push-record", str(cfg.runner_dir(wk.season, wk.week) / "push_record.json")]
         run.log.event("score", "scorer started", cmd=scorer_cmd(cfg, *args), cwd=str(cfg.code_cwd),
                       priority="above normal" if scorer_creationflags() else "normal",
                       timeout_minutes=cfg.scorer_timeout_minutes, data_cutoff=core.iso(cutoff))
@@ -2201,14 +2204,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan = sub.add_parser("plan", parents=[common])
     p_plan.add_argument("--json", action="store_true")
     p_plan.add_argument("--save", action="store_true", help="save as the registered plan for the drift check")
-    p_plan.add_argument("--weeks", default=None, help="override the test window, e.g. 10-18 (with --season)")
+    p_plan.add_argument("--weeks", default=None, help="override the test window, e.g. 11-18 (with --season)")
     p_plan.add_argument("--export", type=Path, default=None,
                         help="write the tracked schedule file for the GitHub watchdog "
                              "(scripts/livetest_schedule_2026.json)")
     p_status = sub.add_parser("status", parents=[common])
     p_status.add_argument("--json", action="store_true")
     p_init = sub.add_parser("init", parents=[common], help="record the test window and the pin")
-    p_init.add_argument("--weeks", required=True, help="e.g. 10-18")
+    p_init.add_argument("--weeks", required=True, help="e.g. 11-18 (2026) or 1-10 (2027)")
     p_init.add_argument("--note", default="")
     p_init.add_argument("--force", action="store_true")
     return parser

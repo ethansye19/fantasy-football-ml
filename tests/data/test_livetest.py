@@ -473,6 +473,62 @@ def test_miss_count_spans_the_window_across_the_2027_reinit(env, capsys):
     assert "2026w12" in out and "2027w03" in out
 
 
+def _d127_window(env) -> Path:
+    prereg = env.root / "preregistration_d127.json"
+    prereg.write_text(json.dumps({
+        "missed_weeks": {"allowed": 2}, "miss_rule": "D-106 as revisited (D-111)",
+        "window": {"seasons": [2026, 2027], "weeks": {"2026": list(range(11, 19)), "2027": list(range(1, 11))}},
+    }))
+    assert env.main_(["init", "--force", "--season", "2026", "--weeks", "11-18", "--main-repo", str(env.main),
+                      "--commitments-worktree", str(env.worktree), "--preregistration", str(prereg)]) == 0
+    return prereg
+
+
+def test_d127_window_starts_at_week_11_and_week_10_is_not_a_test_week(env, capsys):
+    """D-127: 2026 w11-18 + 2027 w1-10 from the pre-registration; week 10 is never built, missed or counted."""
+    prereg = _d127_window(env)
+    keys = runner.make_config(runner.build_parser().parse_args(
+        ["status", "--preregistration", str(prereg), "--main-repo", str(env.main)])).window_keys()
+    assert len(keys) == 18 and keys[0] == "2026w11" and keys[7] == "2026w18" and keys[-1] == "2027w10"
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9))) == runner.EXIT_OK  # outside the test window
+    assert env.stub_calls() == 0 and env.remote_refs() == []
+    assert "is outside the test window" in env.logs()
+    K11 = datetime(2026, 11, 20, 1, 15, tzinfo=UTC)
+    assert env.main_(env.argv("run", K11 - timedelta(hours=9), week=11)) == runner.EXIT_OK
+    assert env.main_(env.argv("check", K11 + timedelta(hours=1), week=None)) in (0, 1)
+    assert env.remote_blob("2026w10/MISSED.json") is None  # week 10 kicked off unbuilt: not a miss
+    status = env.remote_blob("STATUS.md").decode()
+    assert "Window 2026w11 to 2027w10 (18 weeks)" in status and "| 2026w10 |" not in status
+    assert "| 2027w10 | not scheduled yet |" in status and "Misses: 0" in status
+    capsys.readouterr()
+    assert env.main_(env.argv("status", K11 + timedelta(hours=2), "--json", week=None)) == runner.EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert data["weeks"][0]["week"] == "2026w11" and data["misses"] == []
+
+
+def test_week_10_rehearsal_builds_and_scores_on_the_dry_run_branch_only(env):
+    """D-127: Week 10 runs end to end on livetest-dryrun, labeled rehearsal; livetest-2026 is never touched."""
+    _d127_window(env)
+    wt = env.root / "dryrun-commitments"
+    dry = ["--rehearsal", "--dry-run-branch", "livetest-dryrun"]
+    assert env.main_(env.argv("run", K10 - timedelta(hours=9), *dry, worktree=wt)) == runner.EXIT_OK
+    assert env.remote_refs() == ["refs/heads/livetest-dryrun"]
+    commitment = json.loads(env.remote_blob("2026w10/commitment.json", branch="livetest-dryrun"))
+    assert commitment["rehearsal"] is True
+    assert git("log", "-1", "--format=%s", "livetest-dryrun", cwd=env.remote).startswith("DRY RUN livetest 2026w10")
+    env.mark_final(10)
+    after = _cutoff(10) + timedelta(hours=1)
+    assert env.main_(env.argv("score-week", after, "--skip-refresh", "--dry-run-branch", "livetest-dryrun",
+                              worktree=wt)) == runner.EXIT_OK
+    week_calls = env.scorer_calls("--week")
+    assert week_calls and week_calls[-1][:3] == ["--week", "2026w10", "--weekly-sensitivity"]
+    assert "--allow-rehearsal" in week_calls[-1] and week_calls[-1][week_calls[-1].index("--worktree") + 1] == str(wt)
+    assert week_calls[-1][week_calls[-1].index("--push-record") + 1].endswith(
+        str(Path("runner") / "dryrun" / "livetest-dryrun" / "2026w10" / "push_record.json"))
+    assert env.remote_blob("2026w10/sealed_hashes.json", branch="livetest-dryrun") is not None
+    assert env.remote_refs() == ["refs/heads/livetest-dryrun"]  # nothing on livetest-2026
+
+
 def test_a_2026w18_miss_is_marked_after_the_2027_reinit(env):
     """QA-F30: no 2026-config run after the w18 kickoff; the first 2027-config run still marks it."""
     assert env.main_(["init", "--force", "--season", "2027", "--weeks", "1-9", "--main-repo", str(env.main),

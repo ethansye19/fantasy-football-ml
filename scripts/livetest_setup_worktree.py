@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             wt, x, sha, (prereg.get("allowed_paths") or {}).keys(), prereg.get("frozen_paths") or [])
         print(json.dumps(relation, indent=2))
     print("\nRecord the pin for the runner (once the test design is signed off):")
-    print(f'  .venv\\Scripts\\python scripts\\livetest_week.py init --season 2026 --weeks 10-18 '
+    print(f'  .venv\\Scripts\\python scripts\\livetest_week.py init --season 2026 --weeks 11-18 '
           f'--code-worktree "{wt}" --python "{py}" --expected-commit {sha}')
     return 0
 

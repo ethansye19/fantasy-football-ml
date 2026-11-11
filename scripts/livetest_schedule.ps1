@@ -42,7 +42,7 @@
   and gh fail; not usable for the live test.
 
 .PARAMETER Weeks
-  Test window override for the plan (e.g. "10-18"); default: data\livetest\config.json
+  Test window override for the plan (e.g. "11-18"); default: data\livetest\config.json
   written by `livetest_week.py init`.
 
 .PARAMETER DryRunBranch

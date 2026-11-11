@@ -800,3 +800,21 @@ source loads the same seasons in the same order with the same manifest keys.
 16 keeps one refresh by hand before 2027 week 1 (the runner refreshes only
 inside a week's window, so the 2027 schedule must reach `dim_game` first),
 now without the per-dataset workaround, and drops the week 1 limit note.
+
+## DE-5.11 and D-127 (2026-11-11)
+
+- **D-126 (F8), commit 162715a:** the D-122 skip also requires that no
+  regular-season game of the season is final in the schedule loaded in the
+  same run; `schedules` is ingested first; once a game is final a missing
+  file is a gap and the refresh stops before process.
+- **D-127, the window shift:** the runner already read the window from the
+  pre-registration; only text changed (help, docstrings, the branch README,
+  the setup script's printed `init`, the scheduler's example). For a
+  dry-run-branch week the runner now passes the scorer `--worktree <dry-run
+  worktree> --allow-rehearsal --push-record <dry-run push record>`, so the
+  Week 10 rehearsal is scored from `livetest-dryrun`. The tracked schedule
+  `scripts/livetest_schedule_2026.json` holds weeks 11-18. RUNBOOK sections
+  1-5, 9, 11, 13, 14, 15 and 16 use week 11 and 2027 weeks 1-10; new section
+  19 is the Week 10 rehearsal. Tests: the D-127 window (week 10 never built,
+  missed or counted; STATUS "Window 2026w11 to 2027w10 (18 weeks)") and the
+  Week 10 rehearsal built and scored on `livetest-dryrun` only.

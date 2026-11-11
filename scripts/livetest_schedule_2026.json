@@ -1,14 +1,13 @@
 {
   "format": "ffml.livetest.schedule/1",
-  "generated_at": "2026-11-05T03:24:05Z",
+  "generated_at": "2026-11-11T17:23:54Z",
   "generated_by": "scripts/livetest_week.py plan --export",
   "source": {
-    "dim_game_snapshot": "20261104T233034Z",
+    "dim_game_snapshot": "20261110T023815Z",
     "live_schedule_checked": true
   },
   "season": 2026,
   "test_weeks": [
-    10,
     11,
     12,
     13,
@@ -20,15 +19,6 @@
   ],
   "note": "Official first kickoff per week (UTC). Re-export and commit when the daily check reports schedule drift (week 18 times are tentative until the NFL sets them).",
   "weeks": [
-    {
-      "key": "2026w10",
-      "season": 2026,
-      "week": 10,
-      "first_kickoff_utc": "2026-11-13T01:15:00Z",
-      "effective_kickoff_utc": "2026-11-13T01:15:00Z",
-      "tentative": false,
-      "games": 14
-    },
     {
       "key": "2026w11",
       "season": 2026,
