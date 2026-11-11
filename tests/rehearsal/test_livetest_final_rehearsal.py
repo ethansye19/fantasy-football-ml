@@ -4,7 +4,8 @@ Run it explicitly (about two and a half hours with three worlds at a time)::
 
     FFML_REHEARSAL=1 pytest -m slow tests/rehearsal -q
 
-``FFML_REHEARSAL_COMMIT`` names the candidate X (default 071c3a4, D-125),
+``FFML_REHEARSAL_COMMIT`` names the frozen commit X (default 071c3a4, D-125),
+``FFML_REHEARSAL_BASE`` the commit each clone starts from (Z, a descendant of X; default X),
 ``FFML_REHEARSAL_WORKERS`` the number of worlds run at a time (default 3),
 ``FFML_REHEARSAL_ONLY`` a comma-separated subset of worlds, and
 ``FFML_REHEARSAL_EVIDENCE`` a file for the JSON evidence behind
@@ -51,9 +52,17 @@ RUNNER_EXIT_BLOCKED = 2  # scripts/livetest_week.py EXIT_BLOCKED
 
 
 def _candidate_known() -> bool:
-    out = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{W.FROZEN_CANDIDATE}^{{commit}}"],
-                         cwd=W.MAIN_REPO, capture_output=True, text=True)
-    return out.returncode == 0
+    for rev in (W.FROZEN_CANDIDATE, W.REHEARSAL_BASE):
+        out = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+                             cwd=W.MAIN_REPO, capture_output=True, text=True)
+        if out.returncode != 0:
+            return False
+    return True
+
+
+LAST = W.week_key(*W.LAST_WEEK)
+AFTER_LAST = W.week_key(W.LAST_WEEK[0], W.LAST_WEEK[1] + 1)
+FIRST = W.week_key(*W.FIRST_WEEK)
 
 
 if os.environ.get("FFML_REHEARSAL") != "1":
@@ -115,7 +124,8 @@ def common_world_asserts(ev):
     assert Path(probe["data_dir"]).resolve().is_relative_to(clone.resolve())
     assert not probe["holdout_unlock"] and probe["bootstrap_line_frames_only"] is EXPECT_SUBSET
     assert probe["scorer_cutoffs_2026"] == probe["world_cutoffs_2026"]
-    assert ev["diff_x_head_frozen_code"] == ""
+    assert ev["diff_x_head_frozen_code"] == "", ev["diff_x_head"]
+    assert ev["window"] == ev["prereg_window"] and len(ev["window"]) == 18
     for step in ev["weekly"]:
         if step.get("required", True):
             assert step["exit"] == 0, {k: v for k, v in step.items() if k not in ("snapshots",)}
@@ -222,7 +232,7 @@ def test_zero_misses(results):
     assert "0 missed week(s) [], 2 allowed" in check(fin["checks"], "missed weeks (miss rule)")[2]
 
 
-@pytest.mark.parametrize("name,missed", [("D1_one_miss", ["2026w12"]), ("D2_two_misses", ["2026w12", "2027w09"])])
+@pytest.mark.parametrize("name,missed", [("D1_one_miss", ["2026w12"]), ("D2_two_misses", ["2026w12", LAST])])
 def test_one_or_two_misses_are_excluded_without_extension(results, name, missed):
     ev = world(results, name)
     scored = common_world_asserts(ev)
@@ -235,7 +245,7 @@ def test_one_or_two_misses_are_excluded_without_extension(results, name, missed)
     assert single_verdict(fin) == APPROVED
     got_scored, excluded = _excluded(fin)
     assert excluded == missed and len(got_scored) == 18 - len(missed)
-    assert "2027w10" not in fin["final_md"]
+    assert AFTER_LAST not in fin["final_md"]
     detail = check(fin["checks"], "missed weeks (miss rule)")[2]
     assert f"{len(missed)} missed week(s)" in detail and "excluded, the window is not extended" in detail
     assert check(fin["checks"], "window complete")[1] == "PASS"
@@ -243,7 +253,7 @@ def test_one_or_two_misses_are_excluded_without_extension(results, name, missed)
 
 def test_final_refused_until_last_week_final_even_when_it_is_the_miss(results):
     res = world(results, "D2_two_misses")["last_week_not_final"]
-    assert "the final is refused until 2027w09 is final in dim_game" in refused(res)
+    assert f"the final is refused until {LAST} is final in dim_game" in refused(res)
 
 
 def test_three_misses_across_seasons_are_invalid_in_scorer_and_runner(results):
@@ -306,10 +316,10 @@ def test_final_refuses_tampered_sealed_files_and_a_missing_branch_record(results
     sc = world(results, "A_pass")["sealed_checks"]
     for key, needle in (("tampered_part", "2026w14 sealed hashes: 2026w14.parquet sha256 differs from the branch record"),
                         ("tampered_record", "2026w11 sealed hashes: 2026w11.json sha256 differs from the branch record"),
-                        ("missing_branch_record", "2027w09 sealed hashes: scoring/2027w09.sha256 is not on the branch")):
+                        ("missing_branch_record", f"{LAST} sealed hashes: scoring/{LAST}.sha256 is not on the branch")):
         err = refused(sc[key])
         assert "refused: sealed files do not match the branch record" in err and needle in err, (key, err[-2000:])
-    assert "scoring/2027w09.sha256" in sc["missing_branch_record_ref"]["files_removed"].split()
+    assert f"scoring/{LAST}.sha256" in sc["missing_branch_record_ref"]["files_removed"].split()
 
 
 def test_failed_final_fetch_records_nothing_and_a_retry_gives_the_verdict(results):
@@ -324,10 +334,10 @@ def test_failed_final_fetch_records_nothing_and_a_retry_gives_the_verdict(result
 def test_worktree_copy_is_not_trusted_any_more(results):
     """QA-F29 recheck: the final reads the fetched ref, so the worktree's uncommitted copy cannot vouch for files."""
     r = world(results, "A_pass")["sealed_checks"]["worktree_tamper"]
-    assert "scoring/2026w10.sha256" in r["worktree_status"]
+    assert f"scoring/{FIRST}.sha256" in r["worktree_status"]
     assert all(c["ok"] for c in r["seals_by_mode"]["worktree"])        # the worktree copy alone would accept it
     assert not all(c["ok"] for c in r["seals_by_mode"]["git_only"])
-    assert "2026w10 sealed hashes" in refused(r) and r["restored_status"] == ""
+    assert f"{FIRST} sealed hashes" in refused(r) and r["restored_status"] == ""
 
 
 def test_stray_marker_is_flagged_with_week_and_time_and_changes_nothing(results):

@@ -259,7 +259,8 @@ def cmd_probe(payload):
 
     s = get_settings()
     dg = LS.load_dim_game([2026]) if (s.processed_dir / "dim_game" / "LATEST").exists() else None
-    cut = {W.week_key(2026, w): LS.iso(LS.data_cutoff(dg, 2026, w)) for w in range(10, 19)} if dg is not None else {}
+    cut = {W.week_key(2026, w): LS.iso(LS.data_cutoff(dg, 2026, w)) for w in W.SEASON_WINDOW[2026]} \
+        if dg is not None else {}
     return {
         "ffml_file": str(_FFML), "runner_file": str(Path(runner.__file__).resolve()),
         "project_root": str(LS.PROJECT_ROOT), "default_worktree": str(LS.DEFAULT_WORKTREE),
@@ -270,7 +271,7 @@ def cmd_probe(payload):
         "pins": chain_v2.check_pins(), "sensitivity_n_boot": LS.SENSITIVITY_N_BOOT, "spec_n_boot": LS.H.SPEC_N_BOOT,
         "bootstrap_line_frames_only": LS.BOOTSTRAP_LINE_FRAMES_ONLY, "python": sys.executable,
         "scorer_cutoffs_2026": cut, "world_cutoffs_2026": {W.week_key(2026, w): W.data_cutoff(2026, w).isoformat()
-                                                          for w in range(10, 19)},
+                                                          for w in W.SEASON_WINDOW[2026]},
     }
 
 

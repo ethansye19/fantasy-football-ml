@@ -45,11 +45,49 @@ HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "_rehearsal_driver.py"
 #: the candidate frozen commit X (override for a later candidate)
 FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "071c3a4")
+#: the commit each clone is reset to (Z): X itself, or a descendant of X holding the text to be pinned
+#: (the pre-registration, the change log, allowed-path fixes); X is still the frozen commit filled in
+REHEARSAL_BASE = os.environ.get("FFML_REHEARSAL_BASE") or FROZEN_CANDIDATE
 PREREG_DOC = "docs/status/livetest-preregistration-2026.md"
 CHANGELOG_DOC = "docs/status/livetest-changelog-2026.md"
-WINDOW: tuple[tuple[int, int], ...] = (*((2026, w) for w in range(10, 19)), *((2027, w) for w in range(1, 10)))
+
+
+def prereg_data(text: str) -> dict[str, Any]:
+    """The pre-registration's JSON block."""
+    m = re.search(r"```json\s*\n(.*?)\n```", text, re.S)
+    assert m, "no JSON block in the pre-registration"
+    return json.loads(m.group(1))
+
+
+def _window_from_prereg() -> tuple[tuple[int, int], ...]:
+    """The scored window as the pre-registration at the base commit states it (D-127: 2026 w11-18, 2027 w1-10).
+
+    Child processes get it through ``REHEARSAL_WINDOW`` (set by :meth:`World.env`), so a driver run from the
+    worktree pinned at X uses the same window as the test process."""
+    if os.environ.get("REHEARSAL_WINDOW"):
+        return tuple((int(a), int(b)) for a, b in json.loads(os.environ["REHEARSAL_WINDOW"]))
+    proc = subprocess.run(["git", "show", f"{REHEARSAL_BASE}:{PREREG_DOC}"], cwd=MAIN_REPO, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+    text = proc.stdout if proc.returncode == 0 else (MAIN_REPO / PREREG_DOC).read_text(encoding="utf-8")
+    weeks = prereg_data(text)["window"]["weeks"]
+    return tuple(sorted((int(season), int(w)) for season, ws in weeks.items() for w in ws))
+
+
+def path_frozen(path: str, data: Mapping[str, Any]) -> bool:
+    """The pre-registration's path policy: frozen unless under an allowed prefix and under no frozen one."""
+    frozen = any(path == f or path.startswith(f) for f in data.get("frozen_paths") or [])
+    allowed = any(path == a or path.startswith(a) for a in data.get("allowed_paths") or {})
+    return frozen or not allowed
+
+
+WINDOW: tuple[tuple[int, int], ...] = _window_from_prereg()
+#: the window weeks of each season, and its first and last week
+SEASON_WINDOW: dict[int, tuple[int, ...]] = {season: tuple(w for s_, w in WINDOW if s_ == season)
+                                             for season in sorted({s_ for s_, _ in WINDOW})}
+FIRST_WEEK, LAST_WEEK = WINDOW[0], WINDOW[-1]
+assert sorted(SEASON_WINDOW) == [2026, 2027] and len(WINDOW) == 18, WINDOW
 HISTORY_WEEKS: dict[int, tuple[int, ...]] = {2024: tuple(range(1, 19)), 2026: tuple(range(1, 19)),
-                                             2027: tuple(range(1, 10))}
+                                             2027: tuple(range(1, max(SEASON_WINDOW[2027]) + 1))}
 #: synthetic commit identity and dates (deterministic shas for the commits the rehearsal makes)
 GIT_IDENTITY = ("FFML rehearsal (synthetic)", "rehearsal@invalid.example")
 #: the first processed snapshot of every world (before the window's first build)
@@ -245,6 +283,7 @@ class World:
         env.pop("FFML_HOLDOUT_UNLOCK", None)
         if stream_path():
             env["REHEARSAL_STREAM_FILE"] = stream_path()
+        env["REHEARSAL_WINDOW"] = json.dumps(WINDOW)
         env.update(extra)
         return env
 
@@ -309,7 +348,9 @@ def make_clone(world: World) -> str:
     git(world.root, "clone", "-q", "--no-local", "--no-hardlinks", "--single-branch", "--branch", "main",
         MAIN_REPO.as_uri(), str(world.clone))
     x = git(world.clone, "rev-parse", "--verify", f"{FROZEN_CANDIDATE}^{{commit}}")
-    git(world.clone, "reset", "-q", "--hard", x)
+    base = git(world.clone, "rev-parse", "--verify", f"{REHEARSAL_BASE}^{{commit}}")
+    git(world.clone, "merge-base", "--is-ancestor", x, base)  # Z must descend from X (raises otherwise)
+    git(world.clone, "reset", "-q", "--hard", base)
     git(world.clone, "config", "user.name", GIT_IDENTITY[0])
     git(world.clone, "config", "user.email", GIT_IDENTITY[1])
     git(world.clone, "config", "commit.gpgsign", "false")
@@ -342,7 +383,8 @@ def fill_preregistration(clone: Path, x: str, stored_digest: str) -> None:
     write_text_eol(p, text, eol)
 
 
-def changelog_row(sha: str, paths: str, reason: str, first_week: str = "2026w10", date: str = "2026-11-12") -> str:
+def changelog_row(sha: str, paths: str, reason: str, first_week: str | None = None, date: str = "2026-11-12") -> str:
+    first_week = first_week or week_key(*FIRST_WEEK)
     return f"| {date} | `{sha[:12]}` | {paths} | {reason} | no effect on commitments (synthetic rehearsal) | QA rehearsal | {first_week} |"
 
 
@@ -726,7 +768,7 @@ def stored_records() -> list[dict[str, Any]]:
 
 def walkforward_weeks_before(season: int, week: int) -> list[tuple[int, int]]:
     """Walk-forward cache weeks from 2026 w8 up to the week before ``(season, week)``."""
-    out = [(2026, w) for w in range(8, 19)] + [(2027, w) for w in range(1, 10)]
+    out = [(2026, w) for w in range(8, 19)] + [(2027, w) for w in range(1, max(SEASON_WINDOW[2027]) + 1)]
     return [x for x in out if x < (season, week)]
 
 
