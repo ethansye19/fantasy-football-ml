@@ -24,14 +24,21 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "candidate_scheme": "chain_v2-primary-c{season}w{week:02d}-{UTC stamp YYYYMMDDTHHMMSSZ}",
   "commit": "<frozen commit>",
   "frozen_commit_must_include": [
+    "071c3a4",
+    "12e2faa",
+    "162715a",
     "1d0d2b6",
     "2872d13",
+    "4799913",
+    "686fbb5",
     "6e29122",
+    "891f56a",
     "a2f2af0",
     "a30cd08",
     "b22973f",
     "bd3bf21",
-    "d24a43a"
+    "d24a43a",
+    "f5a2ff2"
   ],
   "commit_relation": "a build, a refresh and the scorer are valid at the frozen commit X, or at a descendant Y whose `git diff --name-only X Y` touches only paths under allowed_paths (any other path is frozen); a frozen-path change invalidates the test unless the owner rules otherwise; the scorer records X, Y and the diff for every week",
   "window": {
