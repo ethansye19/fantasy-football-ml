@@ -1,4 +1,4 @@
-# chain_v2 live-test pre-registration (2026 weeks 10-18 and 2027 weeks 1-9; D-098, D-105 to D-110)
+# chain_v2 live-test pre-registration (2026 weeks 11-18 and 2027 weeks 1-10; D-098, D-105 to D-110, D-127)
 
 Final draft, 2026-11-05, ML Engineer; the Evaluator reviews it next and the
 orchestrator fills the frozen commit at the freeze, before the Week 10
@@ -41,7 +41,6 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     ],
     "weeks": {
       "2026": [
-        10,
         11,
         12,
         13,
@@ -60,12 +59,14 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
         6,
         7,
         8,
-        9
+        9,
+        10
       ]
     },
     "weeks_total": 18,
-    "verdict_after": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
-    "weekly_scoring": "on the Friday job at or after the week's data cutoff: a verification-only report plus sealed metric parts; no weekly output shows a metric or a Verdict line"
+    "verdict_after": "after every window week is final; at the earliest after 2027 week 10's games are final in dim_game, also when 2027 week 10 is the excluded miss; the scorer refuses the final before that",
+    "weekly_scoring": "on the Friday job at or after the week's data cutoff: a verification-only report plus sealed metric parts; no weekly output shows a metric or a Verdict line",
+    "start": "2026 week 11 (D-127, applying the owner's D-098 item 4: the review needed more time, so the test starts at the next full week); 2026 week 10 is not part of the test and is not a miss"
   },
   "rules": {
     "design": "fallback (D-105 item 3, D-110): no candidate qualified (best good-model pass 0.614 < 0.70)",
@@ -74,9 +75,9 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "lines_source": "ffml.eval.report_holdout.prereg_lines (lines_spec_sha256)",
     "forms": "calibrated chain_v2 rows against each comparator's calibrated form on identical player-weeks; 95% week-clustered paired bootstrap (D-078); metric seed 0",
     "applied": "once, over every scored week of the window (18 weeks, or 17 with one excluded miss)",
-    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a third miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 9's games are final in dim_game; a failed GitHub fetch or ls-remote check at the final records no verdict (exit 75) and the final is retried (D-116)",
+    "verdict": "Verdict: APPROVED only if all 22 lines pass over the scored weeks, else Verdict: NOT APPROVED; INVALID on a third miss or any failed integrity check; computed once by the Evaluator after every window week is final, at the earliest after 2027 week 10's games are final in dim_game; a failed GitHub fetch or ls-remote check at the final records no verdict (exit 75) and the final is retried (D-116)",
     "provisional_tier": "none (D-110); the app shows no approved model for the rest of 2026",
-    "rules_sha256": "818eac43badf8318793602bc2da6bc2262889155d2e1f728c612455e46b5e602",
+    "rules_sha256": "3c187d88405f22a1111ece81697fe7df5c23b87773e660d7992a0ccf3125d83d",
     "rules_sha256_definition": "SHA-256 of the canonical JSON of this rules object without the rules_sha256 key: json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded as UTF-8",
     "comparators": {
       "run": "ffml.eval.harness run of the config livetest_comparators (ffml/eval/backtest_configs.py): the five transparent baselines plus the direct challenger (information only), no chain; online v3 calibration warmed from 2021 exactly as the default config; seasons through 2027; purpose livetest_score; resumable parts; run incrementally at scoring time at the frozen commit",
@@ -87,18 +88,6 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "non_final_games": "a week is scored once every game is final; if a game of the week is still not final 14 days after the week's data cutoff, the week is scored without it (its player, team and DST rows excluded and listed), pinning the first snapshots at or after the cutoff plus 14 days; a game moved to a later week leaves this week (D-121)"
   },
   "deadline_rule": "the binding deadline of a week is the earlier of (a) the first regular-season kickoff as scheduled in dim_game at build time, recorded as commitment.first_kickoff, and (b) the actual first kickoff per the final schedule; created_at and the GitHub push timestamp must precede both (D-106); while a week's kickoff times are tentative (every game at one identical time) the runner's deadline is that time minus 24 h (D-109, scripts/livetest_core.py TENTATIVE_LEAD)",
-  "deadlines_utc_as_scheduled_2026-11-04": {
-    "2026w10": "2026-11-13T01:15:00Z",
-    "2026w11": "2026-11-20T01:15:00Z",
-    "2026w12": "2026-11-26T01:00:00Z",
-    "2026w13": "2026-12-04T01:15:00Z",
-    "2026w14": "2026-12-11T01:15:00Z",
-    "2026w15": "2026-12-18T01:15:00Z",
-    "2026w16": "2026-12-25T01:15:00Z",
-    "2026w17": "2027-01-01T01:15:00Z",
-    "2026w18": "2027-01-10T18:00:00Z (tentative: every game at one time)",
-    "2027w01-09": "unknown until the 2027 schedule is published (May 2027); read from dim_game at build time"
-  },
   "build": {
     "command": "ffml livetest build-week --season {season} --week {week}",
     "timing": "D-109: window opens K-25h, first run K-24h15m, retries every 30 min, build cutoff K-30m, push deadline K-5m; K = the deadline above",
@@ -256,10 +245,11 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
     "first_and_second_miss": "excluded from scoring; the window is not extended; the pass rate of a 17- or 16-week test is reported",
     "third_miss": "the test is INVALID (not failed)",
     "pass_rates_good_model_variance_corrected": {
-      "18_weeks_scored": "0.557 (MC SE 0.007)",
-      "17_weeks_scored": "0.518 (MC SE 0.007)",
-      "16_weeks_scored": "0.500 (MC SE 0.007)",
-      "meaning": "even a good model (the validated 2022-2024 accuracy, exactly calibrated) has only about a 56% chance of passing the 22 lines over the 18-week window under the frozen bootstrap; about 52% with one miss and 50% with two"
+      "18_weeks_scored": "0.580 (MC SE 0.007)",
+      "17_weeks_scored": "0.540 (MC SE 0.007)",
+      "16_weeks_scored": "0.498 (MC SE 0.007)",
+      "meaning": "even a good model (the validated 2022-2024 accuracy, exactly calibrated) has only about a 58% chance of passing the 22 lines over the 18-week window under the frozen bootstrap; about 54% with one miss and 50% with two",
+      "window": "2026 weeks 11-18 (2026 game counts) plus 2027 weeks 1-10 (full slates), D-127; 5,000 replicates each; data/reports/live_test_power_shifted_window.json"
     },
     "pass_rates_no_edge_model": {
       "18_weeks_scored": "0 passes in 5,000 replicates: estimate 0.000, 95% upper bound 0.0006",
@@ -274,7 +264,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "metric_seed": 0,
   "scoring": {
     "when": "each week on the Friday job at or after the week's data cutoff, once every game of the week is final; the final after every window week is scored or missed (D-116)",
-    "verdict": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game, also when 2027 week 9 is the excluded miss; the scorer refuses the final before that",
+    "verdict": "after every window week is final; at the earliest after 2027 week 10's games are final in dim_game, also when 2027 week 10 is the excluded miss; the scorer refuses the final before that",
     "reads": [
       "livetest-2026:{season}w{WW}/commitment.json",
       "livetest-2026:{season}w{WW}/player_summary.parquet when present, else the local file the commitment lists (same SHA-256)",
@@ -311,9 +301,9 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "path_policy": "any path not listed in allowed_paths is frozen (the scorer's path_allowed returns false for it); entries are prefixes (a directory entry ends with /); a frozen prefix takes precedence over an allowed one, so frozen_paths names the frozen set explicitly and never contains a prefix of an allowed entry (everything under ffml/ is frozen except ffml/data/, ffml/eval/power.py and ffml/eval/audits/)",
   "miss_rule": "D-106 as revisited by the owner on 2026-11-05: up to two missed weeks are excluded from scoring and the window is not extended; a third miss makes the test INVALID (not failed); a miss is a week with no valid commitment on livetest-2026 at its deadline, for a real technical failure or an offline machine, logged in {season}w{WW}/MISSED.json with the reason",
   "expected_verdict": {
-    "when": "after every window week is final; at the earliest after 2027 week 9's games are final in dim_game",
-    "expected_date": "about 2027-11-12 (the Friday data cutoff after 2027 week 9; the 2027 schedule is not published, so between about 2027-11-05 and 2027-11-19)",
-    "app_until_then": "the real app shows 'no approved model' with projections, start/sit, waivers, trades and rest-of-season rankings off, through the rest of 2026, the 2027 offseason and draft, and 2027 weeks 1-9 (D-099, D-110); v2 outputs exist only in private test, labeled not approved"
+    "when": "after every window week is final; at the earliest after 2027 week 10's games are final in dim_game",
+    "expected_date": "about 2027-11-19 (the Friday data cutoff after 2027 week 10; the 2027 schedule is not published, so between about 2027-11-12 and 2027-11-26)",
+    "app_until_then": "the real app shows 'no approved model' with projections, start/sit, waivers, trades and rest-of-season rankings off, through the rest of 2026, the 2027 offseason and draft, and 2027 weeks 1-10 (D-099, D-110); v2 outputs exist only in private test, labeled not approved"
   },
   "sealed_interim": {
     "policy": "interim scored results are sealed until the verdict",
@@ -366,7 +356,25 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
       "cause": "the frozen bootstrap (500 week-clustered draws, seed 0, D-078) is a fixed weight matrix; which calendar position gets which weights changes the good-model pass rate by about 5 points between the two orders (same weeks, same game counts: 271.7 vs 269.7; full slates in the fallback order give 0.568). Swapping the seed index of the slate draws leaves the gap (0.610 vs 0.573); other bootstrap seeds give 0.587-0.610 for both orders",
       "which_number": "0.557 is the estimate for the test as it will be run (frozen bootstrap, chronological order); the 0.618-0.628 figure applies to an order the test will not use; 0.59-0.61 is the average over bootstrap seeds. The bootstrap stays as pre-registered; no rule is changed on this evidence",
       "evidence": "docs/status/livetest-power-reconciliation.md; data/reports/live_test_power_reconcile.json and live_test_power_reconcile2.json"
+    },
+    "shifted_window_D127": {
+      "window": "2026 weeks 11-18 then 2027 weeks 1-10 (the order the test scores in after D-127)",
+      "good_model": "0.580 corrected / 0.736 uncorrected (18 weeks); 0.540 / 0.715 (17); 0.498 / 0.667 (16)",
+      "no_edge": "0 of 5,000 in each case",
+      "note": "the original-window figures (0.557 / 0.722) are kept in reconciliation_2026-11-05 as history; the move of 2.3 points is within the order sensitivity of the frozen 500-draw bootstrap disclosed there"
     }
+  },
+  "week10_rehearsal": "2026 week 10 runs end to end as a labeled real-data rehearsal on the dry-run branch livetest-dryrun: built before its kickoff (2026-11-13 01:15 UTC) and scored after its Friday cutoff (2026-11-20 12:00 UTC); nothing of it is written to livetest-2026 or used by the final (D-127)",
+  "deadlines_utc_as_scheduled_2026-11-10": {
+    "2026w11": "2026-11-20T01:15:00Z",
+    "2026w12": "2026-11-26T01:00:00Z",
+    "2026w13": "2026-12-04T01:15:00Z",
+    "2026w14": "2026-12-11T01:15:00Z",
+    "2026w15": "2026-12-18T01:15:00Z",
+    "2026w16": "2026-12-25T01:15:00Z",
+    "2026w17": "2027-01-01T01:15:00Z",
+    "2026w18": "2027-01-10T18:00:00Z (tentative: every game at one time)",
+    "2027w01-10": "unknown until the 2027 schedule is published (May 2027); read from dim_game at build time"
   }
 }
 ```
@@ -483,7 +491,7 @@ No candidate rule set met the D-105 limits (the best good-model pass rate
 was 0.614 against the 0.70 floor), so under D-105 item 3 the limits are not
 weakened and the fallback applies: the **unchanged 22 lines** of
 docs/status/holdout-preregistration.md (`lines_sha256` ea706e17...), applied
-**once** over 2026 weeks 10-18 plus 2027 weeks 1-9 (18 weeks), with the
+**once** over 2026 weeks 11-18 plus 2027 weeks 1-10 (18 weeks), with the
 D-106 miss rule (up to two excluded weeks, no extension; a third miss
 makes the test INVALID). There is no provisional-approval tier; the app shows
 "no approved model" for the rest of 2026.
@@ -494,12 +502,12 @@ identical player-weeks, 95% week-clustered paired bootstrap intervals
 week's games are final is information only and never prints a verdict line.
 `Verdict: APPROVED` (all 22 lines pass over the scored weeks) or
 `Verdict: NOT APPROVED` is computed once, by the Evaluator, after every
-window week is final, at the earliest after 2027 week 9's games are final in
-`dim_game` (also when 2027 week 9 is the excluded miss; the scorer refuses
+window week is final, at the earliest after 2027 week 10's games are final in
+`dim_game` (also when 2027 week 10 is the excluded miss; the scorer refuses
 the final before that); `Verdict: INVALID (<reason>)` on a third miss or a
 failed integrity check. Recorded before the freeze: the Evaluator's estimate
-for this design is a good-model pass rate of 0.557 (variance-corrected;
-0.722 uncorrected) and under 0.06% for a model with no edge, below the 70% floor
+for this design is a good-model pass rate of 0.580 (variance-corrected;
+0.736 uncorrected; 0.557 / 0.722 in the original window before D-127) and under 0.06% for a model with no edge, below the 70% floor
 that D-105 set for candidates; D-105 item 3 was fixed in advance and is
 followed as written.
 
@@ -561,16 +569,28 @@ validation, and the final report lists them.
   shown identical to the full computation at 500 and 5,000 draws
   (reports/livetest_subset_proof_2026-11-07.json).
 
+## Start at Week 11 (D-127)
+
+The review needed more time than Week 10 allowed: each week's run must start
+at least 24 hours before its deadline (D-106). Under the owner's D-098 item
+4 the test therefore starts at the next full week, 2026 week 11, and keeps
+the pre-registered length of 18 weeks: 2026 weeks 11-18 plus 2027 weeks
+1-10. Every rule is unchanged. 2026 week 10 is not part of the test and is
+not a miss. It runs end to end as a labeled real-data rehearsal on the
+dry-run branch `livetest-dryrun`: built before its kickoff (2026-11-13 01:15
+UTC) and scored after its Friday cutoff (2026-11-20 12:00 UTC). Nothing of it
+is written to `livetest-2026` or read by the final.
+
 ## Expected verdict date and the app until then
 
 The single verdict is computed after every window week is final, at the
-earliest after 2027 week 9's games are final in `dim_game`. The 2027
+earliest after 2027 week 10's games are final in `dim_game`. The 2027
 schedule is not published; by recent seasons' calendars that is **about
-2027-11-12** (the Friday data cutoff after 2027 week 9), and no earlier
-than about 2027-11-05 nor later than about 2027-11-19. Until then the real app stays on
+2027-11-19** (the Friday data cutoff after 2027 week 10), and no earlier
+than about 2027-11-12 nor later than about 2027-11-26. Until then the real app stays on
 "no approved model": projections, start/sit, waivers, trades and
 rest-of-season rankings are off through the rest of 2026, the 2027 offseason
-and draft, and 2027 weeks 1-9 (D-099, D-110). chain_v2 outputs exist only in
+and draft, and 2027 weeks 1-10 (D-099, D-110). chain_v2 outputs exist only in
 private test environments, labeled "not approved". No interim result changes
 this.
 
@@ -611,16 +631,16 @@ not part of the test; projections that exist are never withheld. The frozen
 rules are unchanged whatever the number of scored weeks.
 
 Pass-rate estimate for this design, stated plainly: **even a good model
-has only about a 56% chance of passing** the 22 lines over the 18-week window
-under the frozen bootstrap; about 52% with one excluded week and 50% with
-two. A model with no edge passed in none of 5,000 replicates (estimate 0.0%;
+has only about a 58% chance of passing** the 22 lines over the 18-week window
+under the frozen bootstrap; about 54% with one excluded week and 50% with
+two (window 2026 weeks 11-18 plus 2027 weeks 1-10, D-127). A model with no edge passed in none of 5,000 replicates (estimate 0.0%;
 95% upper bound 0.06%).
 
 | Weeks scored | Good model passes (variance-corrected; MC SE 0.007) | No-edge model passes |
 | --- | --- | --- |
-| 18 | 0.557 | 0 of 5,000 (upper bound 0.0006) |
-| 17 (one miss) | 0.518 | 0 of 5,000 (upper bound 0.0006) |
-| 16 (two misses) | 0.500 | 0 of 5,000 (upper bound 0.0006) |
+| 18 | 0.580 | 0 of 5,000 (upper bound 0.0006) |
+| 17 (one miss) | 0.540 | 0 of 5,000 (upper bound 0.0006) |
+| 16 (two misses) | 0.498 | 0 of 5,000 (upper bound 0.0006) |
 
 **Report-only sensitivity check (owner, 2026-11-05, D-111).** Because the
 frozen 500-draw bootstrap moves the estimated pass rate by about 5 points
@@ -641,9 +661,9 @@ scorer with `--weekly-sensitivity`).
   the first report).
 - **One replicate:** for each week number of the window, one 2022-2024 slate
   of that week number is drawn at random as a whole week, so within-week and
-  within-game correlation is kept; 2026 weeks 10-18 are thinned to the 2026
-  game counts by dropping whole games (immaterial: full slates give 0.568);
-  2027 weeks 1-9 use full slates because the 2027 schedule is unknown; missed
+  within-game correlation is kept; 2026 weeks 11-18 are thinned to the 2026
+  game counts by dropping whole games (immaterial in the original window:
+  full slates gave 0.568); 2027 weeks 1-10 use full slates because the 2027 schedule is unknown; missed
   weeks are drawn at random.
 - **Good model:** chain_v1+cal's validated 2022-2024 accuracy with coverage
   made exactly calibrated. **Variance-corrected:** week-level differences are
@@ -672,8 +692,12 @@ scorer with `--weekly-sensitivity`).
   order the test will not use; 0.59-0.61 is the average over bootstrap seeds.
   The bootstrap stays as pre-registered and no rule is changed on this
   evidence. Details: docs/status/livetest-power-reconciliation.md.
+  These figures are for the original window (2026 weeks 10-18, then 2027
+  weeks 1-9). D-127 moved the window one week later; there the same
+  simulator gives 0.580 corrected / 0.736 uncorrected over 18 weeks (table
+  above), a move within the order sensitivity described here.
 
-## 2027 weeks 1-9
+## 2027 weeks 1-10
 
 The same frozen code, data refresh and machinery continue into 2027 with no
 re-freeze: the pinned worktree, `ffml refresh` through the pinned module,
@@ -704,7 +728,7 @@ fixes what it reads and checks.
   projections that are not on the branch. Weekly results are sealed and
   information only; no weekly output shows a metric or a `Verdict:` line.
   The final is computed once, after every window week is scored or missed,
-  at the earliest after 2027 week 9's data cutoff, also when 2027 week 9 is
+  at the earliest after 2027 week 10's data cutoff, also when 2027 week 10 is
   an excluded miss; the scorer refuses the final before that.
 - **Reads.** From `livetest-2026`: `{season}w{WW}/commitment.json`, and
   `{season}w{WW}/player_summary.parquet` when present (else the local file
@@ -765,7 +789,8 @@ fixes what it reads and checks.
   good-model pass rates on nine weeks, no-edge 0.000 for all; none reaches
   0.70, so the fallback applies (D-110). Over the 18-week window the
   unchanged 22 lines pass a good model 0.557 (corrected; 0.722 uncorrected)
-  and a no-edge model 0.000.
+  and a no-edge model 0.000 in the original window; 0.580 / 0.736 in the
+  D-127 window.
 - Rehearsal of the machinery: Week 9, built 2026-11-04 23:36 UTC (25.6 h
   before kickoff), commitment digest
   `a69e91379d1f23a88f858b0d5e221ea4a36f70d30f33cd94b30583bf3fe640c2`, 386 s,
