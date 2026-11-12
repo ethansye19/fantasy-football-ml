@@ -22,7 +22,7 @@ ensure_ascii=False)` encoded as UTF-8 (`rules.rules_sha256_definition`).
   "focus_model": "chain_v2",
   "raw_model_label": "chain_v1",
   "candidate_scheme": "chain_v2-primary-c{season}w{week:02d}-{UTC stamp YYYYMMDDTHHMMSSZ}",
-  "commit": "<frozen commit>",
+  "commit": "47999132bba4b8ed1da1cc443f5517867900b0fb",
   "frozen_commit_must_include": [
     "071c3a4",
     "12e2faa",
