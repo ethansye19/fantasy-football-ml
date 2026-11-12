@@ -132,7 +132,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-130 | 2026-11-11 | decided (owner, 2026-11-11 resume instructions) | Run 6's partial evidence archived and hashed (reports/evidence/rehearsal/); it cannot verify the suite's checks, so all ten worlds are rerun at X = 4799913 (run 7); agent processes are never suspended, a pause stops at a clean checkpoint; the owner confirms D-127 (Week 11 to 2027 Week 10, 18 scored weeks, Week 10 not a miss), made before the freeze and before any Week 10 result; stale window text fixed in the app and docs |
 | D-131 | 2026-11-12 | decided (orchestrator, D-117) | Run 7 (all ten worlds at X = 4799913): every world's results as designed, 43 passed and 1 failed on a test assertion defect (a suffix match counted each week's branch-commitment check as a commitment check); assertion fixed to an exact name match, no scorer or runner change; all ten rerun once more (run 8) for one complete run at the committed test code |
 | D-132 | 2026-11-12 | recorded (orchestrator) | Run 8 stopped by Claude Code's low-memory reaper after 2 of 10 worlds (consistent with run 7); not restarted without the owner's go-ahead (Claude Code's rule for reaped jobs); the freeze still waits for a complete run 8; the rehearsal's default candidate set to X (Evaluator finding 6) |
-| D-133 | 2026-11-12 | decided (orchestrator, D-117, owner's restart instructions) | After the computer restarted: repo clean and pushed at eeb5c6c, nothing lost; run 8 (not run 7) was the unfinished run, so all ten worlds are rerun as run 9; CI red on main since 2026-11-10 (a test-file name clash stopped collection), fixed by renaming one file; Week 10 rehearsal built first with `--stub-score` |
+| D-133 | 2026-11-12 | decided (orchestrator, D-117, owner's restart instructions) | After the computer restarted: repo clean and pushed at eeb5c6c, nothing lost; run 8 (not run 7) was the unfinished run, so all ten worlds are rerun as run 9; CI red on main since 2026-11-10 (a test-file name clash stopped collection), fixed by renaming one file, and the D-108 thread flake fixed by D-108's fallback (the test pins 1 thread); Week 10 rehearsal built first with `--stub-score` |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1364,6 +1364,18 @@ Decision:
   in an allowed path: tests/api/test_season.py is renamed
   tests/api/test_meta_season.py. No test content changes. The full fast
   suite in CI must be green at the freeze candidate before the freeze.
+- With collection fixed, CI ran 1,062 tests at cfcfcd6: 1,045 passed, 16
+  skipped, and one failed,
+  `tests/models/test_chain_ablation.py::test_default_feature_lists_are_unchanged`
+  (two fits with the same seed compared for equality). This is the D-108
+  flake again: 4 LightGBM threads on a runner with fewer cores
+  (GitHub's standard runner for a private repository has 2 vCPUs)
+  oversubscribe the way 8 threads did on 4. D-108's own fallback applies:
+  the test pins 1 thread for itself (`monkeypatch` of `BASE_PARAMS`); the
+  model keeps 4 threads, and `ffml/models/` is not touched. The builds run on
+  the development machine (8 logical cores), where the identity weeks are
+  byte-identical (D-108). The verdict never refits a model: it scores the
+  committed predictions.
 - The Week 10 rehearsal is built first, before run 9 starts, so the two
   jobs never compete for memory. The build peaked at 4.0 GB in the 2026w09
   rehearsal. The freeze is not done, so it uses `--stub-score` for the

@@ -78,8 +78,11 @@ def test_excluded_columns_never_reach_a_stage(frames, monkeypatch, ablation):
     assert m.name == f"chain_v1-primary-{ablation}"
 
 
-def test_default_feature_lists_are_unchanged(frames):
+def test_default_feature_lists_are_unchanged(frames, monkeypatch):
     """No exclusions: every stage sees exactly the lists the stage specs give today."""
+    # D-108 fallback, for this test only: one LightGBM thread, so the two fits compared below
+    # are reproducible on CI runners with fewer cores than num_threads (D-133); the model keeps 4
+    monkeypatch.setitem(lgbm_mod.BASE_PARAMS, "num_threads", 1)
     default = ChainModel(stage_choice="lgbm", n_sims=150, seed=2, data=ChainData(frames=frames))
     assert default.exclusions == () and default.name == "chain_v1"
     default.fit(CUTOFF)
