@@ -758,3 +758,85 @@ is a gap again. It is rare, but it lands on a binding week. Options:
 I recommend (a), logged in the change log under the `ffml/data/` rule. The recomputed feature rows of committed
 weeks stay byte-identical, because the change can only make an ingest fail. It must land before 2027 week 1's cutoff.
 Until then nothing can trigger it.
+
+### Part 2: run 7 at X = 4799913 (provisional; 2026-11-12)
+
+This is my own reading of the raw evidence in `reports/evidence/rehearsal/`. The four files hash as `MANIFEST.md`
+says, both as committed (LF) and in the working copy. Run 8 at base 34a6644 confirms it; the freeze line follows run
+8.
+
+**Provenance.**
+- Every world records X = 4799913 and base Z = 765fb1a, with an empty `diff_x_head_frozen_code`.
+- The final runs assert that `ffml` was imported from the world's clone.
+
+**Pre-registration at 765fb1a.**
+- It is unchanged through 34a6644 and HEAD (`git diff --quiet`).
+- `rules_sha256` 3c187d88… reproduces, and `lines_sha256` equals `lines_spec_sha256()`.
+- `prereg_window` at X gives 2026 w11-18 plus 2027 w1-10, 18 weeks, equal to `window.weeks_total` (line 73).
+- The pass rates (lines 255-257 and 369) are 0.580 / 0.540 / 0.498 corrected, with 0 of 5,000 for no edge.
+- The verdict date, about 2027-11-19 (line 312), is correct: 2027 week 10's Monday game is about 2027-11-16
+  01:15 UTC, and 72 h later the first Friday at 12:00 UTC is 2027-11-19.
+- All 15 `frozen_commit_must_include` commits are ancestors of X.
+- The deadline table covers 2026 w11-18.
+
+**Pass rates, reproduced** with `ffml/eval/power.py` `simulate_rules`, 5,000 replicates, 2 threads:
+
+| run | corrected | uncorrected | no edge |
+| --- | --- | --- | --- |
+| seed index 11 (as recorded) | 2,899 = 0.580, **exact** | 3,682 = 0.736, **exact** | 0 |
+| seed index 21 (independent) | 2,924 = 0.585 | 3,667 = 0.733 | 0 |
+
+The independent seed is within one standard error (0.007). The rise from the original window's 0.557 shows at both
+seeds, so it is not one seed's noise.
+
+**Scenario table (run 7).** Every world's final matches its design:
+
+| world | design | final verdict | lines not passed | checks |
+| --- | --- | --- | --- | --- |
+| A_pass | good model, no miss | APPROVED (also the repeat with the stores moved away) | none | 102, all PASS |
+| G_unfinal_game | a game never final (2026w14), a game final late (2027w02) | APPROVED | none | 103 (one `games excluded (D-121)`), all PASS |
+| P_prebuild | blocked builds: one fixed in time, one left, a frozen-path change | APPROVED over 17 weeks | none | 97, all PASS |
+| E_stat_correction | corrections after the cutoff | APPROVED | none | 102, all PASS |
+| D1_one_miss | 2026w12 missed | APPROVED over 17 weeks | none | 97, all PASS |
+| D2_two_misses | 2026w12 and the last week 2027w10 missed | APPROVED over 16 weeks | none | 92, all PASS |
+| B_qb_narrow / B2 (rebuilt) | QB intervals too narrow | NOT APPROVED (B2 = B) | L17 only | 102, all PASS |
+| C_accuracy_tie | one accuracy tie | NOT APPROVED | L07 only | 102, all PASS |
+| D3_three_misses | three misses | INVALID (miss rule) | not computed | 87; only `missed weeks (miss rule)` fails |
+
+The check counts follow 12 global checks plus 5 per scored week, plus one for G's excluded week.
+
+Run 6's eleven final records recur in run 7 with identical verdicts and lines.
+
+**The run 7 failure is a test defect, and 34a6644 fixes it correctly.** I checked this independently of D-131.
+- The scorer emits `"{wk} commitment"` (`ffml/eval/livetest_score.py:1915`) and `"{wk} branch commitment"`
+  (`:1944`) for every scored week.
+- The assertion at `tests/rehearsal/test_livetest_final_rehearsal.py:190` (before the fix) counted names ending in
+  `" commitment"`. It therefore counted both, giving 36. It could never pass in a complete pass-world run.
+- In run 7's evidence each of the five per-week kinds occurs exactly 18 times, and all 102 checks are PASS.
+- The fix (`:190-191`, `re.fullmatch(r"\d{4}w\d\d " + re.escape(kind), n)`) makes each count exact. It weakens
+  nothing: the four other kinds already counted 18 either way, and the earlier required-names assertion is
+  unchanged.
+- I replayed every test function at 34a6644 against run 7's results, calling them directly on the JSON, with
+  `FFML_REHEARSAL_COMMIT=4799913` and `FFML_REHEARSAL_BASE=765fb1a`. This replays assertions only; I did not rerun
+  the rehearsal. Result: **44 passed, 1 skipped** (the optional real 5,000-draw run). That includes every assertion
+  after line 191 that run 7 never reached.
+
+**Commits after X.**
+- 765fb1a, fac6fcb, b2900b0 and 34a6644 touch 13 files, all on allowed paths (`path_allowed`; none frozen).
+- `scripts/livetest_changelog.py --from 4799913` lists exactly these four as unlogged, matching
+  `git log 4799913..HEAD`. With this review commit and run 8's evidence commit, they go in D-120's append-only
+  change-log commit Y. That commit must touch only the change log.
+
+**The app text in b2900b0 is consistent with the pre-registration.** `api/services/meta_content.py:124-127` states
+the D-127 window, the verdict about 2027-11-19 and about a 58% chance. b2900b0 also reworded the change log's header
+(`docs/status/livetest-changelog-2026.md:4`). That is not a row, and b2900b0 is on the helper's list.
+
+**Findings**
+- Low: `tests/rehearsal/_rehearsal_world.py:47` and `:50`, the defaults `FFML_REHEARSAL_COMMIT` = 071c3a4 and base
+  = the same. Without the environment variables, the suite rehearses the old candidate and the D-110 window
+  (`FIRST_WEEK` 2026w10). Runs 7 and 8 set both, so the evidence is not affected. Update the defaults to X, or make
+  the variables required (`tests/` is allowed, with a log row).
+- No scorer, runner or pre-registration defect was found in run 7.
+
+**Provisional verdict on run 7: pass.** It holds if run 8 (base 34a6644) gives 44 passed and 1 skipped, with every
+world's verdict and lines identical to run 7's.
