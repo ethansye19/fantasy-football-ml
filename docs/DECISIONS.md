@@ -1514,7 +1514,7 @@ the owner asked:
   X to Y, all logged, none on a frozen path.
 - main pushed at Y (22:14 UTC). livetest-2026 is unchanged (9e7d5dc);
   livetest-dryrun holds the Week 10 rehearsal (a2bc721).
-- Code worktree `C:SERSthanfml-livetest-code` at Y
+- Code worktree `C:\Users\Ethan\ffml-livetest-code` at Y
   (`scripts/livetest_setup_worktree.py --commit Y`). Its venv is installed
   from Y's lock file. The pin check passes: HEAD = Y, clean, `ffml` imported
   from the worktree (also from a neutral directory), the environment matches
