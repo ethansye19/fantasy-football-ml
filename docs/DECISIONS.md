@@ -133,6 +133,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-131 | 2026-11-12 | decided (orchestrator, D-117) | Run 7 (all ten worlds at X = 4799913): every world's results as designed, 43 passed and 1 failed on a test assertion defect (a suffix match counted each week's branch-commitment check as a commitment check); assertion fixed to an exact name match, no scorer or runner change; all ten rerun once more (run 8) for one complete run at the committed test code |
 | D-132 | 2026-11-12 | recorded (orchestrator) | Run 8 stopped by Claude Code's low-memory reaper after 2 of 10 worlds (consistent with run 7); not restarted without the owner's go-ahead (Claude Code's rule for reaped jobs); the freeze still waits for a complete run 8; the rehearsal's default candidate set to X (Evaluator finding 6) |
 | D-133 | 2026-11-12 | decided (orchestrator, D-117, owner's restart instructions) | After the computer restarted: repo clean and pushed at eeb5c6c, nothing lost; run 8 (not run 7) was the unfinished run, so all ten worlds are rerun as run 9; CI red on main since 2026-11-10 (a test-file name clash stopped collection), fixed by renaming one file, and the D-108 thread flake fixed by D-108's fallback (the test pins 1 thread); Week 10 rehearsal built first with `--stub-score` |
+| D-134 | 2026-11-12 | decided (orchestrator, D-117, owner's reproducibility request) | The weekly build at X is reproducible exactly at a fixed build time (all projection, model and walk-forward files byte-identical; one label column differs); projections depend on the build time by design through `depth__chart_age_days`; no fix, no frozen code changed; the freeze proceeds on its existing conditions |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1381,6 +1382,52 @@ Decision:
   rehearsal. The freeze is not done, so it uses `--stub-score` for the
   pre-build check only (runbook section 19). It is not part of the test and
   writes nothing to `livetest-2026`.
+
+## D-134 Reproducibility of the weekly build at X (orchestrator under D-117; 2026-11-12)
+
+The owner asked, before the freeze: run the Week 10 rehearsal build twice,
+show whether the projection outputs and hashes match exactly, explain any
+difference and whether D-108 covers the production path, and stop before
+freezing if a fix would change frozen code.
+
+Done (reports/evidence/reproducibility/2026w10_build_reproducibility.md):
+two more builds with the production command (r1 at 17:05, r2 at 17:07
+UTC), compared with the pushed build r0 (14:49), plus a fourth build with
+the clock fixed to r0's time in a scratch sandbox. The build code is
+identical to X, the data snapshots are the same in all four, and nothing
+was pushed. The pushed rehearsal's sandbox files were restored
+byte-identical and still verify.
+
+Results:
+- At a fixed build time the build is exact: every projection file, all 23
+  model files and the recomputed walk-forward part are byte-identical to
+  r0. `player_summary` differs only in its `calibration_version` label (a
+  hash of the calibrator state file, which records the build time and
+  source paths); the other differing files are metadata.
+- At different build times the projections differ by design. Live feature
+  rows are built as of the build moment, and one model input depends on
+  it: `depth__chart_age_days`. From r0 to r1 every `pred_mean` moved (mean
+  0.096 points, largest 0.66); r1 and r2, two minutes apart, are equal.
+- No run-to-run randomness was found: seeds are fixed per week and the
+  model files are identical in all four builds. D-108 covers the thread
+  effect on the production path; the build-time dependence is not
+  nondeterminism and is outside D-108.
+
+Decision:
+- No fix. A commitment records the code, the snapshots and the build time,
+  so it is reproducible exactly, and the verdict scores only the committed
+  projections, which are never rebuilt. Making projections independent of
+  the build time would change frozen code (`ffml/features/`, `ffml/sim/`)
+  and is not needed for reproducibility, so the owner's stop condition is
+  not met and the freeze proceeds on its existing conditions (run 9 and the
+  Evaluator's freeze line).
+- The Evaluator's freeze review is asked to confirm this reading. The
+  report also notes that training rows measure the chart age 1 hour before
+  the cutoff, while live rows measure it at the build, about 24 hours
+  before the first kickoff (D-106).
+- r1 and r2 left two unreferenced build folders in the rehearsal sandbox
+  (models and predictions stamped 20261112T170514Z and 170736Z). No
+  commitment or registry entry names them; they are kept as evidence.
 
 ## Owner answers received 2026-11-01
 
