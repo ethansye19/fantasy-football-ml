@@ -2,9 +2,9 @@
 
 QA and Security Reviewer, 2026-11-12. The final rehearsal ran at the frozen
 commit **X = 4799913** (D-129). In run 7 each clone started from **Z = 765fb1a**,
-the commit that holds the final pre-registration text (the D-127 window). Run 8
-starts from Z = 34a6644, the fix for the test assertion defect, and confirms the
-result (see "Run 8 confirmation").
+the commit that holds the final pre-registration text (the D-127 window). The
+confirmation at the fixed test code is run 9, from Z = cfcfcd6 (see
+"Confirmation: run 9"); run 8 was stopped for low memory after two worlds.
 
 * Test: `tests/rehearsal/test_livetest_final_rehearsal.py`.
 * Evidence: `reports/evidence/rehearsal/`, with hashes in `MANIFEST.md`.
@@ -137,7 +137,7 @@ ten worlds: 43 tests passed, 1 failed and 1 was skipped.
 
 | id | severity | finding | where | repro | impact on the verdict | status |
 | --- | --- | --- | --- | --- | --- | --- |
-| QA-F33 | test only | The PASS-world test counted each per-week check kind with a suffix match, so `" commitment"` also matched "<week> branch commitment" and counted 36. My defect: the assertion dates from 7d5749b | `tests/rehearsal/test_livetest_final_rehearsal.py:190` at 765fb1a | run 7, `test_pass_world_is_approved`: "AssertionError: commitment / assert 36 == 18" | none: the scorer wrote each per-week check exactly 18 times, all PASS | fixed in 34a6644 (exact name match, D-131); run 8 confirms |
+| QA-F33 | test only | The PASS-world test counted each per-week check kind with a suffix match, so `" commitment"` also matched "<week> branch commitment" and counted 36. My defect: the assertion dates from 7d5749b | `tests/rehearsal/test_livetest_final_rehearsal.py:190` at 765fb1a | run 7, `test_pass_world_is_approved`: "AssertionError: commitment / assert 36 == 18" | none: the scorer wrote each per-week check exactly 18 times, all PASS | fixed in 34a6644 (exact name match, D-131); run 9 confirms |
 | QA-F31 | high | `ensure_comparators` ignored the D-121 exclusion. A week with an excluded game, and every later week of its season, were refused whenever the comparators run had to be extended | `ffml/eval/livetest_score.py:846-863` at 071c3a4 | world G's comparators probe | at 071c3a4, those weeks could never be sealed and the final could never run | fixed in 4799913; rechecked above |
 | QA-F32 | low | `--data-cutoff` for a season with no `dim_game` partition yet raised `FileNotFoundError` (exit 1), not exit 4 | `ffml/eval/livetest_score.py:2115` at 071c3a4 | world E, `--data-cutoff 2027w01` before the 2027 schedule | none | fixed in 4799913; rechecked above |
 
@@ -153,7 +153,7 @@ Rechecks that hold at X:
 * The test still counts distinct check names: the names are a set, as before.
 * Each of the five kinds must now match exactly "<week> <kind>" 18 times.
   Before, the suffix match for "commitment" also caught "branch commitment".
-* A possible tightening, after run 8: compare the set of week keys with the
+* A possible tightening, after the freeze: compare the set of week keys with the
   window, instead of comparing the count with 18.
 * The similar suffix match at `:395` ("change log") only checks that each match
   is PASS and counts nothing, so it cannot over-count.
@@ -169,7 +169,8 @@ Observations (not defects):
 
 | run | X | clones start from | workers | when (UTC) | result |
 | --- | --- | --- | --- | --- | --- |
-| 8 | 4799913 | 34a6644 | 2 | 2026-11-12, running at the time of writing | see "Run 8 confirmation" |
+| **9** | **4799913** | **cfcfcd6** | 1 | 2026-11-12 14:53 to 19:48 (pytest 17,702 s, 4 h 55 min) | all ten worlds; **44 passed, 1 skipped**; see "Confirmation: run 9" |
+| 8 | 4799913 | 34a6644 | 2 | 2026-11-12 00:26 to about 01:26 | stopped by Claude Code for low memory after G and A (both consistent with run 7, D-132); then the computer restarted |
 | **7** | **4799913** | **765fb1a** | 2 | 2026-11-11 22:16 to 2026-11-12 00:23 (pytest 7,578 s, 2 h 06 min) | all ten worlds; 43 passed, 1 failed (QA-F33), 1 skipped |
 | 6 | 4799913 | 765fb1a | 2 | 2026-11-11 17:43 to 20:20 | stopped by the owner's pause (below); nine worlds finished, B2 only started; 70 streamed records archived, not used for the result |
 | 5 | 071c3a4 | 071c3a4 | 3 | 2026-11-10 18:48 to about 19:09 | stopped by Claude Code for low memory; no final ran; found QA-F31 (by code reading) and QA-F32 |
@@ -194,16 +195,28 @@ World times in run 7, in seconds:
 * All 29 final and refusal records of run 6 recur in run 7 with identical
   verdicts and lines.
 
-## Run 8 confirmation
+## Confirmation: run 9
 
-> **TO BE FILLED IN WHEN RUN 8 FINISHES.**
->
-> * Settings: X = 4799913, clones from Z = 34a6644, two workers, evidence
->   `evidence_run8.json`.
-> * Expected: 44 passed and 1 skipped (the 5,000-draw run); every final and
->   refusal record identical to run 7's; the freeze steps as in run 7, with the
->   commits between X and Z now including 34a6644.
-> * Actual: _pending_.
+Filled in by the coordinator from run 9's evidence; QA's session ended with the
+computer restart on 2026-11-12, after run 8 had been stopped (D-132, D-133).
+
+* Settings: X = 4799913; clones from Z = cfcfcd6, which holds the QA-F33 fix
+  (34a6644), the default candidate X (eeb5c6c) and the CI file rename (D-133);
+  one worker; evidence `run9_X4799913.json`.
+* Result: **44 passed, 1 skipped** (the optional real 5,000-draw run) in
+  17,702 s (4 h 55 min).
+* Every world records X = 4799913 and an empty frozen-code diff from X to Z.
+* Against run 7, all 30 final and refusal records, across the ten worlds, have
+  the same verdict, exit code, line values and check names and statuses, once
+  commit shas are masked. The only differences come from the newer base:
+  * the "final evaluation commit" and "final evaluation change log" check texts
+    count more allowed paths and logged commits after X (for example 21 paths
+    and 11 commits, against 4 and 4 in run 7);
+  * the two INVALID scenarios that list every unlogged commit
+    (`fill_unlogged`, `fill_placeholder`) list 5 commits instead of 3.
+* Verdicts: A, G, E, P, D1 and D2 APPROVED; B and B2 NOT APPROVED (L17 only);
+  C NOT APPROVED (L07 only); D3 INVALID (miss rule). Each matches its design
+  and run 7.
 
 ## How the rehearsal runs
 
@@ -390,9 +403,10 @@ These ran through the real paths:
 
 * **X = 4799913**: the frozen commit (D-129).
 * **Z = 765fb1a**: run 7's base. **34a6644**: run 8's base, with the QA-F33 fix
-  (D-131).
+  (D-131). **cfcfcd6**: run 9's base (D-133).
 * **Rehearsal harness:** 7d5749b, d93b1d7, 04a2c42, cf0b629 and eabb201.
-* **Evidence archive:** fac6fcb (run 6) and 34a6644 (run 7).
+* **Evidence archive:** fac6fcb (run 6), 34a6644 (run 7), eeb5c6c (run 8's partial
+  results) and the run 9 archive commit.
 
 ## The first rehearsal (D-115, X = 4c35fea, commit 1f2baf9)
 

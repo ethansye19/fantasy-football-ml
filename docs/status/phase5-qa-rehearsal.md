@@ -9,7 +9,8 @@ and synthetic data only:
 * the frozen commit is **X = 4799913** (D-129);
 * each clone starts from **Z = 765fb1a** (run 7), which holds the final
   pre-registration text (the D-127 window, 2026 w11-18 plus 2027 w1-10);
-* run 8 starts from Z = 34a6644 and confirms the result.
+* run 9 starts from Z = cfcfcd6 and confirms the result (run 8 was stopped
+  for low memory, D-132).
 
 Nothing under a frozen path changed. Nothing was read from or written to the
 real `data/`, `artifacts/`, `livetest-2026`, registry or access log. Nothing
@@ -99,7 +100,7 @@ What the run showed:
 
 | id | severity | finding | where | status |
 | --- | --- | --- | --- | --- |
-| QA-F33 | test only | The PASS-world test's suffix match counted "<week> branch commitment" as a commitment check (36, not 18). No effect on the verdict | `tests/rehearsal/test_livetest_final_rehearsal.py:190` (765fb1a) | fixed in 34a6644 (D-131); run 8 confirms |
+| QA-F33 | test only | The PASS-world test's suffix match counted "<week> branch commitment" as a commitment check (36, not 18). No effect on the verdict | `tests/rehearsal/test_livetest_final_rehearsal.py:190` (765fb1a) | fixed in 34a6644 (D-131); run 9 confirms |
 | QA-F31 | high | `ensure_comparators` ignored the D-121 exclusion: weeks could never be sealed and the final could never run | `ffml/eval/livetest_score.py:846-863` (071c3a4) | fixed in 4799913 (D-128); rechecked |
 | QA-F32 | low | `--data-cutoff` for a season with no `dim_game` partition exited 1 with a traceback, not 4 | `ffml/eval/livetest_score.py:2115` (071c3a4) | fixed in 4799913 (D-128); rechecked |
 | QA-F27 to QA-F30 | | from the first rehearsal | | fixed earlier; rechecked, all hold |
@@ -131,9 +132,14 @@ Limitations:
   QA-F31 and QA-F32.
 * **Earlier runs** at bd3bf21 and 2872d13 were stopped. Every final that
   completed matched.
-* **Run 8 confirmation: TO BE FILLED IN** (X = 4799913, Z = 34a6644, two
-  workers; expected 44 passed and 1 skipped, with run 7's final and refusal
-  records).
+* **Run 8** (Z = 34a6644): stopped by Claude Code for low memory after two
+  worlds, both consistent with run 7 (D-132).
+* **Run 9 confirmation** (X = 4799913, Z = cfcfcd6, one worker, 2026-11-12
+  14:53 to 19:48 UTC): **44 passed, 1 skipped**. All 30 final and refusal
+  records equal run 7's in verdict, exit code, line values and check statuses
+  once commit shas are masked; only the counts of commits and paths after X
+  differ, because the base is newer. Filled in by the coordinator from the
+  evidence (`reports/evidence/rehearsal/run9_X4799913.json`).
 
 ## The first rehearsal (D-115, 2026-11-06, X = 4c35fea)
 
