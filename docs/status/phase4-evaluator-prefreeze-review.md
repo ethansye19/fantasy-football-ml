@@ -840,3 +840,264 @@ the D-127 window, the verdict about 2027-11-19 and about a 58% chance. b2900b0 a
 
 **Provisional verdict on run 7: pass.** It holds if run 8 (base 34a6644) gives 44 passed and 1 skipped, with every
 world's verdict and lines identical to run 7's.
+
+### Part 2 final: run 9 and the freeze line (2026-11-12)
+
+Run 8 stopped after two worlds (D-132). After the restart, D-133 replaced it with run 9: all ten worlds at
+X = 4799913, base Z = cfcfcd6, one worker, 14:53 to 19:48 UTC. The bar is unchanged from the provisional Part 2:
+44 passed and 1 skipped, with every world's verdict and lines identical to run 7's.
+
+This is my own reading of the raw files, made with my own comparison scripts (kept in my scratchpad, outside the
+repository). I did not rerun the rehearsal or any build, and I wrote nothing except this subsection.
+
+**1. Evidence integrity: passes.**
+- For each of the eight files in `reports/evidence/rehearsal/`, I ran `sha256sum` on the working copy and on
+  `git show HEAD:<path>`. Every raw hash and every LF hash equals MANIFEST.md, and each LF hash also equals the
+  working copy with CR removed.
+- Run 9's three files are byte-identical to the run's original outputs, which are still in the orchestrator's
+  scratchpad (`evidence_run9.json`, its `.partial.jsonl` and `run9.log`; raw SHA-256 `1a405e87…`, `5345a9da…`,
+  `ada5162c…`).
+- The partial file holds 72 records with the same keys as run 7's:
+  - 10 `freeze`, 15 `step`, 29 `final` and 8 single records;
+  - 10 `world_done`, each with `error` null.
+
+**2. Run 9 against the bar: met.**
+- *Pytest* (`run9_X4799913_pytest.txt`): 45 collected, `44 passed, 1 skipped in 17702.48s (4:55:02)`, `exit=0`.
+  - The skip is `test_real_5000_draw_run_reports_beside_the_binding_verdict`, which needs `FFML_REHEARSAL_5000=1`.
+  - `test_pass_world_is_approved`, run 7's one failure, passes. My replay of the assertions on run 7's results is
+    now confirmed by a real run.
+- *The test code is the committed code.* The tests ran from the main checkout:
+  - `git diff cfcfcd6 HEAD -- tests/rehearsal` is empty;
+  - `ffml/`, `scripts/` and `pyproject.toml` are unchanged from X to HEAD.
+- *Provenance, in all ten worlds:*
+  - `x` is 47999132bba4… and `base` is cfcfcd6dce53…;
+  - `base_commits` is 8, which equals `git rev-list --count 4799913..cfcfcd6`;
+  - `diff_x_head_frozen_code` is empty and there is no `error`;
+  - the probe shows `ffml` imported from the world's clone;
+  - the 20 paths in `diff_x_head` are exactly `git diff --name-only 4799913 cfcfcd6`.
+- *Every final and refusal record, compared with run 7.* A record is any dict with `label` and `proc`. Each run has
+  29, at the same 29 paths. For each record I compared these fields, with commit shas and the temp root masked:
+  - exit code, flags and the verdict lines (stdout, report and `final_lines.json`);
+  - the 22 line results, including their `detail` and `intervals` text, which carry the line values;
+  - check names and statuses, in the report table and in `final_lines.json`;
+  - flagged markers, excluded games, unsealed weeks, sensitivity, `n_boot`, `dry_run` and sealed-directory changes.
+- *Result:*
+  - 27 records are identical on all of these.
+  - 2 records (A's `fill_unlogged` and `fill_placeholder`) are identical except the INVALID text. It lists 3
+    unlogged commits in run 7 and 5 in run 9.
+    - The scorer prints at most five (`missing[:5]`, `livetest_score.py:1872`).
+    - Run 9's clone has 10 unlogged commits (8 base commits, plus the digest and fill commits); run 7's had 3.
+    - The same check fails and the verdict is the same.
+  - The check details differ in 72 places, all in two checks. "Final evaluation commit" counts allowed paths
+    (for example 4 against 21), and "final evaluation change log" counts logged commits (for example 4 against 11).
+    Both counts grow with the base.
+
+| world | run 9 final (equal to run 7) | lines not passed | checks passed |
+| --- | --- | --- | --- |
+| A_pass (also the repeat, the Y-pinned final, the stray-marker final) | APPROVED, exit 0 | none | 102 of 102 |
+| A's eight post-freeze commit scenarios | INVALID (change log; frozen path for `frozen_path`) | none | 101 of 102 |
+| A's six refusals: four tampered or missing sealed records, the marker attack, the failed fetch | refused, exit 3 (the fetch: exit 75); no report | n/a | n/a |
+| G_unfinal_game | APPROVED | none | 103 of 103 |
+| P_prebuild | APPROVED, 17 weeks | none | 97 of 97 |
+| E_stat_correction (the final after a local rescore is refused: sealed files differ from the branch record, exit 3) | APPROVED | none | 102 of 102 |
+| D1_one_miss | APPROVED, 17 weeks | none | 97 of 97 |
+| D2_two_misses (the final is refused while 2027w10 is not final: exit 3) | APPROVED, 16 weeks | none | 92 of 92 |
+| B_qb_narrow, B2_qb_narrow_repeat | NOT APPROVED | L17 | 102 of 102 |
+| C_accuracy_tie | NOT APPROVED | L07 | 102 of 102 |
+| D3_three_misses | INVALID (miss rule) | not computed | 86 of 87 |
+
+- The 30th record in MANIFEST.md's count is world E's `rescore` call. It exits 0 in both runs, and its stderr differs
+  only in the holdout-access timestamp.
+- *Every other difference in the two files* is one of three kinds:
+  - commit shas, and the counts of commits or paths after X:
+    - `freeze.listed`;
+    - the helper's appended rows (3 against 10);
+    - the pre-build check output (all 15 differing outputs have the same `ok` and the same number of uncovered
+      commits; only `commits` rises by 7);
+  - wall-clock times:
+    - holdout-access lines, the push `external_timestamp` and score-event times;
+    - a 1-second difference in `recorded_at` in two missed markers;
+    - G's `scored_at` (the simulated clock plus elapsed run time);
+  - hashes of records that contain these. Each week's commitment and sealed `.json` hold `code_commit`,
+    `branch_commit`, `commitment_sha256` and `scored_at`.
+- *What carries the result is identical.* In every world and week these match run 7:
+  - the sealed `.parquet` and `_consensus.parquet` hashes;
+  - `outcome_rows_sha256`, `data_cutoff`, the pinned `data_snapshots` and the snapshot id lists;
+  - every weekly step's status and exit code.
+- I accept the differences above. Each follows from the other base, temp root or wall clock, and none reaches a
+  verdict, a line, a value or a check status.
+- One worker instead of two only lengthened the run: 4 h 55 min, against 2 h 6 min for run 7.
+
+**3. Commits after X: all on allowed paths, and the helper can log every one.**
+- `git log --oneline 4799913..HEAD` gives 11 commits, none a merge: 765fb1a, fac6fcb, b2900b0, 34a6644, 40065aa,
+  80c1650, eeb5c6c, cfcfcd6, f43d69f, ba67ea1, 41e2dc0.
+- `git diff --name-only 4799913 HEAD` gives 25 paths. All are under `README.md`, `api/`, `docs/`, `reports/` and
+  `tests/`; the test paths are `tests/api/test_meta_season.py`, `tests/models/test_chain_ablation.py` and two
+  files in `tests/rehearsal/`.
+- *Per commit* (`git diff-tree -r -m`), I checked each path twice: with the scorer's `allowed_prefixes` and
+  `path_allowed`, and with my own prefix rule written from `path_policy`. No path is disallowed and none is frozen.
+  - The scorer's frozen list leaves out `pyproject.toml` and `requirements.lock.txt`, because they have no slash.
+  - Its rule denies by default, so both stay frozen (`path_allowed` is false for both). There is no effect.
+- *The helper.* `.venv\Scripts\python scripts\livetest_changelog.py --from 4799913` (listing only) lists the same
+  11 commits, each `auto`, and exits 1, which in listing mode means rows are still missing.
+  - None needs a hand-written row or a ruling, so the helper can row all of them in Y.
+  - The change log has no rows yet.
+- *The two CI fixes.* cfcfcd6 is a 100% rename (`git diff -M --summary`). f43d69f changes one test only: a
+  `monkeypatch` of `BASE_PARAMS["num_threads"]` to 1 inside `test_default_feature_lists_are_unchanged`.
+- *The pre-registration is unchanged since 765fb1a.*
+  - `git diff --quiet 765fb1a HEAD -- docs/status/livetest-preregistration-2026.md` exits 0. The blob is 8661fb5a…
+    at 765fb1a, at HEAD and in the working copy.
+  - `rules_sha256` reproduces: the recomputed value, the stated value and the scorer's `rules_hash` are all
+    `3c187d88405f22a1111ece81697fe7df5c23b87773e660d7992a0ccf3125d83d`.
+  - `lines_sha256` equals `lines_spec_sha256()` (`ea706e17…`).
+  - `commit` still reads `<frozen commit>`.
+  - All 15 `frozen_commit_must_include` commits are ancestors of X.
+
+**4. CI: green, and that is enough.**
+- `gh run list -L 5 --workflow ci.yml`:
+  - failure at eeb5c6c (the collection error) and at cfcfcd6 (the D-108 flake);
+  - success at f43d69f (15:03 UTC), ba67ea1 (17:19) and 41e2dc0 (21:50; it finished during this review).
+- At f43d69f all five jobs pass (python, api-postgres, api-image, web, security), lint is clean, and the fast suite
+  gives `1046 passed, 16 skipped`. At 41e2dc0 the result is the same: `1046 passed, 16 skipped`.
+- This is enough:
+  - f43d69f is the last commit that touches code or tests. ba67ea1 and 41e2dc0 touch only `docs/` and `reports/`,
+    and both are green anyway.
+  - The fill commit F and Y will touch only docs. Their CI runs should still be seen green as part of D-120.
+  - The rehearsal suite is gated and does not run in CI; run 9 is its evidence.
+
+**5. D-134: confirmed, with one qualification.**
+
+*Method.* I compared the four commitments myself:
+- r0 from the `livetest-dryrun` worktree (a2bc721, equal to `ls-remote`);
+- r1, r2 and the fixed-clock build from the scratchpad.
+
+I keyed every listed file by its name with the build stamp removed. I also read the four builds' prediction parquet
+files, diffed their calibrator state and train manifest JSON, and read the code paths. I did not rebuild: the four
+existing builds answer every question.
+
+- *At a fixed build time the build is exact: confirmed.*
+  - My table of the 32 listed files matches the report's table row for row.
+  - The fixed build equals r0 in the 23 model files, `player_sims`, `player_summary_raw`, `team_env` and the w09
+    walk-forward parquet.
+  - `player_summary` (1,458 rows) differs from r0 only in `calibration_version` (`walk_forward:a519afd9fe69`
+    against `walk_forward:8bc6fdcd26f0`).
+  - The calibrator state differs from r0 only in `meta.sources_digest` for the fixed build (its sandbox paths), and
+    only in `meta.as_of` for r1 and r2.
+  - The train manifest differs only in timings, `git`, `as_of` and `model_version`.
+  - Snapshots, seeds, pins and holdout release are equal in all four commitments.
+  - *Qualification:* a byte-exact `player_summary` and calibrator state also need the same store location, because
+    the state file records its source paths. The values do not depend on it.
+- *Projections depend on the build time: confirmed.*
+  - From r0 to r1 (2 h 16 min apart, same snapshots), all 1,458 `pred_mean` values move. Keyed by `entity_id` and
+    `scoring`, the mean absolute change is 0.0961 and the largest is 0.6562. r1 and r2 differ only in
+    `calibration_version`.
+  - The mechanism is in the code. Live rows use `asof_ts = now` (`ffml/sim/predict.py:52-53`).
+    `depth__chart_age_days` is `asof_ts` minus the chart's `snapshot_ts` (`ffml/features/context.py:160-163`).
+    Historical rows use `asof = cutoff_ts - 1 h` (`ffml/features/data.py:7-8`, `:108`).
+  - The w09 walk-forward part is byte-identical across builds 2 h 18 min apart. So the history that feeds later
+    calibrations does not depend on the build time.
+- *It does not threaten the freeze.* The dependence is a property of the frozen feature design, documented in
+  FEATURES.md (`depth__chart_age_days`). Removing it would change `ffml/features/` or `ffml/sim/`, which means a new
+  X and a new rehearsal, for no gain in validity.
+- *It does not threaten the weekly commitments.*
+  - Each commitment records `as_of`, `rows_as_of`, the snapshots, `code.commit` and the seeds. With these, the fixed
+    build reproduced r0.
+  - A real build cannot be repeated for a week: `build_week` raises `AlreadyCommitted` (exit 4) when the commitment
+    exists (`ffml/sim/livetest.py:672-675`).
+  - Only `--rehearsal` rebuilds, and only under `data/livetest/rehearsal/`. That is why r1 and r2 needed the backup
+    and restore.
+  - The restore holds: the five overwritten sandbox files match `backup_hashes.json`, and the local commitment
+    equals the pushed one (a5197d01…).
+- *It does not threaten the verdict.*
+  - The scorer and the final score the committed projections, sealed weekly. Nothing is rebuilt or refitted at
+    scoring time.
+  - No outcome exists before kickoff, so choosing a build time carries no information about results.
+- *What it does change is what the test measures.*
+  - The committed rows measure chart age at the build, about 25 h before the first kickoff under D-106. Training
+    and calibration rows measure it 1 h before kickoff.
+  - This train/serve difference comes with committing a day ahead. It is the same every week, it is fixed before
+    any outcome, and it is part of what the live test measures. It can only change how well the frozen model does.
+  - The pass-rate estimate (0.580) rests on history built with the 1-hour convention, so it may be slightly
+    optimistic. The size is unknown; for scale, 2 h 16 min moved projections by 0.096 points on average.
+  - No action is needed for the freeze.
+- *D-108 covers the production path for thread effects: confirmed.*
+  - `num_threads` is 4 (`ffml/models/chain/lgbm.py:60`) on the 8-logical-core build machine.
+  - The 23 model files are byte-identical in all four builds:
+    - r0 was built alone, 14:49 to 14:52 UTC, before run 9 started;
+    - r1, r2 and the fixed build ran from 17:05 to 17:16 UTC, while run 9's world E was working (its records run
+      from 16:53 to 17:29).
+  - So the refit was also stable under that load.
+  - The thread effect matters only for rebuilding a commitment, never for the verdict. CI's smaller runner is
+    handled by the test-only pin in f43d69f.
+  - If the builds ever move to a machine with fewer than 4 cores, D-108's premise no longer holds. That too would
+    affect only reproducibility.
+
+**6. Other checks.**
+- *The provisional Part 2's low finding is closed.* That is the harness defaults, finding 6 in D-132.
+  `FFML_REHEARSAL_COMMIT` now defaults to 4799913 and the base to X (`tests/rehearsal/_rehearsal_world.py:47-50`,
+  eeb5c6c).
+- *The extra D-134 builds did not touch run 9.* They overlapped on the machine but share no files: each world has
+  its own clone and data directories. Neither result is affected: run 9 equals run 7, and the builds' model files
+  equal r0's.
+
+**Findings**
+
+**F9. Pre-registration fields outside `rules` are unguarded after the freeze. Medium; does not block the freeze.
+Close it before the first counted build (window opens about 2026-11-19 00:15 UTC).** After the freeze, the binding
+fields of the pre-registration outside `rules` can be edited without any automated check noticing.
+- The final reads three of them from the main checkout's pre-registration at HEAD:
+  - `window` (`livetest_score.py:1695` and `:2017`);
+  - `missed_weeks.allowed` (`:1878`);
+  - `allowed_paths` and `frozen_paths` (`:1860`).
+- None of these is inside `rules`, so `rules_sha256` does not cover them.
+- The file is under `docs/`, an allowed path, and `commit_relation_allowed` has no special case for it.
+- `livetest_changelog.py --append` would row such a commit automatically, as "paths outside the pinned build; no
+  effect on commitments".
+- The pre-registration's own rule says "the pre-registration itself changes only in its commit field at the
+  freeze". Nothing enforces that rule except git history, the change-log row and the 16-hex pre-registration sha256
+  printed in the final report.
+
+Fix, in allowed paths and without a new X:
+1. `scripts/livetest_changelog.py` classes any commit after F that touches
+   `docs/status/livetest-preregistration-2026.md` as `needs_ruling`. Such a commit then gets a hand-written row with
+   my verification (D-115).
+2. RUNBOOK sections 15 and 17: before the final, the Evaluator runs
+   `git diff --exit-code <F> HEAD -- docs/status/livetest-preregistration-2026.md` and records the result. Any
+   difference needs the owner's ruling (D-111) before the final runs.
+3. F's row in the change log (written in Y) states the LF SHA-256 of the pre-registration at F, as a fixed
+   reference.
+
+The code alternative, the scorer hashing the whole JSON, changes a frozen file. I do not recommend it.
+
+**F10. The build-time effect is undocumented in operations. Low; does not block; documentation.**
+- Neither the build docstring nor RUNBOOK section 4 says that, with the same snapshots, a later build gives
+  different projections through `depth__chart_age_days`.
+- The docstring (`ffml/sim/livetest.py:22-31`, frozen) says that running earlier "only means fewer late roster or
+  injury updates, never a different cutoff".
+- Add one sentence with D-134's figures to RUNBOOK section 4, so that a later reader does not take it for
+  nondeterminism.
+
+**F11. Rehearsal log events use the real clock. Informational; does not block.**
+- In the rehearsal, the runner stamps its log events with the real clock (`RunLog.event`,
+  `scripts/livetest_core.py:1302`). Its decisions use the injected clock.
+- So P_prebuild's 2026w13 missed marker carries a 2026-11-12 `reason.check.ts` inside a record dated 2026-12-10.
+- In production both clocks are real time, so no verdict is affected. A fix under `scripts/` is optional.
+
+**Freeze line.** A complete run at the committed test code meets every condition of the provisional Part 2:
+- 44 passed and 1 skipped;
+- all ten worlds at X, with an empty frozen-code diff;
+- every final and refusal record equal to run 7's in exit code, verdict, line results and values, and check names
+  and statuses.
+
+The other checks also pass:
+- every commit after X is on an allowed path and can be logged;
+- the pre-registration and both hashes are unchanged;
+- CI is green at the last code commit and at HEAD;
+- D-134 is confirmed, and it does not affect the freeze, the commitments or the verdict.
+
+F9 and F10 are fixed after the freeze in allowed paths, each with a change-log row. The freeze then proceeds by D-120:
+1. the fill commit F;
+2. the append-only change-log commit Y, covering 765fb1a through F;
+3. the worktree pinned at Y.
+
+Freeze at X = 4799913: pass

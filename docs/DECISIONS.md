@@ -134,6 +134,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-132 | 2026-11-12 | recorded (orchestrator) | Run 8 stopped by Claude Code's low-memory reaper after 2 of 10 worlds (consistent with run 7); not restarted without the owner's go-ahead (Claude Code's rule for reaped jobs); the freeze still waits for a complete run 8; the rehearsal's default candidate set to X (Evaluator finding 6) |
 | D-133 | 2026-11-12 | decided (orchestrator, D-117, owner's restart instructions) | After the computer restarted: repo clean and pushed at eeb5c6c, nothing lost; run 8 (not run 7) was the unfinished run, so all ten worlds are rerun as run 9; CI red on main since 2026-11-10 (a test-file name clash stopped collection), fixed by renaming one file, and the D-108 thread flake fixed by D-108's fallback (the test pins 1 thread); Week 10 rehearsal built first with `--stub-score` |
 | D-134 | 2026-11-12 | decided (orchestrator, D-117, owner's reproducibility request) | The weekly build at X is reproducible exactly at a fixed build time (all projection, model and walk-forward files byte-identical; one label column differs); projections depend on the build time by design through `depth__chart_age_days`; no fix, no frozen code changed; the freeze proceeds on its existing conditions |
+| D-135 | 2026-11-12 | decided (orchestrator, D-117, on the Evaluator's pass) | Freeze at X = 4799913 approved: run 9 met the D-131 bar and the Evaluator's Part 2 final ends "Freeze at X = 4799913: pass"; freeze by D-120 (fill commit F with the pre-registration's LF SHA-256 in its subject, F9 item 3; append-only change-log commit Y; worktree pinned at Y); F9 items 1-2 and F10 after the freeze, before the first counted build; the owner's /doctor changes wait until after the freeze, with two adjusted for frozen paths |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1428,6 +1429,72 @@ Decision:
 - r1 and r2 left two unreferenced build folders in the rehearsal sandbox
   (models and predictions stamped 20261112T170514Z and 170736Z). No
   commitment or registry entry names them; they are kept as evidence.
+
+## D-135 Freeze at X = 4799913 approved (orchestrator under D-117; 2026-11-12)
+
+Conditions met:
+- Run 9 (X = 4799913, base cfcfcd6, one worker, 14:53 to 19:48 UTC) gave
+  44 passed and 1 skipped (the optional 5,000-draw run). Every final and
+  refusal record equals run 7's in verdict, exit code, line results and
+  values, and check names and statuses once commit shas are masked. The only
+  differences are counts of commits and paths after X, because the base is
+  newer (D-131's bar; evidence archived in 41e2dc0).
+- CI is green at f43d69f, the last commit touching code or tests, and at
+  every later commit.
+- The Evaluator's "Part 2 final" (docs/status/phase4-evaluator-prefreeze-review.md)
+  checked the evidence hashes, run 9 against run 7, the commits after X
+  (all on allowed paths, all loggable by the helper), the pre-registration
+  and its hashes (unchanged since 765fb1a), CI and D-134. It ends "Freeze at
+  X = 4799913: pass".
+
+Evaluator findings, none blocking:
+- F9 (medium): after the freeze, pre-registration fields outside `rules`
+  (`window`, `missed_weeks.allowed`, the path lists) could be edited without
+  an automated check noticing. Closed in three steps:
+  1. F's commit subject states the pre-registration's LF SHA-256 at F, so
+     F's change-log row in Y carries it as a fixed reference (done in the
+     freeze).
+  2. After the freeze, `scripts/livetest_changelog.py` treats any later
+     commit touching the pre-registration as `needs_ruling` (a scripts/
+     change, so it gets a hand-written row with the Evaluator's
+     verification).
+  3. RUNBOOK sections 15 and 17 gain a step: before the final, the Evaluator
+     runs `git diff --exit-code <F> HEAD -- docs/status/livetest-preregistration-2026.md`.
+
+  Steps 2 and 3 land before the first counted build window (about
+  2026-11-19 00:15 UTC).
+- F10 (low): one sentence in RUNBOOK section 4 on the build-time effect
+  (D-134), after the freeze.
+- F11 (informational): rehearsal log events use the real clock; no action.
+
+Freeze procedure (D-120): this commit, then the fill commit F, then Y (the
+helper's append-only change-log commit covering 765fb1a through F), push,
+the code worktree pinned at Y, `init` with `--expected-commit` Y, and the
+comparators pre-warmed from the pinned worktree through 2026 week 9 (the
+Evaluator's recommendation, about 2.2 hours). Every later commit on main
+gets a row in a later append-only change-log commit before the final.
+
+The owner's /doctor answers (2026-11-12), applied only after the freeze, as
+the owner asked:
+- The subagent-model rule (routine helpers on Sonnet, the Independent
+  Evaluator on Opus) is saved as a memory file outside the repository. It
+  touches no repository path, and neither the weekly build nor scoring
+  spawns subagents.
+- The 12 unused synced skills are disabled for this project only. The owner
+  named `.claude/settings.json`, but `.claude/` is not in the
+  pre-registration's `allowed_paths`, so committing that file would touch a
+  frozen path, which needs the owner's ruling (D-111). The overrides go in
+  `.claude/settings.local.json` instead, which is also project-only and is
+  never committed. Neither file is git-ignored here, so
+  `.claude/settings.local.json` is added to `.git/info/exclude` (local, not
+  part of the repository). That keeps the main checkout's working tree
+  clean, which the final checks.
+- The four claude.ai connectors stay as they are.
+- `defaultMode: "auto"` in a project settings file is ignored by Claude
+  Code: only user, managed-policy or command-line sources can grant auto
+  mode. It is therefore not written. The project-only equivalent is to start
+  sessions here with `claude --permission-mode auto`. The owner's standing
+  stop-and-ask rules apply either way.
 
 ## Owner answers received 2026-11-01
 
