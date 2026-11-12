@@ -43,8 +43,8 @@ from typing import Any
 MAIN_REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "_rehearsal_driver.py"
-#: the candidate frozen commit X (override for a later candidate)
-FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "071c3a4")
+#: the candidate frozen commit X (override for a later candidate); the default is the X of D-129
+FROZEN_CANDIDATE = os.environ.get("FFML_REHEARSAL_COMMIT", "4799913")
 #: the commit each clone is reset to (Z): X itself, or a descendant of X holding the text to be pinned
 #: (the pre-registration, the change log, allowed-path fixes); X is still the frozen commit filled in
 REHEARSAL_BASE = os.environ.get("FFML_REHEARSAL_BASE") or FROZEN_CANDIDATE

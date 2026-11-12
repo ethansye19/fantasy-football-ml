@@ -4,7 +4,7 @@ Run it explicitly (about two and a half hours with three worlds at a time)::
 
     FFML_REHEARSAL=1 pytest -m slow tests/rehearsal -q
 
-``FFML_REHEARSAL_COMMIT`` names the frozen commit X (default 071c3a4, D-125),
+``FFML_REHEARSAL_COMMIT`` names the frozen commit X (default 4799913, D-129),
 ``FFML_REHEARSAL_BASE`` the commit each clone starts from (Z, a descendant of X; default X),
 ``FFML_REHEARSAL_WORKERS`` the number of worlds run at a time (default 3),
 ``FFML_REHEARSAL_ONLY`` a comma-separated subset of worlds, and

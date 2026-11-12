@@ -131,6 +131,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-129 | 2026-11-11 | decided (orchestrator, D-117) | X = 4799913 (QA-F31, QA-F32 fixed; no default window, a missing or broken window refuses); an earlier week never sealed (pre-window or missed) with a game still not final counts as done for the comparators once past its cutoff plus 14 days, its unfinished games excluded |
 | D-130 | 2026-11-11 | decided (owner, 2026-11-11 resume instructions) | Run 6's partial evidence archived and hashed (reports/evidence/rehearsal/); it cannot verify the suite's checks, so all ten worlds are rerun at X = 4799913 (run 7); agent processes are never suspended, a pause stops at a clean checkpoint; the owner confirms D-127 (Week 11 to 2027 Week 10, 18 scored weeks, Week 10 not a miss), made before the freeze and before any Week 10 result; stale window text fixed in the app and docs |
 | D-131 | 2026-11-12 | decided (orchestrator, D-117) | Run 7 (all ten worlds at X = 4799913): every world's results as designed, 43 passed and 1 failed on a test assertion defect (a suffix match counted each week's branch-commitment check as a commitment check); assertion fixed to an exact name match, no scorer or runner change; all ten rerun once more (run 8) for one complete run at the committed test code |
+| D-132 | 2026-11-12 | recorded (orchestrator) | Run 8 stopped by Claude Code's low-memory reaper after 2 of 10 worlds (consistent with run 7); not restarted without the owner's go-ahead (Claude Code's rule for reaped jobs); the freeze still waits for a complete run 8; the rehearsal's default candidate set to X (Evaluator finding 6) |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1296,6 +1297,37 @@ Decision:
   commit that holds this fix, so the rehearsal rests on one complete run at
   the committed test code rather than on a hand replay. The pre-registration
   is unchanged since 765fb1a.
+
+## D-132 Run 8 stopped for low memory (orchestrator; 2026-11-12)
+
+Run 8 (all ten worlds at X = 4799913, base Z = 34a6644, two workers, from
+00:26 UTC) was stopped at about 01:26 UTC by Claude Code's low-memory
+reaper, which ends background jobs when the machine is critically short of
+memory. Two worlds had finished, G and A, both without error. Their 20
+final and refusal records equal run 7's once commit shas are masked: the
+base differs, so the post-freeze commit cases name other shas, and the two
+cases that list every unlogged commit list the extra commits after 765fb1a.
+No rehearsal process was left running. Another project's job was using
+memory at the time; it was not touched.
+
+Decision:
+- The partial file is archived with its hashes
+  (reports/evidence/rehearsal/run8_X4799913_partial.jsonl, MANIFEST.md).
+- Claude Code's rule for a reaped job is that it is started again only when
+  the owner asks, so run 8 waits for the owner's go-ahead. This is an
+  operational stop, not a test-design question.
+- The freeze still waits for a complete run 8 (D-131). Run 7 plus the
+  Evaluator's replay of the fixed tests on run 7's results (44 passed,
+  80c1650) is strong evidence, but the bar set in D-131 is a complete run
+  at the committed test code, and nothing about the deadlines requires
+  lowering it: the first counted week's build window opens about
+  2026-11-19 00:15 UTC, and the Week 10 rehearsal can build with
+  `--stub-score` if the freeze is not done.
+- For run 8, the comparison with run 7 is made with commit shas masked,
+  because the base differs.
+- Evaluator finding 6 (low): the rehearsal's default candidate was still
+  071c3a4. It is now X = 4799913; the base still defaults to X. Runs 7 and 8
+  set both explicitly, so no evidence is affected.
 
 ## Owner answers received 2026-11-01
 
