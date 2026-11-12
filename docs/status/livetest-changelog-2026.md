@@ -28,6 +28,7 @@ One entry per commit, newest last:
 | 2026-11-12 | 1b3de7a2f86b | `docs/DECISIONS.md`, `docs/status/phase4-evaluator-prefreeze-review.md` | Freeze review part 2 final: run 9 meets the bar, Freeze at X = 4799913: pass (findings F9-F11, none blocking); decision log D-135 (freeze approved) | paths outside the pinned build; no effect on commitments | orchestrator | n/a |
 | 2026-11-12 | 09c2702e7985 | `docs/status/livetest-preregistration-2026.md` | Freeze: fill the pre-registration's commit field with X = 47999132bba4b8ed1da1cc443f5517867900b0fb (D-120); pre-registration LF SHA-256 at this commit a6db14d811506facfcb9dafef7f5281c476d141eb8e53ea2c1c3da7e2637319e (F9) | paths outside the pinned build; no effect on commitments | orchestrator | n/a |
 | 2026-11-12 | 34d3a5d45817 | `docs/DECISIONS.md` | Decision log D-136: freeze done (X 4799913, F 09c2702, Y d03a73a), worktree pinned at Y, init recorded, comparators pre-warm started | paths outside the pinned build; no effect on commitments | orchestrator | n/a |
+| 2026-11-12 | e497e5354839 | `docs/DECISIONS.md` | Decision log D-136: fix the worktree path text (a shell escape garbled it) | paths outside the pinned build; no effect on commitments | orchestrator | n/a |
 
 Verification for `ffml/data/` entries: the recomputed feature rows
 (`player_week`, `team_week`, `dst_week`) for every already-committed week
