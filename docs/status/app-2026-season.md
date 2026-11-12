@@ -66,7 +66,7 @@ API (commit 57a38d5):
 - `api/envelope.py`, `api/routers/meta.py`: test-data label first in
   `notices`, in `run`, and at the top of `/meta/approval` and
   `/meta/run-info`.
-- Tests: `tests/api/test_season.py` (new, 20 tests: agree, disagree and its
+- Tests: `tests/api/test_season.py` (new, 20 tests; renamed `tests/api/test_meta_season.py` in D-133: agree, disagree and its
   log, season mismatch, preseason, Sleeper down, hung Sleeper cut by the
   deadline, no schedule, neither, disabled, cache, degraded TTL, wiring
   through the shared client with respx, no network unless opted in,
