@@ -1,0 +1,125 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.2.0, pluggy-1.7.0 -- C:\Users\Ethan\fantasy-football-ml\.venv\Scripts\python.exe
+rootdir: C:\Users\Ethan\fantasy-football-ml
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.3, cov-7.1.0, respx-0.23.1
+collecting ... collected 45 items
+
+tests/rehearsal/test_livetest_final_rehearsal.py::test_pass_world_is_approved FAILED [  2%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_qb_intervals_too_narrow_fail_l17_only PASSED [  4%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_one_accuracy_line_fails_l07_only PASSED [  6%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_rebuilt_world_gives_identical_results PASSED [  8%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_zero_misses PASSED [ 11%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_one_or_two_misses_are_excluded_without_extension[D1_one_miss-missed0] PASSED [ 13%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_one_or_two_misses_are_excluded_without_extension[D2_two_misses-missed1] PASSED [ 15%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_final_refused_until_last_week_final_even_when_it_is_the_miss PASSED [ 17%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_three_misses_across_seasons_are_invalid_in_scorer_and_runner PASSED [ 20%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_outputs_hold_no_metrics_and_only_sealed_files PASSED [ 22%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_sealed_records_hold_the_metrics_and_both_draw_counts PASSED [ 24%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_final_refuses_tampered_sealed_files_and_a_missing_branch_record PASSED [ 26%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_failed_final_fetch_records_nothing_and_a_retry_gives_the_verdict PASSED [ 28%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_worktree_copy_is_not_trusted_any_more PASSED [ 31%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_stray_marker_is_flagged_with_week_and_time_and_changes_nothing PASSED [ 33%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_marker_attack_is_refused PASSED [ 35%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_change_log_only_commits_need_no_entry PASSED [ 37%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[fill_unlogged-final evaluation change log-fill] PASSED [ 40%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[missing_entry-final evaluation change log-scripts_x] PASSED [ 42%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[edit_entry-final evaluation change log-edit] PASSED [ 44%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[delete_entry-final evaluation change log-delete] PASSED [ 46%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[fill_placeholder-final evaluation change log-fill_placeholder] PASSED [ 48%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[log_plus_other_path-final evaluation change log-log_plus_doc] PASSED [ 51%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[merge-final evaluation change log-merge] PASSED [ 53%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[frozen_path-final evaluation commit-log_frozen] PASSED [ 55%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_delete_and_merge_details PASSED [ 57%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_unlogged_change_blocks_the_build_until_logged_and_is_not_a_miss PASSED [ 60%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_change_left_unlogged_past_the_deadline_is_a_miss PASSED [ 62%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_frozen_path_change_blocks_the_build PASSED [ 64%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_prebuild_world_final_scores_the_fixed_weeks_and_excludes_the_miss PASSED [ 66%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_week_cli_exits_4_before_the_cutoff_and_before_a_snapshot_at_or_after_it PASSED [ 68%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_data_cutoff_cli PASSED [ 71%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_scoring_pins_the_first_snapshot_at_or_after_the_cutoff PASSED [ 73%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_corrections_never_reach_the_sealed_weeks_or_the_final PASSED [ 75%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_rescore_reuses_the_recorded_pins PASSED [ 77%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_sensitivity_check_never_changes_the_verdict PASSED [ 80%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_real_5000_draw_run_reports_beside_the_binding_verdict SKIPPED [ 82%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_scoring_leaves_the_pinned_worktree_clean PASSED [ 84%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_final_from_the_worktree_pinned_at_y_gives_the_same_verdict PASSED [ 86%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_week_with_a_game_not_final_waits_then_is_scored_without_it PASSED [ 88%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_later_weeks_are_not_held_behind_the_waiting_week PASSED [ 91%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_game_final_before_the_14_days_is_scored_from_the_first_final_snapshot PASSED [ 93%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_unfinal_world_verdict_equals_the_all_final_world PASSED [ 95%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_comparators_gap_probe_left_the_world_as_it_was PASSED [ 97%]
+tests/rehearsal/test_livetest_final_rehearsal.py::test_comparators_extension_honours_the_excluded_game PASSED [100%]
+
+================================== FAILURES ===================================
+_________________________ test_pass_world_is_approved _________________________
+
+results = {'G_unfinal_game': {'world': 'G_unfinal_game', 'spec': {'name': 'G_unfinal_game', 'seed': 20261105, 'missed': [], 'qb_...\\Local\\Temp\\pytest-of-Ethan\\pytest-559\\rehearsal0\\E', 'x': '47999132bba4b8ed1da1cc443f5517867900b0fb', ...}, ...}
+
+    def test_pass_world_is_approved(results):
+        ev = world(results, "A_pass")
+        scored = common_world_asserts(ev)
+        assert len(scored) == 18
+        fin = ev["final_pass"]
+        assert single_verdict(fin) == APPROVED
+        assert fin["lines"] == {lid: "pass" for lid in ALL_LINES}
+        assert all(c[1] == "PASS" for c in fin["checks"]), [c for c in fin["checks"] if c[1] != "PASS"]
+        names = {c[0] for c in fin["checks"]}
+        assert {"approval lines", "rules hash", "bootstrap and seeds", "frozen commit", "allowed paths",
+                "final evaluation commit", "final evaluation change log", "window complete", "missed weeks (miss rule)",
+                "branch record", "MISSED markers consistent with the branch"} <= names
+        for kind in ("sealed hashes", "commitment", "branch commitment", "change log", "sealed part"):
+>           assert sum(1 for n in names if n.endswith(" " + kind) and re.match(r"^\d{4}w\d\d ", n)) == 18, kind
+E           AssertionError: commitment
+E           assert 36 == 18
+E            +  where 36 = sum(<generator object test_pass_world_is_approved.<locals>.<genexpr> at 0x0000018D6A077E20>)
+
+tests\rehearsal\test_livetest_final_rehearsal.py:190: AssertionError
+=================================== PASSES ====================================
+=========================== short test summary info ===========================
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_qb_intervals_too_narrow_fail_l17_only
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_one_accuracy_line_fails_l07_only
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_rebuilt_world_gives_identical_results
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_zero_misses
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_one_or_two_misses_are_excluded_without_extension[D1_one_miss-missed0]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_one_or_two_misses_are_excluded_without_extension[D2_two_misses-missed1]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_final_refused_until_last_week_final_even_when_it_is_the_miss
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_three_misses_across_seasons_are_invalid_in_scorer_and_runner
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_outputs_hold_no_metrics_and_only_sealed_files
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_sealed_records_hold_the_metrics_and_both_draw_counts
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_final_refuses_tampered_sealed_files_and_a_missing_branch_record
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_failed_final_fetch_records_nothing_and_a_retry_gives_the_verdict
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_worktree_copy_is_not_trusted_any_more
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_stray_marker_is_flagged_with_week_and_time_and_changes_nothing
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_marker_attack_is_refused
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_change_log_only_commits_need_no_entry
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[fill_unlogged-final evaluation change log-fill]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[missing_entry-final evaluation change log-scripts_x]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[edit_entry-final evaluation change log-edit]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[delete_entry-final evaluation change log-delete]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[fill_placeholder-final evaluation change log-fill_placeholder]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[log_plus_other_path-final evaluation change log-log_plus_doc]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[merge-final evaluation change log-merge]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_post_freeze_commit_scenarios_are_invalid[frozen_path-final evaluation commit-log_frozen]
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_delete_and_merge_details
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_unlogged_change_blocks_the_build_until_logged_and_is_not_a_miss
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_change_left_unlogged_past_the_deadline_is_a_miss
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_frozen_path_change_blocks_the_build
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_prebuild_world_final_scores_the_fixed_weeks_and_excludes_the_miss
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_week_cli_exits_4_before_the_cutoff_and_before_a_snapshot_at_or_after_it
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_data_cutoff_cli
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_scoring_pins_the_first_snapshot_at_or_after_the_cutoff
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_corrections_never_reach_the_sealed_weeks_or_the_final
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_rescore_reuses_the_recorded_pins
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_sensitivity_check_never_changes_the_verdict
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_weekly_scoring_leaves_the_pinned_worktree_clean
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_final_from_the_worktree_pinned_at_y_gives_the_same_verdict
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_week_with_a_game_not_final_waits_then_is_scored_without_it
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_later_weeks_are_not_held_behind_the_waiting_week
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_game_final_before_the_14_days_is_scored_from_the_first_final_snapshot
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_unfinal_world_verdict_equals_the_all_final_world
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_comparators_gap_probe_left_the_world_as_it_was
+PASSED tests/rehearsal/test_livetest_final_rehearsal.py::test_comparators_extension_honours_the_excluded_game
+SKIPPED [1] tests\rehearsal\test_livetest_final_rehearsal.py:555: the real 5,000-draw run needs FFML_REHEARSAL_5000=1
+FAILED tests/rehearsal/test_livetest_final_rehearsal.py::test_pass_world_is_approved
+============ 1 failed, 43 passed, 1 skipped in 7577.82s (2:06:17) =============

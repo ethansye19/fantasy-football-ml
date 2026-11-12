@@ -187,7 +187,8 @@ def test_pass_world_is_approved(results):
             "final evaluation commit", "final evaluation change log", "window complete", "missed weeks (miss rule)",
             "branch record", "MISSED markers consistent with the branch"} <= names
     for kind in ("sealed hashes", "commitment", "branch commitment", "change log", "sealed part"):
-        assert sum(1 for n in names if n.endswith(" " + kind) and re.match(r"^\d{4}w\d\d ", n)) == 18, kind
+        # exact name: "<week> commitment" must not also count "<week> branch commitment" (run 7, D-131)
+        assert sum(1 for n in names if re.fullmatch(r"\d{4}w\d\d " + re.escape(kind), n)) == 18, kind
     rep = ev["final_pass_repeat"]  # the consensus archive and the fact tables were moved away for this run
     assert rep["stores_moved_away"] == ["restricted", "fact_player_game", "fact_dst_game"]
     assert single_verdict(rep) == APPROVED

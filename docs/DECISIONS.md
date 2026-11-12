@@ -130,6 +130,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-128 | 2026-11-11 | decided (orchestrator, D-117) | QA-F31 (comparators extension ignored the D-121 exclusion, so a week with an excluded game and every later week could never be sealed) and QA-F32 (traceback for an unscheduled season) are fixed in the scorer before the freeze; X moves to that commit; the full rehearsal runs there with two workers |
 | D-129 | 2026-11-11 | decided (orchestrator, D-117) | X = 4799913 (QA-F31, QA-F32 fixed; no default window, a missing or broken window refuses); an earlier week never sealed (pre-window or missed) with a game still not final counts as done for the comparators once past its cutoff plus 14 days, its unfinished games excluded |
 | D-130 | 2026-11-11 | decided (owner, 2026-11-11 resume instructions) | Run 6's partial evidence archived and hashed (reports/evidence/rehearsal/); it cannot verify the suite's checks, so all ten worlds are rerun at X = 4799913 (run 7); agent processes are never suspended, a pause stops at a clean checkpoint; the owner confirms D-127 (Week 11 to 2027 Week 10, 18 scored weeks, Week 10 not a miss), made before the freeze and before any Week 10 result; stale window text fixed in the app and docs |
+| D-131 | 2026-11-12 | decided (orchestrator, D-117) | Run 7 (all ten worlds at X = 4799913): every world's results as designed, 43 passed and 1 failed on a test assertion defect (a suffix match counted each week's branch-commitment check as a commitment check); assertion fixed to an exact name match, no scorer or runner change; all ten rerun once more (run 8) for one complete run at the committed test code |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1262,6 +1263,39 @@ applied.
 5. **Next.** Run 7, then QA's report, the Evaluator's review ("Freeze at
    X = 4799913: pass" or "fail"), the freeze (D-120), and the owner's
    summary.
+
+## D-131 Run 7: one test assertion defect, fixed; all ten rerun (orchestrator under D-117; 2026-11-12)
+
+Run 7 (all ten worlds at X = 4799913, base 765fb1a, two workers;
+2026-11-11 22:16 to 2026-11-12 00:23 UTC) gave 43 passed, 1 skipped (the
+optional real 5,000-draw run) and 1 failed: `test_pass_world_is_approved`,
+`AssertionError: commitment, assert 36 == 18`.
+
+The cause is in the test, not the scorer. The assertion counted check
+names that end in " commitment", so each week's "<week> branch commitment"
+check was counted a second time. The evidence (run 7's full JSON) shows
+the scorer correct: each of the five per-week checks (sealed hashes,
+commitment, branch commitment, change log, sealed part) appears exactly 18
+times, every check is PASS, and world A is `Verdict: APPROVED` with all 22
+lines passed. The assertions after it in the same test, which never ran,
+also hold on that evidence (the repeat with the stores moved away is
+`APPROVED` with identical binding lines). The scorer has had the branch
+commitment check since a30cd08 (2026-11-06), the assertion was written in
+7d5749b (2026-11-07), and no run since then reached this test, so run 7 was
+the first to execute it.
+
+Decision:
+- The assertion now matches each check name exactly
+  (`re.fullmatch(r"\d{4}w\d\d " + re.escape(kind), n)`); nothing else
+  changes, and no scorer, runner or frozen file is touched.
+- Run 7's evidence is archived with its hashes in
+  reports/evidence/rehearsal/ (MANIFEST.md). It also cross-checks run 6:
+  all 29 of run 6's final and refusal records recur in run 7 with identical
+  verdicts and lines, and B2 (the rebuilt world) reproduces B.
+- All ten worlds are rerun once more (run 8), with the clones based on the
+  commit that holds this fix, so the rehearsal rests on one complete run at
+  the committed test code rather than on a hand replay. The pre-registration
+  is unchanged since 765fb1a.
 
 ## Owner answers received 2026-11-01
 
