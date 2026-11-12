@@ -1,0 +1,1093 @@
+{
+  "format": "ffml.livetest.commitment/1",
+  "model": "chain_v2",
+  "season": 2026,
+  "week": 10,
+  "rehearsal": true,
+  "environment": "private_test",
+  "approval_status": "not approved",
+  "label": "not approved",
+  "decision": "D-098",
+  "as_of": "2026-11-12T14:49:18.984033+00:00",
+  "rows_as_of": "2026-11-12T14:49:18.984033+00:00",
+  "cutoff": "2026-11-13T01:15:00+00:00",
+  "created_at": "2026-11-12T14:51:54.950278+00:00",
+  "first_kickoff": "2026-11-13T01:15:00+00:00",
+  "seconds_before_kickoff": 37385.0,
+  "model_version": "chain_v2-primary-c2026w10-20261112T144918Z",
+  "registry": {
+    "path": "data/livetest/rehearsal/REGISTRY.json",
+    "status": "candidate",
+    "name": "chain_v2",
+    "calibration": {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/calibration_state.json",
+      "sha256": "a519afd9fe696d8f5b95584561cd4ae829d73da524b60c82c6721af01b7293c6",
+      "calibration_version": "v3-tie-aware-quantile"
+    }
+  },
+  "model_artifact": {
+    "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z",
+    "sha256": "56cda2e2338f84929cda6b0bd0c12fa265f17f57caab6eef2dba34b61781de4f",
+    "files": {
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/calibration_state.json": "a519afd9fe696d8f5b95584561cd4ae829d73da524b60c82c6721af01b7293c6",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/chain_v2.json": "71ffbfb1e14fceea30674d447691e781ce2dc3ccf9552112e2632a510446df2e",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/features.json": "59847bfddbb270251604235b8f0474997b75393a076bce8a439db7160a530b12",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/availability.txt": "78fd5b3a81b788a9a2e5a22b57d4fa08e3af456e5906753e8b10b755bcd7fdad",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_fum_rec.txt": "cca3c55deb429cd4719b07ce97519cfc73956d8ed8442f7b8f8cc98cad575b34",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_int.txt": "5b33af7c77c0fcfb6ddcd7725f436836591750d3348348ef66e04204c9213b69",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_sacks.txt": "4c2a100a89872a00774dbba01727f8a76d62c49d21937af352f9fbe677d4aacd",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_catch_rate.txt": "7e906a39ff2870e7fb69796244173cad097cf07f8a70e7efdd445b57eae407f8",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_comp_rate.txt": "9c7a07f11f345f1e60a2c7145e747459c97e2d3de7afa9c498af82f0fb153817",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_sack_rate.txt": "ff7fb08564f34a2da3375f2c7b5f3c6a59191a45de3ec99dcc08670365cf9b07",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_scramble_rate.txt": "3f859fbc2102fc6ae9b726217115a00dc6d4335103c8965040ff44a7efe1d6a8",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_ypc.txt": "14df581c645f316be3269dcc639d71b16b7619f8876be05fc4911971d92952c4",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_ypr.txt": "6dd8dfafbabd6fc32ee9976b1a313a4108a2338ceb8ca9989dc7cec0c8acb60e",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_dropback.txt": "3ab47f22420cfd44f24ab51d43c5b9062e85b43c66300c1979aecc8ba5912375",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_gl_carry.txt": "24950158fba2e81739d92505eb32006df9d7322d6bb37e7363f024d43c3bfbf2",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_rz_target.txt": "9b2d9ef5388d62ea91df27f1cbb674155f3aa47e790dd2058a383937d8407649",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_target.txt": "113449629502ee0909c787685788033208cbb2f1cef7ad2103d79bc8234c2b8e",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/td_pass_share.txt": "9be53b0106004f48d041833a473761ac469ef839c6a461e6765e3eaeff859a7f",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/td_rush_share.txt": "12e5325cd7a33e4b19e8658dd207feb9937fe182412383b53bc82a239f816bf0",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_pass_rate.txt": "c2d3474ee314dcfc82013029d028771417632071e03c363079f0cbbc1d2bc560",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_plays.txt": "85d5069ac4248ca6be7856bc7820c38c7bf45b36abb30fe9a371226f82cd52ea",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_two_pt_att.txt": "ec1e54c9a703ecf484bda96b9aabda1b2a30c50261a5a0d4d853efe072834226",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/params.json": "24bf6bd7dc135842524cc5f3b3c1d0fc690da382d5a9dd19cad05bf1d69d73da",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/selection.json": "6985d099342fc5b88f66b0e8f460b62085a0bbc9a014f045dd4d703bf98094b9",
+      "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/train_manifest.json": "a0450869186f2ee7f496be6c6788ff2d9b35ea2f50bc1ed7963cd6d4764837c3"
+    },
+    "cutoff": [
+      2026,
+      10
+    ],
+    "train_manifest_sha256": "a0450869186f2ee7f496be6c6788ff2d9b35ea2f50bc1ed7963cd6d4764837c3"
+  },
+  "calibrator_state": {
+    "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/calibration_state.json",
+    "sha256": "a519afd9fe696d8f5b95584561cd4ae829d73da524b60c82c6721af01b7293c6",
+    "calibration_version": "v3-tie-aware-quantile",
+    "quantile_calibrator": "OnlinePITQuantile(levels=(0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95), by=('position',), min_count=50, seed=0, atoms='nearest')",
+    "isotonic": "OnlineIsotonic(pairs=(('boom_prob', 'boom_actual'), ('bust_prob', 'bust_actual')), by=('position',), min_count=200)",
+    "rows": 127392,
+    "history_first": [
+      2021,
+      1
+    ],
+    "history_last": [
+      2026,
+      9
+    ],
+    "cutoff": "2026-11-13 01:15:00+00:00"
+  },
+  "calibration_history": {
+    "sha256": "7b530fa49a75b2bdabc48d6d5d5ade1e279a9aed61d178b1c367057ba929043e",
+    "weeks": 99,
+    "sources": [
+      {
+        "season": 2021,
+        "week": 1,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w01.parquet",
+        "sha256": "f60120a71aeb128c0b4b4c5a70b738075ceb79e44c8623603e5b55b215a941e8"
+      },
+      {
+        "season": 2021,
+        "week": 2,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w02.parquet",
+        "sha256": "3f7211749ce6f59c9f3c7d4bd5614e65dcfdaa08b4d838076466bb1791882909"
+      },
+      {
+        "season": 2021,
+        "week": 3,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w03.parquet",
+        "sha256": "fef6577c9074e4b1c3ec0932d3a0bae514a803e5fdd1e014bf74875cf2472f6e"
+      },
+      {
+        "season": 2021,
+        "week": 4,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w04.parquet",
+        "sha256": "362b90a18ea79e24e090e74877142f9cd89782975faff6345f3c39c1864a238e"
+      },
+      {
+        "season": 2021,
+        "week": 5,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w05.parquet",
+        "sha256": "8c3d61080aa2cceb49f9f1a57f5e33ab7d852c8afc505fc54ea6386962b9b6a5"
+      },
+      {
+        "season": 2021,
+        "week": 6,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w06.parquet",
+        "sha256": "173a8ebe11ba5f431b0b44cdf8a579dd31d9c099dc4d2b133c9d18bd4e172d29"
+      },
+      {
+        "season": 2021,
+        "week": 7,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w07.parquet",
+        "sha256": "a8149750afed874765f5f81d5ce155abd1e8a28d1ef29060c2f4d28ae27e3a5c"
+      },
+      {
+        "season": 2021,
+        "week": 8,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w08.parquet",
+        "sha256": "7d689d670b8904ad1e632e2b4c25966b70085dcf7ddba4c9736ff113ae4368a7"
+      },
+      {
+        "season": 2021,
+        "week": 9,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w09.parquet",
+        "sha256": "795b7735a4e900d86be089d28b7d8cdef911e328dbf4f893b2414b52058eaa4b"
+      },
+      {
+        "season": 2021,
+        "week": 10,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w10.parquet",
+        "sha256": "0d5fe353aa978eb36dd09c1418f59e096ddc6cbc24d343199752185cdfe32e06"
+      },
+      {
+        "season": 2021,
+        "week": 11,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w11.parquet",
+        "sha256": "11f8d6665e4740b038ddd47e6bb2bf562ac8845d175f1fa0ee8105b11848bd16"
+      },
+      {
+        "season": 2021,
+        "week": 12,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w12.parquet",
+        "sha256": "c7964f3125ee963aa0b7e1fca1dc453c3c2dfdef468a5f25db73772a49cb85d3"
+      },
+      {
+        "season": 2021,
+        "week": 13,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w13.parquet",
+        "sha256": "df4f8ed95bc64256a5dde8c0367280987a92c9c6ac78c718158f2224ddfd5c3e"
+      },
+      {
+        "season": 2021,
+        "week": 14,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w14.parquet",
+        "sha256": "340444cdda39733a61b3a68d10d9ed07daad688736674b7a72f0887c13260873"
+      },
+      {
+        "season": 2021,
+        "week": 15,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w15.parquet",
+        "sha256": "eac1c4b1349414f8ee2e358470a68fb177b7bf730e967b1dc98d6062f8bba250"
+      },
+      {
+        "season": 2021,
+        "week": 16,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w16.parquet",
+        "sha256": "90bcaf129e237e683685ab4483988357e30f4ab8d0b8fd2544f508aebb1c1701"
+      },
+      {
+        "season": 2021,
+        "week": 17,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w17.parquet",
+        "sha256": "1d3e15ac9e11b58ca626e54425013d8888b106f87fc8f578cf329c8dcd2a98b8"
+      },
+      {
+        "season": 2021,
+        "week": 18,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2021_w18.parquet",
+        "sha256": "759397e50118a9d82f9607ac3f32d9ad2de912a62d3d88ba9c468a5360249397"
+      },
+      {
+        "season": 2022,
+        "week": 1,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w01.parquet",
+        "sha256": "4bec598fc141a38cbddb5bba36c7cc5e73a069b2dbc9eb4254cc15a3ec03587e"
+      },
+      {
+        "season": 2022,
+        "week": 2,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w02.parquet",
+        "sha256": "b701549ad098cb10bbe4c0d942af3864fa7df23bf3af10a353cfb3fffe451b00"
+      },
+      {
+        "season": 2022,
+        "week": 3,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w03.parquet",
+        "sha256": "36da99f9c9f96d57b93a2ae8067dec2e1a0074c29995f9790d6b40d9ac29d154"
+      },
+      {
+        "season": 2022,
+        "week": 4,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w04.parquet",
+        "sha256": "e51a24d07f556fa09fd4ff3eabb9d12a7b20062d28bea4ee1efbb27d46601a68"
+      },
+      {
+        "season": 2022,
+        "week": 5,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w05.parquet",
+        "sha256": "f1be5ee75ebf503885574bc071c63a08b0bbc39ce2028d9e8df316c780c18fe8"
+      },
+      {
+        "season": 2022,
+        "week": 6,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w06.parquet",
+        "sha256": "c7a3cbc35f36e51f3da191a461c6fe492222ec60de8e229f6645b9d8c727bf92"
+      },
+      {
+        "season": 2022,
+        "week": 7,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w07.parquet",
+        "sha256": "4283c83ad11184f89d68e6a5bfaf39000502393ec49c69c75769b968d4f45a65"
+      },
+      {
+        "season": 2022,
+        "week": 8,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w08.parquet",
+        "sha256": "2294caf05f522b1a9b96c1d25c15b880e3284a36be90dc4e2c6d52eed13f6339"
+      },
+      {
+        "season": 2022,
+        "week": 9,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w09.parquet",
+        "sha256": "df3dd738617780f01865254d158e824d6d98504bdd786c880a01cf3cabd0af22"
+      },
+      {
+        "season": 2022,
+        "week": 10,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w10.parquet",
+        "sha256": "241cdddc1361289111025a2b2d3352146a7d98265e52e1e06b52ca6fc785a0dd"
+      },
+      {
+        "season": 2022,
+        "week": 11,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w11.parquet",
+        "sha256": "c98d4f9d934980b5c34083fb75dcf33c16a7374d0d4466bbe3d31f8f3675715f"
+      },
+      {
+        "season": 2022,
+        "week": 12,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w12.parquet",
+        "sha256": "12203ce0891fa216676300648d452ab16c1cb27bf30e4e4e9fd555fe56b52324"
+      },
+      {
+        "season": 2022,
+        "week": 13,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w13.parquet",
+        "sha256": "f7678515cbbdcf85add1f860dac01e8ea368b695634c2ecbc9a8c80d432fefbc"
+      },
+      {
+        "season": 2022,
+        "week": 14,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w14.parquet",
+        "sha256": "6fa2d1dd83291e1cff6d61fb0184a7f06cc04c55e2d49b55794946fce1ec8668"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w15.parquet",
+        "sha256": "122847de63ee5ef9514f6413ffda68af7ca693945ab32f39d039112e4ee7db97"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w16.parquet",
+        "sha256": "c15b289dd895e71a3c1bd462fdd581626601634c826a6dd8ceb658db54e993b8"
+      },
+      {
+        "season": 2022,
+        "week": 17,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w17.parquet",
+        "sha256": "3d09bd089b84270e47ea04003ecf0bea7bf190937e08a88078a11d24c88dae20"
+      },
+      {
+        "season": 2022,
+        "week": 18,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2022_w18.parquet",
+        "sha256": "47d1a34199639a46e7f6778bfb71b01ce3578e3a3f067458f00c0f52425af512"
+      },
+      {
+        "season": 2023,
+        "week": 1,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w01.parquet",
+        "sha256": "bfca3e438795ce8e188ff3ac186d3f2fe684572ee7c61530844971bf58d66a1c"
+      },
+      {
+        "season": 2023,
+        "week": 2,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w02.parquet",
+        "sha256": "ba526a8ffd9a048fdcd7bf83fe1ef9ba75607043d56b27b4b369dd8b0cc16e2f"
+      },
+      {
+        "season": 2023,
+        "week": 3,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w03.parquet",
+        "sha256": "e27f91ff96c9d50122e6a7edc8b8fbb3b2db6f59d498c2d95910898f981630c6"
+      },
+      {
+        "season": 2023,
+        "week": 4,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w04.parquet",
+        "sha256": "6a11889c5ef865e5b9c6e5d0765ee2c8f1710498951cc529cb0eafea7f1719d5"
+      },
+      {
+        "season": 2023,
+        "week": 5,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w05.parquet",
+        "sha256": "4256ad3dcfa68dc78e98ef9bb7ad4c517eb3c0318449ba1a53727dab0d95dd5b"
+      },
+      {
+        "season": 2023,
+        "week": 6,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w06.parquet",
+        "sha256": "53e40e23b5e4d50fe01239f5ce5c1a8b23a164bb7cfafc0c8ca7acfdd52d9cdb"
+      },
+      {
+        "season": 2023,
+        "week": 7,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w07.parquet",
+        "sha256": "50d29de22e74e5c2f80bf1770d18bc737735d7efe28a8089a82fcfa2a931bd45"
+      },
+      {
+        "season": 2023,
+        "week": 8,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w08.parquet",
+        "sha256": "3d5bd659f21627410f12c27ebdf22299fead2cf8e7f6adf7d26f055f71c2ca38"
+      },
+      {
+        "season": 2023,
+        "week": 9,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w09.parquet",
+        "sha256": "bfbc1561cd6a483a3eafe63da0aa81db4a13b1d26844c73db5154e4b9643f5ea"
+      },
+      {
+        "season": 2023,
+        "week": 10,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w10.parquet",
+        "sha256": "070553cd5f679e20162e27d911d5874b5e3571c7179be56e18c3f13337da67d6"
+      },
+      {
+        "season": 2023,
+        "week": 11,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w11.parquet",
+        "sha256": "ffc3b372281e8ddf6236911d212b97fadab6580d32ca262890e85159110d5e88"
+      },
+      {
+        "season": 2023,
+        "week": 12,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w12.parquet",
+        "sha256": "8071d84a3d8ee8cd93f5cf332d5344862ec06f0ebb97f5477dab5cd3a1e8cc88"
+      },
+      {
+        "season": 2023,
+        "week": 13,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w13.parquet",
+        "sha256": "4b28a16d744d7bedf8db30f30b11a7ab9c651661c9599ca81f537c3767c14e51"
+      },
+      {
+        "season": 2023,
+        "week": 14,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w14.parquet",
+        "sha256": "e0c520c1b6cf84580c19d821d10cd69fa97a8f8fdbc3709a983fe44826d07039"
+      },
+      {
+        "season": 2023,
+        "week": 15,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w15.parquet",
+        "sha256": "07d5c89e35257b5949567b9cb6860837135cb5a60ed4be6aa8533b78dc9cea00"
+      },
+      {
+        "season": 2023,
+        "week": 16,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w16.parquet",
+        "sha256": "ae2622d5372b0a7176410572e1abaa111fb9e15093f2ed3036c5b276bee7ac23"
+      },
+      {
+        "season": 2023,
+        "week": 17,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w17.parquet",
+        "sha256": "c6f0e4f10bf50b6905de24614acb7d7e4e8c9090fd18f5ce18bdc1eeb35252ef"
+      },
+      {
+        "season": 2023,
+        "week": 18,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2023_w18.parquet",
+        "sha256": "b47dd5a0f2bba3a3163aee215e13220779b1fb980ad1f1711879bf1713a6a9ba"
+      },
+      {
+        "season": 2024,
+        "week": 1,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w01.parquet",
+        "sha256": "df42dde2a916d6d940f76f0524b709903844aae18c9c1d00c97c724391ded35d"
+      },
+      {
+        "season": 2024,
+        "week": 2,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w02.parquet",
+        "sha256": "9adad80212734aca5ec3400189ae95dcf77fe7f0a57051bce5c423b84abbdd79"
+      },
+      {
+        "season": 2024,
+        "week": 3,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w03.parquet",
+        "sha256": "61c91aeca298c1c06d9ab629edd8706188154860d782fa45ee4a3dd315082f91"
+      },
+      {
+        "season": 2024,
+        "week": 4,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w04.parquet",
+        "sha256": "9c074948bd9b714666224b4f5b23f789f348f7853f844b7dd6f24d1cf765abdd"
+      },
+      {
+        "season": 2024,
+        "week": 5,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w05.parquet",
+        "sha256": "feddee5089517f44ff88d17019808fb287e83a3508858e0e943f9cb09cd4e294"
+      },
+      {
+        "season": 2024,
+        "week": 6,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w06.parquet",
+        "sha256": "5cc9b64f16a26888d6c3f2a83f470434236e102be2e7accfad805bbad4efbeb1"
+      },
+      {
+        "season": 2024,
+        "week": 7,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w07.parquet",
+        "sha256": "b6b02bea662195e736c2cd2f489decd322a6e6e592c7d65e49839139c4136936"
+      },
+      {
+        "season": 2024,
+        "week": 8,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w08.parquet",
+        "sha256": "67ee297e2c2029c7c6feb2ce381cfd99ec305920ee42b020fd528dc5e6fe43f0"
+      },
+      {
+        "season": 2024,
+        "week": 9,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w09.parquet",
+        "sha256": "3a5a07e0d589a9d96f1c8497825a11ed2b11631391237af8314cce394c7748d2"
+      },
+      {
+        "season": 2024,
+        "week": 10,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w10.parquet",
+        "sha256": "4ff4d2e20700f971d6e29eba5a5076407b3231c07189389fd1a23c4c2d62c9ef"
+      },
+      {
+        "season": 2024,
+        "week": 11,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w11.parquet",
+        "sha256": "c46731d954ed40f0b27c460644761b3194f18bc8559919ae2174df9fa49247c0"
+      },
+      {
+        "season": 2024,
+        "week": 12,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w12.parquet",
+        "sha256": "dbd022d082b6f4b465638008922b6fce4ce45e6a19c344c6ddc226953b8cf61c"
+      },
+      {
+        "season": 2024,
+        "week": 13,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w13.parquet",
+        "sha256": "f8b18d6e6207c89999948d562a029e285cfda4cb8a17c929b0737a6d44e5f070"
+      },
+      {
+        "season": 2024,
+        "week": 14,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w14.parquet",
+        "sha256": "c1415582d661094dc312705a27f8475d7550bc8b0b55f6ad47d5491e63788dec"
+      },
+      {
+        "season": 2024,
+        "week": 15,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w15.parquet",
+        "sha256": "90402f76084c978a10f169b5b0a776a07f4599581269ae07b25f7b4fd917f498"
+      },
+      {
+        "season": 2024,
+        "week": 16,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w16.parquet",
+        "sha256": "549fe2c02fd01aaff8269bc238968649ade61a706b643df09e90ac065b98f590"
+      },
+      {
+        "season": 2024,
+        "week": 17,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w17.parquet",
+        "sha256": "61ba906b9a1592e2ebae8083cf7f4e5757f02961a21219864a52d16f4723444a"
+      },
+      {
+        "season": 2024,
+        "week": 18,
+        "origin": "stored:default_20261102",
+        "path": "data/backtests/default_20261102/parts/chain_v1/2024_w18.parquet",
+        "sha256": "b38aed6667e06127dd399ae342c0830259cebb3a59123161ea6cbd4f5cd5c132"
+      },
+      {
+        "season": 2025,
+        "week": 1,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w01.parquet",
+        "sha256": "6f39a8ab4916038a6279b6d2b637091854e2f512d3f8726a9ccb66191f34c5cc"
+      },
+      {
+        "season": 2025,
+        "week": 2,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w02.parquet",
+        "sha256": "b2988efbe54bddf40b46b15765a3216d20a4e799bf0cbfd0593972e9a9b7e527"
+      },
+      {
+        "season": 2025,
+        "week": 3,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w03.parquet",
+        "sha256": "14c63df29beee0e63566ed567569ded88554a4fa438ff1860daa604b6d524a7a"
+      },
+      {
+        "season": 2025,
+        "week": 4,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w04.parquet",
+        "sha256": "c53744b3165ebbf6e17af699803cf998f98c021aac1b8147ac6459f018a7142c"
+      },
+      {
+        "season": 2025,
+        "week": 5,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w05.parquet",
+        "sha256": "894f8630552937e1c93353e1451a519687218f30f45216ad3a09da4371ffc0ff"
+      },
+      {
+        "season": 2025,
+        "week": 6,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w06.parquet",
+        "sha256": "653dff51eaa980bf9a03e38b1d242007e7b4a5add00c7d2ea3996604359def18"
+      },
+      {
+        "season": 2025,
+        "week": 7,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w07.parquet",
+        "sha256": "c60128fb94fde6325235d282390d181543d3c6bf3789e2c6bb72a0843a0849bf"
+      },
+      {
+        "season": 2025,
+        "week": 8,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w08.parquet",
+        "sha256": "cad0ad8d4170aedc57b565b5d4ddc7bdab12dd9def814c0a6905d6212ea65afb"
+      },
+      {
+        "season": 2025,
+        "week": 9,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w09.parquet",
+        "sha256": "567d10576d2c37e0ed3b510c0318574b81a50ea7d86f4e2ff38b31aa97fee75f"
+      },
+      {
+        "season": 2025,
+        "week": 10,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w10.parquet",
+        "sha256": "f6658bc4863438c6335978c9b70659af3babf5c74443048bbdfd31e454f4cf02"
+      },
+      {
+        "season": 2025,
+        "week": 11,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w11.parquet",
+        "sha256": "22211ff69fb8af3661e66fe8f293dec2dccda3808189fa0980db7b8cbc31fd71"
+      },
+      {
+        "season": 2025,
+        "week": 12,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w12.parquet",
+        "sha256": "a0e68bc5eac4b4f7fdb233a0e860c386d1b1164897b23cff916701f2ed2e8834"
+      },
+      {
+        "season": 2025,
+        "week": 13,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w13.parquet",
+        "sha256": "d747a13ca36d0896e7ac7004907210450ecbc653e3db40d553bd17a77b0c30b2"
+      },
+      {
+        "season": 2025,
+        "week": 14,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w14.parquet",
+        "sha256": "d28b3e484847303dbe214dde633dfe902f06e24fd994853ef7679cef0b0f78a9"
+      },
+      {
+        "season": 2025,
+        "week": 15,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w15.parquet",
+        "sha256": "571bf291e804cfedf3c222028ea5dd2fd3d407d2ba6f05f80d015c31198de42c"
+      },
+      {
+        "season": 2025,
+        "week": 16,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w16.parquet",
+        "sha256": "dfb7894fbcdc55a73e11536ba7c7eedcd8f8f918ec8f4e2ced008ccdad889e3e"
+      },
+      {
+        "season": 2025,
+        "week": 17,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w17.parquet",
+        "sha256": "af0a374b578ac3541c91674845cad993bbfa462287dc3447a62ce23ea3f6cd85"
+      },
+      {
+        "season": 2025,
+        "week": 18,
+        "origin": "stored:holdout_2025",
+        "path": "data/backtests/holdout_2025/parts/chain_v1/2025_w18.parquet",
+        "sha256": "683aed3afc40d6759184e1f1f094da26126806b0cb2b0e8c56b03f83d22c3112"
+      },
+      {
+        "season": 2026,
+        "week": 1,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w01.parquet",
+        "sha256": "ce24490d60e0187b1814750bb86b121bbe97ae6d000b1ef289d3ce393ebd6808"
+      },
+      {
+        "season": 2026,
+        "week": 2,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w02.parquet",
+        "sha256": "847cd4cd1935672b941439306fb5d0a7718eee577c9b59007e9d750059747cf5"
+      },
+      {
+        "season": 2026,
+        "week": 3,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w03.parquet",
+        "sha256": "168e5ac8030fad600468a519a16079d1a014c52316d342938e2ed9159c5a520b"
+      },
+      {
+        "season": 2026,
+        "week": 4,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w04.parquet",
+        "sha256": "9e45cb60ebc3a37d3f44d51ed0ad6211361322bd515428fdb623d619bb0cc266"
+      },
+      {
+        "season": 2026,
+        "week": 5,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w05.parquet",
+        "sha256": "7e9d5f06aa5815540c7fea82f1f43cc8de0e01f13570d1e3e08e4288b15395b9"
+      },
+      {
+        "season": 2026,
+        "week": 6,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w06.parquet",
+        "sha256": "17fcc12c0223760ef5e8fd4188bc44a408880e54ea61e35519e346c2bb206425"
+      },
+      {
+        "season": 2026,
+        "week": 7,
+        "origin": "stored:forward_2026",
+        "path": "data/backtests/forward_2026/parts/chain_v1/2026_w07.parquet",
+        "sha256": "2f4e73ca6812ce52ccb09b61570dd5e959418c752f301f41e0f74e18edf67e83"
+      },
+      {
+        "season": 2026,
+        "week": 8,
+        "origin": "walkforward",
+        "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w08.parquet",
+        "sha256": "15c4b3feb81005e6addc279a9fcff0fff716fb6824567b3b098fd2b83f9ab3a5"
+      },
+      {
+        "season": 2026,
+        "week": 9,
+        "origin": "walkforward",
+        "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w09.parquet",
+        "sha256": "d7219c609616341c4c2b88168b5f2de21c74d9e17ffd936dccd7a7386429c6aa"
+      }
+    ]
+  },
+  "predictions": {
+    "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private",
+    "run_id": "2026w10-20261112T144918Z-private",
+    "manifest_sha256": "fed31aed3d9a28587afd59ee7b7c111a7bd6c7da5328dfedaa6436c459b2f6c5",
+    "rows": 1458,
+    "skipped_final_games": []
+  },
+  "outputs": [
+    {
+      "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private/_manifest.json",
+      "role": "predictions",
+      "sha256": "fed31aed3d9a28587afd59ee7b7c111a7bd6c7da5328dfedaa6436c459b2f6c5",
+      "bytes": 6077
+    },
+    {
+      "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private/player_sims.parquet",
+      "role": "predictions",
+      "sha256": "0e9802fbcf8f9573d8e26976e1cb8838a1d742cb4be7a42c2c9c39116b87dd7b",
+      "bytes": 2322896
+    },
+    {
+      "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private/player_summary.parquet",
+      "role": "predictions",
+      "sha256": "5886903e46ed3019a5776c919ffd5509171a2bdbf2de6d8b61e975dd240ce1b5",
+      "bytes": 100962
+    },
+    {
+      "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private/player_summary_raw.parquet",
+      "role": "predictions",
+      "sha256": "153445a2e4c9229963c6a9ea5925436f5627d7a06e74eb96f8647df018e2c3b0",
+      "bytes": 85628
+    },
+    {
+      "path": "data/livetest/rehearsal/predictions_private/season=2026/week=10/run=2026w10-20261112T144918Z-private/team_env.parquet",
+      "role": "predictions",
+      "sha256": "3c8343af9e412cdda71209ab89b69ef47ef90fa003e8323e3be43e378aaa2392",
+      "bytes": 12620
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/calibration_state.json",
+      "role": "model_artifact",
+      "sha256": "a519afd9fe696d8f5b95584561cd4ae829d73da524b60c82c6721af01b7293c6",
+      "bytes": 210006
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/chain_v2.json",
+      "role": "model_artifact",
+      "sha256": "71ffbfb1e14fceea30674d447691e781ce2dc3ccf9552112e2632a510446df2e",
+      "bytes": 1833
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/features.json",
+      "role": "model_artifact",
+      "sha256": "59847bfddbb270251604235b8f0474997b75393a076bce8a439db7160a530b12",
+      "bytes": 216139
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/availability.txt",
+      "role": "model_artifact",
+      "sha256": "78fd5b3a81b788a9a2e5a22b57d4fa08e3af456e5906753e8b10b755bcd7fdad",
+      "bytes": 395227
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_fum_rec.txt",
+      "role": "model_artifact",
+      "sha256": "cca3c55deb429cd4719b07ce97519cfc73956d8ed8442f7b8f8cc98cad575b34",
+      "bytes": 27576
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_int.txt",
+      "role": "model_artifact",
+      "sha256": "5b33af7c77c0fcfb6ddcd7725f436836591750d3348348ef66e04204c9213b69",
+      "bytes": 111564
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/dst_sacks.txt",
+      "role": "model_artifact",
+      "sha256": "4c2a100a89872a00774dbba01727f8a76d62c49d21937af352f9fbe677d4aacd",
+      "bytes": 194920
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_catch_rate.txt",
+      "role": "model_artifact",
+      "sha256": "7e906a39ff2870e7fb69796244173cad097cf07f8a70e7efdd445b57eae407f8",
+      "bytes": 183320
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_comp_rate.txt",
+      "role": "model_artifact",
+      "sha256": "9c7a07f11f345f1e60a2c7145e747459c97e2d3de7afa9c498af82f0fb153817",
+      "bytes": 178977
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_sack_rate.txt",
+      "role": "model_artifact",
+      "sha256": "ff7fb08564f34a2da3375f2c7b5f3c6a59191a45de3ec99dcc08670365cf9b07",
+      "bytes": 146618
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_scramble_rate.txt",
+      "role": "model_artifact",
+      "sha256": "3f859fbc2102fc6ae9b726217115a00dc6d4335103c8965040ff44a7efe1d6a8",
+      "bytes": 152647
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_ypc.txt",
+      "role": "model_artifact",
+      "sha256": "14df581c645f316be3269dcc639d71b16b7619f8876be05fc4911971d92952c4",
+      "bytes": 402559
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/eff_ypr.txt",
+      "role": "model_artifact",
+      "sha256": "6dd8dfafbabd6fc32ee9976b1a313a4108a2338ceb8ca9989dc7cec0c8acb60e",
+      "bytes": 299084
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_dropback.txt",
+      "role": "model_artifact",
+      "sha256": "3ab47f22420cfd44f24ab51d43c5b9062e85b43c66300c1979aecc8ba5912375",
+      "bytes": 584748
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_gl_carry.txt",
+      "role": "model_artifact",
+      "sha256": "24950158fba2e81739d92505eb32006df9d7322d6bb37e7363f024d43c3bfbf2",
+      "bytes": 694141
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_rz_target.txt",
+      "role": "model_artifact",
+      "sha256": "9b2d9ef5388d62ea91df27f1cbb674155f3aa47e790dd2058a383937d8407649",
+      "bytes": 288659
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/share_target.txt",
+      "role": "model_artifact",
+      "sha256": "113449629502ee0909c787685788033208cbb2f1cef7ad2103d79bc8234c2b8e",
+      "bytes": 984254
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/td_pass_share.txt",
+      "role": "model_artifact",
+      "sha256": "9be53b0106004f48d041833a473761ac469ef839c6a461e6765e3eaeff859a7f",
+      "bytes": 298561
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/td_rush_share.txt",
+      "role": "model_artifact",
+      "sha256": "12e5325cd7a33e4b19e8658dd207feb9937fe182412383b53bc82a239f816bf0",
+      "bytes": 374667
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_pass_rate.txt",
+      "role": "model_artifact",
+      "sha256": "c2d3474ee314dcfc82013029d028771417632071e03c363079f0cbbc1d2bc560",
+      "bytes": 118768
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_plays.txt",
+      "role": "model_artifact",
+      "sha256": "85d5069ac4248ca6be7856bc7820c38c7bf45b36abb30fe9a371226f82cd52ea",
+      "bytes": 63515
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/lgbm/team_two_pt_att.txt",
+      "role": "model_artifact",
+      "sha256": "ec1e54c9a703ecf484bda96b9aabda1b2a30c50261a5a0d4d853efe072834226",
+      "bytes": 97574
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/params.json",
+      "role": "model_artifact",
+      "sha256": "24bf6bd7dc135842524cc5f3b3c1d0fc690da382d5a9dd19cad05bf1d69d73da",
+      "bytes": 94849
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/selection.json",
+      "role": "model_artifact",
+      "sha256": "6985d099342fc5b88f66b0e8f460b62085a0bbc9a014f045dd4d703bf98094b9",
+      "bytes": 13472
+    },
+    {
+      "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w10-20261112T144918Z/train_manifest.json",
+      "role": "model_artifact",
+      "sha256": "a0450869186f2ee7f496be6c6788ff2d9b35ea2f50bc1ed7963cd6d4764837c3",
+      "bytes": 1445
+    },
+    {
+      "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w09.json",
+      "role": "walkforward_part",
+      "sha256": "01e364e7e24e38bdb2ee9936790ee6070747b2d6a41a0223552f8361217c8521",
+      "bytes": 496
+    },
+    {
+      "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w09.parquet",
+      "role": "walkforward_part",
+      "sha256": "d7219c609616341c4c2b88168b5f2de21c74d9e17ffd936dccd7a7386429c6aa",
+      "bytes": 93072
+    }
+  ],
+  "snapshots": {
+    "features": {
+      "team_week": "20261112T144902Z",
+      "player_week": "20261112T144900Z",
+      "dst_week": "20261112T144903Z"
+    },
+    "processed_live_rows": {
+      "dim_game": "20261112T144839Z",
+      "dim_player": "20261112T144839Z",
+      "fact_player_game": "20261112T144843Z",
+      "fact_team_game": "20261112T144841Z",
+      "fact_dst_game": "20261112T144841Z",
+      "fact_injury_report": "20261112T144846Z",
+      "fact_depth_chart": "20261112T144846Z",
+      "fact_roster_week": "20261112T144847Z"
+    },
+    "processed_at_start": {
+      "dim_game": "20261112T144839Z",
+      "dim_player": "20261112T144839Z",
+      "fact_player_game": "20261112T144843Z",
+      "fact_dst_game": "20261112T144841Z",
+      "fact_team_game": "20261112T144841Z",
+      "fact_injury_report": "20261112T144846Z",
+      "fact_depth_chart": "20261112T144846Z",
+      "fact_roster_week": "20261112T144847Z",
+      "sleeper_players": "20261112T144847Z"
+    }
+  },
+  "seeds": {
+    "week": 20463711,
+    "forced_pass": 20463718,
+    "ros": 20963711,
+    "model": 20261101
+  },
+  "n_sims": 2000,
+  "pins": {
+    "selection_sha256": "75477b2b97bc7d9bef935c2cfd470158d5b809b62f531fe898de2f7d2da84601",
+    "feature_version": "0.2.0",
+    "feature_manifest_sha256": "b119f85cdfdc3546b3fb053ca480da6b5e543349940080a3bd19ae692f2c42f6",
+    "quantile_calibrator": "OnlinePITQuantile(levels=(0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95), by=('position',), min_count=50, seed=0, atoms='nearest')",
+    "isotonic_calibrator": "OnlineIsotonic(pairs=(('boom_prob', 'boom_actual'), ('bust_prob', 'bust_actual')), by=('position',), min_count=200)",
+    "stage_choices": {
+      "team_plays": "lgbm",
+      "team_pass_rate": "lgbm",
+      "team_off_td": "structural",
+      "team_fg_att": "structural",
+      "team_two_pt_att": "lgbm",
+      "share_target": "lgbm",
+      "share_carry": "structural",
+      "share_dropback": "lgbm",
+      "share_gl_carry": "lgbm",
+      "share_rz_target": "lgbm",
+      "eff_catch_rate": "lgbm",
+      "eff_ypr": "lgbm",
+      "eff_ypc": "lgbm",
+      "eff_comp_rate": "lgbm",
+      "eff_int_rate": "structural",
+      "eff_sack_rate": "lgbm",
+      "eff_scramble_rate": "lgbm",
+      "eff_fumble_rate": "structural",
+      "td_pass_share": "lgbm",
+      "td_rush_share": "lgbm",
+      "availability": "lgbm",
+      "k_fg_pct": "structural",
+      "dst_sacks": "lgbm",
+      "dst_int": "lgbm",
+      "dst_fum_rec": "lgbm",
+      "dst_ff": "structural",
+      "dst_def_td": "structural",
+      "dst_ret_td": "structural",
+      "dst_safety": "structural",
+      "dst_blocks": "structural"
+    }
+  },
+  "code": {
+    "commit": "cfcfcd6dce53f24ad22a53059842cce7d4d9f5e7",
+    "short": "cfcfcd6",
+    "clean": true,
+    "tracked_clean": true,
+    "code_clean": true,
+    "status": [],
+    "code_changes": [],
+    "commit_at_end": "cfcfcd6dce53f24ad22a53059842cce7d4d9f5e7",
+    "code_clean_at_end": true,
+    "head_moved": false
+  },
+  "holdout_release": {
+    "season": 2025,
+    "released_at": "2026-11-04T22:43:08.791955+00:00",
+    "model_version": "chain_v1-primary-c2024w19-20261102T222634Z",
+    "evaluator_report": "reports/evaluator_release_chain_v1-primary-c2024w19-20261102T222634Z.md",
+    "approved": false,
+    "note": "released as training data and history for chain_v2 (D-098); not an approval; holdout session verdict NOT APPROVED",
+    "git": "052b6e1"
+  },
+  "build": {
+    "seconds": 155.8,
+    "peak_memory_mb": 3902.7,
+    "timings": {
+      "load_features": 1.5,
+      "calibration_history": 76.6,
+      "fit": 62.6,
+      "calibrator_state": 0.6,
+      "predict": 13.1
+    },
+    "python": "3.11.9"
+  },
+  "digest": {
+    "algorithm": "sha256",
+    "of": "canonical JSON of every other top-level field (sorted keys, separators , :)",
+    "value": "17b6bd8c2df6c4ea2fee1aa784c9753ce483945633ec1134ebc485809726ba6e"
+  }
+}
