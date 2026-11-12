@@ -135,6 +135,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-133 | 2026-11-12 | decided (orchestrator, D-117, owner's restart instructions) | After the computer restarted: repo clean and pushed at eeb5c6c, nothing lost; run 8 (not run 7) was the unfinished run, so all ten worlds are rerun as run 9; CI red on main since 2026-11-10 (a test-file name clash stopped collection), fixed by renaming one file, and the D-108 thread flake fixed by D-108's fallback (the test pins 1 thread); Week 10 rehearsal built first with `--stub-score` |
 | D-134 | 2026-11-12 | decided (orchestrator, D-117, owner's reproducibility request) | The weekly build at X is reproducible exactly at a fixed build time (all projection, model and walk-forward files byte-identical; one label column differs); projections depend on the build time by design through `depth__chart_age_days`; no fix, no frozen code changed; the freeze proceeds on its existing conditions |
 | D-135 | 2026-11-12 | decided (orchestrator, D-117, on the Evaluator's pass) | Freeze at X = 4799913 approved: run 9 met the D-131 bar and the Evaluator's Part 2 final ends "Freeze at X = 4799913: pass"; freeze by D-120 (fill commit F with the pre-registration's LF SHA-256 in its subject, F9 item 3; append-only change-log commit Y; worktree pinned at Y); F9 items 1-2 and F10 after the freeze, before the first counted build; the owner's /doctor changes wait until after the freeze, with two adjusted for frozen paths |
+| D-136 | 2026-11-12 | recorded (orchestrator) | Freeze done: X = 4799913, fill commit F = 09c2702, change-log commit Y = d03a73a (13 rows), pushed; code worktree pinned at Y and `init` recorded (2026 weeks 11-18, 2 misses allowed); comparators pre-warm started; the owner's /doctor changes applied as D-135 describes |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1495,6 +1496,55 @@ the owner asked:
   mode. It is therefore not written. The project-only equivalent is to start
   sessions here with `claude --permission-mode auto`. The owner's standing
   stop-and-ask rules apply either way.
+
+## D-136 Freeze done (orchestrator; 2026-11-12)
+
+- X = 47999132bba4b8ed1da1cc443f5517867900b0fb (D-129).
+- Fill commit F = 09c2702e7985fc07d52a3041f956fa2a1d87b4cb: the
+  pre-registration's `commit` field set to X, one line changed,
+  `rules_sha256` 3c187d88405f unchanged. The pre-registration's LF SHA-256 at
+  F is a6db14d811506facfcb9dafef7f5281c476d141eb8e53ea2c1c3da7e2637319e; it
+  is in F's subject and so in F's change-log row (F9, item 1).
+- Y = d03a73a5cb24018c09ca1c5b4f03dbc0cbbffc11: `scripts/livetest_changelog.py
+  --from 4799913 --append --commit`. One parent (F), the change log its only
+  file, 13 rows added and none deleted, covering 765fb1a through F. All rows
+  were `auto` (every path outside the pinned build). The helper's listing
+  then reports every commit in 4799913..HEAD logged.
+- The scorer's `--prebuild-check --from "" --to Y` exits 0: 14 commits from
+  X to Y, all logged, none on a frozen path.
+- main pushed at Y (22:14 UTC). livetest-2026 is unchanged (9e7d5dc);
+  livetest-dryrun holds the Week 10 rehearsal (a2bc721).
+- Code worktree `C:SERSthanfml-livetest-code` at Y
+  (`scripts/livetest_setup_worktree.py --commit Y`). Its venv is installed
+  from Y's lock file. The pin check passes: HEAD = Y, clean, `ffml` imported
+  from the worktree (also from a neutral directory), the environment matches
+  the lock, GitHub has Y, and Y descends from X through allowed paths only,
+  with no warnings.
+- `livetest_week.py init --season 2026 --weeks 11-18 --code-worktree ...
+  --expected-commit Y`, at 22:22 UTC: misses allowed 2. A runner dry run
+  verifies the pin and the descent from X, and selects nothing (2026 week 10
+  is outside the window).
+- Comparators pre-warm: the scorer's own `ensure_comparators(2026, 9, ...)`,
+  run with the pinned interpreter and the runner's data directories, started
+  at about 22:24 UTC. It runs about 2.2 hours.
+- The owner's /doctor changes (D-135):
+  - the memory rule is saved outside the repository;
+  - the 12 skill overrides are in `.claude/settings.local.json`;
+  - that file is excluded in `.git/info/exclude`, so both checkouts stay
+    clean;
+  - no change was made to `~/.claude/settings.json`, the connectors or the
+    permission mode.
+
+Still before the first counted build window (about 2026-11-19 00:15 UTC):
+- F9 items 2 and 3 and F10, on allowed paths with change-log rows. F9 item
+  2 changes `scripts/`, so it needs a hand-written row with the Evaluator's
+  verification.
+- The owner's steps: task registration (RUNBOOK section 14), power settings
+  (section 12), the logged-off dry run (section 13), and optionally the
+  FFML_ALERT_WEBHOOK secret.
+
+The Week 10 rehearsal is scored by hand after its cutoff, Friday
+2026-11-20 12:00 UTC (RUNBOOK section 19, step 2).
 
 ## Owner answers received 2026-11-01
 
