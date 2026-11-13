@@ -136,6 +136,7 @@ proposed, accepted, superseded. Open questions for the owner are at the end.
 | D-134 | 2026-11-12 | decided (orchestrator, D-117, owner's reproducibility request) | The weekly build at X is reproducible exactly at a fixed build time (all projection, model and walk-forward files byte-identical; one label column differs); projections depend on the build time by design through `depth__chart_age_days`; no fix, no frozen code changed; the freeze proceeds on its existing conditions |
 | D-135 | 2026-11-12 | decided (orchestrator, D-117, on the Evaluator's pass) | Freeze at X = 4799913 approved: run 9 met the D-131 bar and the Evaluator's Part 2 final ends "Freeze at X = 4799913: pass"; freeze by D-120 (fill commit F with the pre-registration's LF SHA-256 in its subject, F9 item 3; append-only change-log commit Y; worktree pinned at Y); F9 items 1-2 and F10 after the freeze, before the first counted build; the owner's /doctor changes wait until after the freeze, with two adjusted for frozen paths |
 | D-136 | 2026-11-12 | recorded (orchestrator) | Freeze done: X = 4799913, fill commit F = 09c2702, change-log commit Y = d03a73a (13 rows), pushed; code worktree pinned at Y and `init` recorded (2026 weeks 11-18, 2 misses allowed); comparators pre-warm started; the owner's /doctor changes applied as D-135 describes |
+| D-137 | 2026-11-13 | decided (orchestrator, D-117, owner's replay request) | A past week reproduces exactly when replayed with its recorded code, build time and snapshot ids: 2026 w10 and the Nov 4 2026 w09 build gave every projection file, the calibrator state, the walk-forward rows and every model file byte-identical to the commitment's hashes. Only three manifests differ, in timings, write times, git id and one absolute path. With the frozen code, w09's projections are also identical, and its 19 LightGBM files differ only in the `num_threads` header (D-108). The steps for the pre-registered replay-proof compatibility rule are set out; no frozen code was changed |
 | D-036 | 2026-11-02 | accepted | Consensus rankings validity is per game (`valid_for_game`), not per week |
 | D-037 | 2026-11-02 | accepted | Depth-chart snapshot timestamps and week assignment rule; rows without gsis_id dropped |
 | D-038 | 2026-11-02 | accepted | Context table keys are `(season, week, player_id, team)` |
@@ -1545,6 +1546,94 @@ Still before the first counted build window (about 2026-11-19 00:15 UTC):
 
 The Week 10 rehearsal is scored by hand after its cutoff, Friday
 2026-11-20 12:00 UTC (RUNBOOK section 19, step 2).
+
+## D-137 Replaying past weekly builds, and the replay-proof compatibility rule (orchestrator under D-117; 2026-11-13)
+
+The owner asked: can a past week's projections be reproduced exactly by
+replaying with the build time and data snapshots it recorded? If not,
+explain how the replay-proof compatibility rule will work and log it, without
+changing frozen code.
+
+Finding: yes. Evidence:
+reports/evidence/reproducibility/replay_past_weeks.md, with the scripts and
+per-replay reports in its `replay/` folder.
+
+How each replay ran:
+- in a copy of the stores, with the same "data/..." layout;
+- with the recorded `as_of`, through `build_week`'s existing `clock` hook;
+- with each recorded snapshot id, through a process-local wrapper around
+  `SnapshotStore.latest_id`;
+- comparing every output with the commitment's SHA-256.
+
+The three replays:
+- A, 2026 w10 (built 2026-11-12 at cfcfcd6, whose `ffml/` = X), replayed at
+  Y: 29 of 32 files byte-identical.
+- B, 2026 w09 (built 2026-11-04 at e43e349, before the freeze), replayed
+  with the frozen code at Y. The data had moved on 8 days, and all 12
+  pinned ids were older than today's LATEST.
+  - The projection files, the calibrator state and the walk-forward rows
+    were identical.
+  - The 19 LightGBM files differ only in `[num_threads: 8]` ->
+    `[num_threads: 4]` (D-108).
+  - `chain_v2.json` differs only in b22973f's pin-hashing metadata.
+- C, 2026 w09 replayed at its recorded code e43e349, in a temporary
+  worktree: 29 of 32 byte-identical, including every model file.
+
+In every replay the three files that differ are manifests:
+- `predictions/_manifest.json`;
+- `train_manifest.json`;
+- the walk-forward part `.json`.
+
+They differ only in timings, write times, the git id and one absolute model
+path. The commitment's own `created_at`, `build`, `code` and `digest`
+describe the replay, so they differ by construction.
+
+Every input is recorded:
+- `build_week` reads 12 snapshot pointers, all listed in
+  `commitment.snapshots`, and no raw store;
+- each processed manifest lists its raw snapshot ids;
+- snapshots are never pruned.
+
+The real stores were unchanged, and the pinned worktree is clean at Y.
+
+C's first attempt stopped at e43e349's pin check. That check hashes the raw
+bytes of `selection.json`, which a fresh LF checkout changes. The replay
+copied the build checkout's CRLF bytes of that one file, which is the same
+blob. The frozen code hashes LF-normalized text (b22973f), so live-test
+replays do not depend on line endings.
+
+How the rule will work (`outside_changes.rule`, unchanged; steps in the
+evidence file, section "How the replay-proof compatibility rule will work"):
+1. Before the first use of a compatibility fix, and on a new machine before
+   its first live build, run a baseline replay with the pinned code at Y on
+   that machine. If the baseline does not reproduce the recorded hashes,
+   nothing can be proved and `if_not_provable` applies.
+2. Run the same replay at the fix commit.
+   - Binding, as the rule says: the raw predictions
+     (`player_summary_raw.parquet`) and the calibrator state
+     (`calibration_state.json`) of the three most recent committed
+     live-test weeks (all of them while fewer than three are committed), and
+     of the four identity weeks, must be byte-identical. The identity weeks
+     are rebuilt as in D-108 and compared with the stored backtest parts.
+   - The feature rows of every committed week, rebuilt at its `rows_as_of`
+     from its recorded snapshot ids, must be identical with the fix and with
+     the frozen code. If the fix touches ingest or processing, the
+     snapshots are first rebuilt from the raw ids their manifests record.
+   - Every other output is compared and listed. A difference outside the
+     manifest fields named above goes to the Evaluator.
+3. The change-log row carries the replay reports, and the Evaluator verifies
+   before first use. A failed binding comparison means the rule's stop
+   applies, and the owner rules.
+
+The replay scripts move into `scripts/` before a real fix, with a hand
+row and the Evaluator's verification. A replay never rebuilds a week for
+scoring: the verdict scores the committed, sealed files.
+
+Assumptions (D-117):
+- "the three most recent committed live-test weeks" means all committed
+  weeks while fewer than three exist;
+- the binding comparison is on the two files the rule names, with every
+  other output reported.
 
 ## Owner answers received 2026-11-01
 

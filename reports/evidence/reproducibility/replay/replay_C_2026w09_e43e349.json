@@ -1,0 +1,249 @@
+{
+ "label": "C: 2026 w09 at its recorded code e43e349",
+ "recorded": "data\\livetest\\rehearsal\\2026w09\\commitment.json",
+ "code": "e43e349020f404f5758ddb0272ab118df651b4bb",
+ "files": 32,
+ "identical": 29,
+ "differ": [
+  {
+   "path": "data/livetest/rehearsal/predictions_private/season=2026/week=09/run=2026w09-20261104T233607Z-private/_manifest.json",
+   "role": "predictions",
+   "fields": [
+    [
+     "extra.model_source.path",
+     "C:\\Users\\Ethan\\fantasy-football-ml\\data\\livetest\\rehearsal\\models\\chain_v2\\chain_v2-primar",
+     "C:\\Users\\Ethan\\ffml-rp-e43\\data\\livetest\\rehearsal\\models\\chain_v2\\chain_v2-primary-c2026w"
+    ],
+    [
+     "extra.timings.load_model",
+     "0.77",
+     "0.52"
+    ],
+    [
+     "extra.timings.projection_week",
+     "9.02",
+     "6.44"
+    ],
+    [
+     "extra.timings.rows",
+     "6.42",
+     "5.39"
+    ],
+    [
+     "written_at",
+     "2026-11-04T23:42:33Z",
+     "2026-11-13T00:25:33Z"
+    ]
+   ]
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/train_manifest.json",
+   "role": "model_artifact",
+   "fields": [
+    [
+     "fit_seconds",
+     "168.48",
+     "45.22"
+    ],
+    [
+     "git",
+     "1c14b6c",
+     "e43e349"
+    ],
+    [
+     "timings.fit_total",
+     "168.46",
+     "45.21"
+    ],
+    [
+     "timings.load",
+     "0.12",
+     "0.06"
+    ],
+    [
+     "timings.stages",
+     "167.9",
+     "44.99"
+    ]
+   ]
+  },
+  {
+   "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w08.json",
+   "role": "walkforward_part",
+   "fields": [
+    [
+     "created_at",
+     "2026-11-04T23:39:19.901618+00:00",
+     "2026-11-13T00:24:32.667581+00:00"
+    ],
+    [
+     "fit_seconds",
+     "179.99",
+     "53.06"
+    ],
+    [
+     "predict_seconds",
+     "5.84",
+     "7.22"
+    ]
+   ]
+  }
+ ],
+ "only_in_one": [],
+ "calibration_sources_changed": [],
+ "reads": [
+  {
+   "store": "features",
+   "dataset": "dst_week",
+   "snapshot": "20261104T233144Z",
+   "how": "recorded",
+   "latest_now": "20261112T144903Z"
+  },
+  {
+   "store": "features",
+   "dataset": "player_week",
+   "snapshot": "20261104T233142Z",
+   "how": "recorded",
+   "latest_now": "20261112T144900Z"
+  },
+  {
+   "store": "features",
+   "dataset": "team_week",
+   "snapshot": "20261104T233143Z",
+   "how": "recorded",
+   "latest_now": "20261112T144902Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "dim_game",
+   "snapshot": "20261104T233034Z",
+   "how": "recorded",
+   "latest_now": "20261112T144839Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "dim_player",
+   "snapshot": "20261104T233035Z",
+   "how": "recorded",
+   "latest_now": "20261112T144839Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_depth_chart",
+   "snapshot": "20261104T233042Z",
+   "how": "recorded",
+   "latest_now": "20261112T144846Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_dst_game",
+   "snapshot": "20261104T233036Z",
+   "how": "recorded",
+   "latest_now": "20261112T144841Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_injury_report",
+   "snapshot": "20261104T233042Z",
+   "how": "recorded",
+   "latest_now": "20261112T144846Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_player_game",
+   "snapshot": "20261104T233039Z",
+   "how": "recorded",
+   "latest_now": "20261112T144843Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_roster_week",
+   "snapshot": "20261104T233043Z",
+   "how": "recorded",
+   "latest_now": "20261112T144847Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_team_game",
+   "snapshot": "20261104T233035Z",
+   "how": "recorded",
+   "latest_now": "20261112T144841Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "sleeper_players",
+   "snapshot": "20261104T233044Z",
+   "how": "recorded",
+   "latest_now": "20261112T144847Z"
+  }
+ ],
+ "commitment_fields_differ": [
+  "build",
+  "code",
+  "created_at",
+  "digest",
+  "model_artifact",
+  "predictions",
+  "seconds_before_kickoff"
+ ],
+ "commitment_field_examples": [
+  [
+   "code.clean",
+   "False",
+   "True"
+  ],
+  [
+   "code.status",
+   "[' M scripts/livetest_week.py', ' M web/.gitignore', ' M web/components/projections/StartS",
+   "[]"
+  ],
+  [
+   "code.tracked_clean",
+   "False",
+   "True"
+  ],
+  [
+   "created_at",
+   "2026-11-04T23:42:34.098314+00:00",
+   "2026-11-04T23:36:07.983995+00:00"
+  ],
+  [
+   "digest.value",
+   "a69e91379d1f23a88f858b0d5e221ea4a36f70d30f33cd94b30583bf3fe640c2",
+   "2e27e56184f8af317866a94f7b40705d04f82f87f44bc8ea92ad2c6fd68b3233"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/train_manifest.json",
+   "d09b5b39b3f899881fbf27f340a8b46a7190157c30363b922e8d704e67b5ee95",
+   "0177c979e5d1e1b3b5522dfc9c39e3fb1bbb9e32410b0fdec5cada663c4f4db4"
+  ],
+  [
+   "model_artifact.sha256",
+   "17ff5a90f605a97e6b371f7f86bdb9c465158c55904f16b6d89cc531233b6db7",
+   "36e25f5121f78bf1b3531e7182b41498a8233a86a644ee3fdd5299b313779505"
+  ],
+  [
+   "model_artifact.train_manifest_sha256",
+   "d09b5b39b3f899881fbf27f340a8b46a7190157c30363b922e8d704e67b5ee95",
+   "0177c979e5d1e1b3b5522dfc9c39e3fb1bbb9e32410b0fdec5cada663c4f4db4"
+  ],
+  [
+   "predictions.manifest_sha256",
+   "22e4f2835c31a6b0096cdd696d7731a35a0b60fd229773c17778433a384ddf6d",
+   "9a5a7081d3c63dd3930e5c406cba31b0c8bb609c95e261d25f576fe7696b2151"
+  ],
+  [
+   "seconds_before_kickoff",
+   "91945.9",
+   "92332.0"
+  ]
+ ],
+ "real_stores_unchanged": {
+  "processed": true,
+  "features": true,
+  "raw": true,
+  "livetest": true,
+  "artifacts": true
+ },
+ "worktree_clean_after": true
+}

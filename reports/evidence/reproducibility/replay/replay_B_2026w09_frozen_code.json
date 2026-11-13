@@ -1,0 +1,425 @@
+{
+ "label": "B: 2026 w09 (2026-11-04 build)",
+ "recorded": "C:\\Users\\Ethan\\fantasy-football-ml\\data\\livetest\\rehearsal\\2026w09\\commitment.json",
+ "files": 32,
+ "identical": 9,
+ "differ": [
+  {
+   "path": "data/livetest/rehearsal/predictions_private/season=2026/week=09/run=2026w09-20261104T233607Z-private/_manifest.json",
+   "role": "predictions",
+   "fields": [
+    [
+     "extra.model_source.path",
+     "C:\\Users\\Ethan\\fantasy-football-ml\\data\\livetest\\rehearsal\\models\\chain_v2\\chain_v2-primar",
+     "C:\\Users\\Ethan\\AppData\\Local\\Temp\\claude\\987078bdcac4c03e\\158e5e92-cc7f-4418-b8bd-c51ff62b"
+    ],
+    [
+     "extra.timings.load_model",
+     "0.77",
+     "0.5"
+    ],
+    [
+     "extra.timings.projection_week",
+     "9.02",
+     "7.37"
+    ],
+    [
+     "extra.timings.rows",
+     "6.42",
+     "4.93"
+    ],
+    [
+     "written_at",
+     "2026-11-04T23:42:33Z",
+     "2026-11-13T00:19:13Z"
+    ]
+   ]
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/chain_v2.json",
+   "role": "model_artifact",
+   "fields": [
+    [
+     "pin_hashing",
+     "None",
+     "tracked text files: SHA-256 of LF-normalized bytes (CRLF -> LF); artifact and data files a"
+    ],
+    [
+     "unchanged.stage_choices.sha256",
+     "d6c1891828657b76de9cb5aab51a314cd5d85c014ad4a2ba4546b9ad2e82e0da",
+     "75477b2b97bc7d9bef935c2cfd470158d5b809b62f531fe898de2f7d2da84601"
+    ],
+    [
+     "unchanged.stage_choices.sha256_crlf_working_copy",
+     "None",
+     "d6c1891828657b76de9cb5aab51a314cd5d85c014ad4a2ba4546b9ad2e82e0da"
+    ]
+   ]
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/availability.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_fum_rec.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_int.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_sacks.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_catch_rate.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_comp_rate.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_sack_rate.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_scramble_rate.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_ypc.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_ypr.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_dropback.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_gl_carry.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_rz_target.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_target.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/td_pass_share.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/td_rush_share.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/team_pass_rate.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/team_plays.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/team_two_pt_att.txt",
+   "role": "model_artifact"
+  },
+  {
+   "path": "data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/train_manifest.json",
+   "role": "model_artifact",
+   "fields": [
+    [
+     "fit_seconds",
+     "168.48",
+     "49.92"
+    ],
+    [
+     "git",
+     "1c14b6c",
+     "d03a73a"
+    ],
+    [
+     "timings.fit_total",
+     "168.46",
+     "49.92"
+    ],
+    [
+     "timings.load",
+     "0.12",
+     "0.05"
+    ],
+    [
+     "timings.stages",
+     "167.9",
+     "49.74"
+    ]
+   ]
+  },
+  {
+   "path": "data/livetest/rehearsal/walkforward/parts/chain_v1/2026_w08.json",
+   "role": "walkforward_part",
+   "fields": [
+    [
+     "created_at",
+     "2026-11-04T23:39:19.901618+00:00",
+     "2026-11-13T00:18:08.323765+00:00"
+    ],
+    [
+     "fit_seconds",
+     "179.99",
+     "62.45"
+    ],
+    [
+     "git",
+     "e43e349",
+     "d03a73a"
+    ],
+    [
+     "predict_seconds",
+     "5.84",
+     "6.78"
+    ]
+   ]
+  }
+ ],
+ "only_in_one": [],
+ "reads": [
+  {
+   "store": "features",
+   "dataset": "dst_week",
+   "snapshot": "20261104T233144Z",
+   "how": "recorded",
+   "latest_now": "20261112T144903Z"
+  },
+  {
+   "store": "features",
+   "dataset": "player_week",
+   "snapshot": "20261104T233142Z",
+   "how": "recorded",
+   "latest_now": "20261112T144900Z"
+  },
+  {
+   "store": "features",
+   "dataset": "team_week",
+   "snapshot": "20261104T233143Z",
+   "how": "recorded",
+   "latest_now": "20261112T144902Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "dim_game",
+   "snapshot": "20261104T233034Z",
+   "how": "recorded",
+   "latest_now": "20261112T144839Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "dim_player",
+   "snapshot": "20261104T233035Z",
+   "how": "recorded",
+   "latest_now": "20261112T144839Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_depth_chart",
+   "snapshot": "20261104T233042Z",
+   "how": "recorded",
+   "latest_now": "20261112T144846Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_dst_game",
+   "snapshot": "20261104T233036Z",
+   "how": "recorded",
+   "latest_now": "20261112T144841Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_injury_report",
+   "snapshot": "20261104T233042Z",
+   "how": "recorded",
+   "latest_now": "20261112T144846Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_player_game",
+   "snapshot": "20261104T233039Z",
+   "how": "recorded",
+   "latest_now": "20261112T144843Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_roster_week",
+   "snapshot": "20261104T233043Z",
+   "how": "recorded",
+   "latest_now": "20261112T144847Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "fact_team_game",
+   "snapshot": "20261104T233035Z",
+   "how": "recorded",
+   "latest_now": "20261112T144841Z"
+  },
+  {
+   "store": "processed",
+   "dataset": "sleeper_players",
+   "snapshot": "20261104T233044Z",
+   "how": "recorded",
+   "latest_now": "20261112T144847Z"
+  }
+ ],
+ "commitment_fields_differ": [
+  "build",
+  "code",
+  "created_at",
+  "cutoff",
+  "digest",
+  "model_artifact",
+  "pins",
+  "predictions",
+  "rows_as_of",
+  "seconds_before_kickoff"
+ ],
+ "commitment_field_examples": [
+  [
+   "code.clean",
+   "False",
+   "True"
+  ],
+  [
+   "code.code_clean_at_end",
+   "None",
+   "True"
+  ],
+  [
+   "code.commit",
+   "e43e349020f404f5758ddb0272ab118df651b4bb",
+   "d03a73a5cb24018c09ca1c5b4f03dbc0cbbffc11"
+  ],
+  [
+   "code.commit_at_end",
+   "None",
+   "d03a73a5cb24018c09ca1c5b4f03dbc0cbbffc11"
+  ],
+  [
+   "code.head_moved",
+   "None",
+   "False"
+  ],
+  [
+   "code.short",
+   "e43e349",
+   "d03a73a"
+  ],
+  [
+   "code.status",
+   "[' M scripts/livetest_week.py', ' M web/.gitignore', ' M web/components/projections/StartS",
+   "[]"
+  ],
+  [
+   "code.tracked_clean",
+   "False",
+   "True"
+  ],
+  [
+   "created_at",
+   "2026-11-04T23:42:34.098314+00:00",
+   "2026-11-04T23:36:07.983995+00:00"
+  ],
+  [
+   "cutoff",
+   "None",
+   "2026-11-06T01:15:00+00:00"
+  ],
+  [
+   "digest.value",
+   "a69e91379d1f23a88f858b0d5e221ea4a36f70d30f33cd94b30583bf3fe640c2",
+   "09f1fd283a168133d5d9e9f880b24d7a971a5d79a5fc7e6a3d761ad16e576a44"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/chain_v2.json",
+   "f8b36b8d1cbed315d877fa48f59c7ec7e6515915086e24fe513d5c2ea1a04afe",
+   "71ffbfb1e14fceea30674d447691e781ce2dc3ccf9552112e2632a510446df2e"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/availability.txt",
+   "e6ac3e75ddb13bdcd9bf8123a7e2270284afb0f400853008bd6ccc12ab3db6d6",
+   "e6c42bf933cebe2f97607cd9f336cec632a5569e17772c3a555a3a0d93feb3ee"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_fum_rec.txt",
+   "90a1a1b9236a95f6da4e33cd3eeda0f4ee6a7faea2f636e60cb8a49463a7f956",
+   "f451dcdb7b8dce022247684623ba694c25ccf9b6f7a94c225a1a3be281a874f2"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_int.txt",
+   "89bdc0d21c4163e21c0ced53c9dfa9e33110403e3db71dcbce53d50268fead07",
+   "58741306e0cb201430066fb81be1d4cba5013f24f296110b1acb6aac2d9c965e"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/dst_sacks.txt",
+   "75e42cdaebe6cca6c7bb0a8433f4b65d025c3f97b3a0accbee119dbe3c510eb3",
+   "7e94388b00363a5413f3bdf3b05ae65d66ad6444bd4b3bb4d0d99a0251bc3825"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_catch_rate.txt",
+   "90caff0fce38990b313747bd203eeff22fe2f5d412b1b1e104631eb789303f5a",
+   "83f6335012c7e24af7715f2ec3376a640950c19365cfc2bc59d17266e54b4c45"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_comp_rate.txt",
+   "15b350edf6f6b602c572ff9a70e7c0c7e0395932ac7cbd7dc722ef263c18a75d",
+   "a6f1942da5163354f8c2816366aeeeb88b38c02f73368af9a41c8b094366e77c"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_sack_rate.txt",
+   "596c617559503ac8de178f75f79ffa76e60e399bf2d971e2530a18b382a37b13",
+   "abac71b225e8bea93439aa1e1d1c2fef1ce26d00571ffb7f14da0446e9868182"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_scramble_rate.txt",
+   "60d6485b306e9d5c85f9f29603fd88b3bd7d3f6934530d384657e0823c0170b2",
+   "4f627e4c06f32773b6456545066cdf0cc2e19f7ff653a4a277fce966a98a5225"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_ypc.txt",
+   "2b2c4c247b86f37698cb5db1f0b2c1d349ce103ea1623d804a0de0136bbc361c",
+   "16a8f8a9e5abeb56908fd9caa586223f6a74d06813305c3ed02c795c19ce2858"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/eff_ypr.txt",
+   "f9bec3ddf9d30952eee729f3f7ba20d89ef60d30e16f046cd7955c216ca3a3ae",
+   "11124b97b68b05301cc7366947dedb01f316fa920662e31a167672de1463b944"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_dropback.txt",
+   "e5161eb0f8082146e5f57811f7900696d8bc92357982c6ca4753aba8b20e315f",
+   "578177ffdd64ff1171b9098bf4b5c4e2d602a40014f305194ac16e24d63cedc8"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_gl_carry.txt",
+   "3bf9730b85225f3c4a7ed337fa7201967667cf6bc8876684bc7cb1ea6e5e753c",
+   "22714fb68cb7c9f7c36077ac6fedb7960fc93292be2b9d56e040e4597559270c"
+  ],
+  [
+   "model_artifact.files.data/livetest/rehearsal/models/chain_v2/chain_v2-primary-c2026w09-20261104T233607Z/lgbm/share_rz_target.txt",
+   "ebf79165a22de443459c6989d68f5df895a2e1bfe2940b8a222aca671d7a25a4",
+   "638f3c510bae64564a9afc931ee3c6d0bf0a2422655351f0a90cdc85ed3ccdaf"
+  ]
+ ],
+ "real_stores_unchanged": {
+  "processed": true,
+  "features": true,
+  "raw": true,
+  "livetest": true
+ }
+}
